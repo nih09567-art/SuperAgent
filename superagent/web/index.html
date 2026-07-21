@@ -1,0 +1,457 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CoorAgent Web Studio</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+    <script src="/static/mermaid.min.js"></script>
+  </head>
+  <body>
+    <div class="page">
+      <div class="backdrop">
+        <div class="glow glow-a"></div>
+        <div class="glow glow-b"></div>
+        <div class="grid"></div>
+      </div>
+
+      <header class="topbar">
+        <div class="brand">
+          <div class="logo">CA</div>
+          <div>
+            <div class="title">CoorAgent Web Studio</div>
+            <div class="subtitle">SSE Streaming Control Panel</div>
+          </div>
+        </div>
+        <div class="status" id="statusIndicator">
+          <span class="dot"></span>
+          <span class="label">Ready</span>
+        </div>
+      </header>
+
+      <main class="layout">
+        <aside class="sidebar">
+          <button class="tab active" data-tab="run">Run</button>
+          <button class="tab" data-tab="agents">Agents</button>
+          <button class="tab" data-tab="tools">Tools</button>
+          <button class="tab" data-tab="workflows">Workflows</button>
+          <button class="tab" data-tab="tasks">Task History</button>
+          <button class="tab" data-tab="security">🛡️ Security</button>
+        </aside>
+
+        <section class="content">
+          <section class="panel active" id="panel-run">
+            <div class="panel-header">
+              <h2>Run Workflow</h2>
+              <p>发起任务并实时查看输出。</p>
+            </div>
+            <div class="panel-body run-single-column">
+              <div class="form-card">
+                <div class="summary-header">
+                  <h3>任务配置</h3>
+                </div>
+                <div class="form-row">
+                  <label for="userId">User ID</label>
+                  <input id="userId" type="text" value="test" />
+                </div>
+                <div class="form-row">
+                  <label for="demoUserRole">模拟用户角色 (S-ABAC Demo)</label>
+                  <select id="demoUserRole">
+                    <option value="admin">👑 Admin (System Admin)</option>
+                    <option value="hr_manager">👔 HR Manager (Zhang Wei)</option>
+                    <option value="engineer">💻 Engineer (Li Ming)</option>
+                    <option value="researcher_user">🔍 Researcher (Wang Fang)</option>
+                    <option value="communication_officer">📧 Comm Officer (Zhao Min)</option>
+                    <option value="guest">👤 Guest (Limited Access)</option>
+                  </select>
+                </div>
+                <div class="form-row inline">
+                </div>
+                <div class="form-row inline">
+                  <div class="checkbox">
+                    <input type="checkbox" id="deepThinking" checked />
+                    <label for="deepThinking">Deep Thinking</label>
+                  </div>
+                  <div class="checkbox">
+                    <input type="checkbox" id="searchBefore" />
+                    <label for="searchBefore">Search Before Planning</label>
+                  </div>
+                  <div class="checkbox">
+                    <input type="checkbox" id="debugMode" />
+                    <label for="debugMode">Debug</label>
+                  </div>
+                </div>
+                <div class="form-row">
+                  <label for="workflowId">Workflow ID (optional)</label>
+                  <input id="workflowId" type="text" placeholder="user:polish_id" />
+                </div>
+                <div class="form-row">
+                  <label for="message">Message</label>
+                  <textarea id="message" rows="6" placeholder="输入任务描述..."></textarea>
+                </div>
+                <div class="form-actions">
+                  <button id="runBtn" class="primary">Run</button>
+                  <button id="stopBtn" class="ghost" disabled>Stop</button>
+                </div>
+              </div>
+
+              <div class="conversation-history-card" aria-labelledby="conversationHistoryTitle">
+                <div class="conversation-history-header">
+                  <div>
+                    <h3 id="conversationHistoryTitle">最近对话</h3>
+                    <div id="conversationHistoryMeta" class="conversation-history-meta"></div>
+                  </div>
+                  <button id="clearChatHistory" class="ghost" type="button">清空</button>
+                </div>
+                <div
+                  id="conversationHistoryList"
+                  class="conversation-history-list"
+                  aria-live="polite"
+                ></div>
+              </div>
+
+              <div class="summary-card" id="permissionSummaryCard" style="display:none">
+                <div class="summary-header">
+                  <h3>🔐 权限摘要</h3>
+                </div>
+                <div id="permissionSummary" class="security-perm-summary"></div>
+              </div>
+
+              <div class="summary-card plan-editor-card">
+                <div class="summary-header">
+                  <h3>计划反馈</h3>
+                </div>
+                <div class="plan-editor-actions">
+                  <button id="nlPlanEdit" class="primary">自然语言改写</button>
+                  <button id="confirmExecute" class="ghost">确认执行</button>
+                  <button id="retryPlan" class="ghost">重试规划</button>
+                </div>
+                <div id="planValidationHint" class="summary-hint hidden">Validation hint</div>
+                <div id="planEditorList" class="plan-editor-list"></div>
+              </div>
+
+              <div class="output-card">
+                <div class="output-header">
+                  <h3>流式输出</h3>
+                  <div class="output-actions">
+                    <button id="autoScrollBtn" class="ghost">Auto-scroll: On</button>
+                    <button id="exportTxtBtn" class="ghost">Export .txt</button>
+                    <button id="clearOutput" class="ghost">Clear</button>
+                  </div>
+                </div>
+                <div class="output-panels">
+                  <section class="output-panel">
+                    <div class="output-panel-title">规划日志</div>
+                    <div
+                      id="planningOutput"
+                      class="output-body"
+                      role="log"
+                      aria-live="polite"
+                      aria-relevant="additions"
+                    ></div>
+                  </section>
+                  <section class="output-panel">
+                    <div class="output-panel-title">执行日志</div>
+                    <div
+                      id="executionOutput"
+                      class="output-body"
+                      role="log"
+                      aria-live="polite"
+                      aria-relevant="additions"
+                    ></div>
+                  </section>
+                </div>
+              </div>
+
+              <div class="summary-card">
+                <div class="summary-header">
+                  <h3>执行摘要</h3>
+                </div>
+                <div class="summary-flow">
+                  <div class="label">Live Flow</div>
+                  <div id="summaryFlow" class="flow-track"></div>
+                  <div id="summaryHint" class="summary-hint hidden">Workflow completed.</div>
+                </div>
+                <div class="summary-plan">
+                  <div class="label">Plan Preview</div>
+                  <div id="planSummary" class="plan-summary"></div>
+                  <div id="planHint" class="summary-hint hidden">No plan available.</div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <div id="planModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="planModalTitle">
+            <div class="modal-backdrop"></div>
+            <div class="modal-card">
+              <div class="modal-header">
+                <h3 id="planModalTitle">新增/修改步骤（自然语言）</h3>
+                <button id="closePlanModal" class="ghost">Close</button>
+              </div>
+              <div class="modal-body">
+                <p class="modal-hint">用业务语言描述你的修改，例如“新增一步：先确认景区位置，再查天气”或“把第二步改成更简短的报告”。</p>
+                <textarea id="planNlInput" rows="6" placeholder="请输入自然语言修改指令..."></textarea>
+                <div id="planNlHint" class="summary-hint hidden">处理中...</div>
+              </div>
+              <div class="modal-actions">
+                <button id="applyPlanNl" class="primary">Apply</button>
+                <button id="cancelPlanNl" class="ghost">Cancel</button>
+              </div>
+            </div>
+          </div>
+
+          <section class="panel" id="panel-agents">
+            <div class="panel-header">
+              <h2>Agents</h2>
+              <p>默认 + 用户自定义代理。</p>
+            </div>
+            <div class="panel-body agents-body">
+              <div class="panel-actions agents-toolbar">
+                <div class="agents-search">
+                  <input id="agentsSearch" type="text" placeholder="Search agent name..." />
+                </div>
+                <div class="agents-filters">
+                  <select id="agentsFilter">
+                    <option value="all">All Agents</option>
+                    <option value="default">Default</option>
+                    <option value="user">User</option>
+                    <option value="remote">Remote</option>
+                  </select>
+                  <select id="agentsSort">
+                    <option value="name">Sort: Name</option>
+                    <option value="health">Sort: Health</option>
+                  </select>
+                </div>
+                <div class="agents-meta">
+                  <span id="coorCount" class="coor-count">已选: 0</span>
+                  <button id="clearCoorBtn" class="ghost">Clear</button>
+                  <button id="healthCheckSelected" class="ghost">Health Check</button>
+                  <button id="refreshAgents" class="primary">Refresh</button>
+                </div>
+              </div>
+              <div class="agents-layout">
+                <div>
+                  <div id="agentsList" class="card-grid" aria-live="polite"></div>
+                </div>
+                <aside class="agent-detail" id="agentDetail">
+                  <div class="agent-detail-empty">
+                    选择一个 Agent 查看详情
+                  </div>
+                </aside>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel" id="panel-tools">
+            <div class="panel-header">
+              <h2>Tools</h2>
+              <p>全局工具列表。</p>
+            </div>
+            <div class="panel-body tools-body">
+              <div class="panel-actions tools-toolbar">
+                <div class="tools-search">
+                  <input id="toolsSearch" type="text" placeholder="Search tool name or description... (Press / to focus)" />
+                </div>
+                <div class="tools-filters">
+                  <select id="toolsSourceFilter">
+                    <option value="all">All sources</option>
+                    <option value="builtin">Builtin</option>
+                    <option value="mcp">MCP</option>
+                  </select>
+                  <select id="toolsScopeFilter">
+                    <option value="all">All scopes</option>
+                    <option value="global">Global</option>
+                    <option value="agent">Agent</option>
+                  </select>
+                  <select id="toolsSort">
+                    <option value="name">Sort: name</option>
+                    <option value="last_used">Sort: last used</option>
+                  </select>
+                </div>
+                <div class="tools-meta">
+                  <span id="toolsCountTotal" class="meta-pill">Total: 0</span>
+                  <span id="toolsCountBuiltin" class="meta-pill">Builtin: 0</span>
+                  <span id="toolsCountMcp" class="meta-pill">MCP: 0</span>
+                  <button id="refreshTools" class="primary">Refresh</button>
+                </div>
+              </div>
+              <div class="tools-layout">
+                <div>
+                  <div id="toolsList" class="card-grid" aria-live="polite"></div>
+                </div>
+                <aside class="tool-detail" id="toolDetail">
+                  <div class="tool-detail-empty">选择一个 Tool 查看详情</div>
+                </aside>
+              </div>
+              <div class="detail-card mcp-card">
+                <div class="mcp-header">
+                  <h3>MCP Servers</h3>
+                  <button id="mcpToggle" class="ghost mcp-toggle">▼</button>
+                </div>
+                <div id="mcpContent" class="mcp-content">
+                  <div id="mcpSummary" class="meta-row"></div>
+                  <div id="mcpList" class="list"></div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel" id="panel-workflows">
+            <div class="panel-header">
+              <h2>Workflows</h2>
+              <p>工作流列表与可视化。</p>
+            </div>
+            <div class="panel-body workflow-grid">
+              <div class="workflow-list">
+                <div class="panel-actions">
+                  <div class="workflow-toolbar">
+                    <div class="workflow-toolbar-left">
+                      <button id="refreshWorkflows" class="primary">Refresh</button>
+                      <button id="workflowsPrevPage" class="ghost" disabled>Prev</button>
+                      <button id="workflowsNextPage" class="ghost" disabled>Next</button>
+                      <span id="workflowsPageInfo" class="workflow-page-info"></span>
+                    </div>
+                    <div class="workflow-toolbar-right">
+                      <label for="workflowsPageSize" class="workflow-page-size-label">Page size</label>
+                      <select id="workflowsPageSize">
+                        <option value="5" selected>5</option>
+                        <option value="10">10</option>
+                        <option value="20">20</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+                <div id="workflowsList" class="list" aria-live="polite"></div>
+              </div>
+              <div class="workflow-detail">
+                <div class="detail-card">
+                  <h3>Workflow Detail</h3>
+                  <pre id="workflowDetail" class="code-block">请选择一个 workflow</pre>
+                </div>
+                <div class="detail-card">
+                  <h3>Mermaid</h3>
+                  <div id="mermaidContainer" class="mermaid-box">暂无可视化</div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel" id="panel-tasks">
+            <div class="panel-header">
+              <h2>Task History</h2>
+              <p>任务执行历史，支持日志查看、Checkpoint 浏览与断点恢复。</p>
+            </div>
+            <div class="panel-body tasks-layout">
+              <div class="tasks-left">
+                <div class="panel-actions">
+                  <button id="refreshTasks" class="primary">Refresh</button>
+                </div>
+                <div id="tasksList" class="list" aria-live="polite"></div>
+              </div>
+              <div class="tasks-right">
+                <!-- Checkpoint panel -->
+                <div class="detail-card" id="checkpointPanel" style="display:none">
+                  <div class="tasks-detail-header">
+                    <h3>Checkpoints</h3>
+                    <span id="checkpointTaskId" class="task-id-badge"></span>
+                  </div>
+                  <div id="checkpointsList" class="checkpoints-list"></div>
+                </div>
+                <!-- Log panel -->
+                <div class="detail-card" id="logPanel" style="display:none">
+                  <div class="tasks-detail-header">
+                    <h3>Task Log</h3>
+                    <div class="log-actions">
+                      <button id="copyLogBtn" class="ghost">Copy</button>
+                    </div>
+                  </div>
+                  <div class="log-meta" id="logMeta"></div>
+                  <div id="logHistory" class="log-history"></div>
+                </div>
+                <!-- Resume panel -->
+                <div class="detail-card" id="resumePanel" style="display:none">
+                  <h3>Resume Execution</h3>
+                  <div class="form-row">
+                    <label for="resumeTaskId">Task ID</label>
+                    <input id="resumeTaskId" type="text" readonly />
+                  </div>
+                  <div class="form-row">
+                    <label for="resumeWorkflowId">Workflow ID</label>
+                    <input id="resumeWorkflowId" type="text" readonly />
+                  </div>
+                  <div class="form-row">
+                    <label for="resumeStep">Resume from Step</label>
+                    <input id="resumeStep" type="number" min="0" value="0" />
+                  </div>
+                  <div class="form-row">
+                    <label for="resumeUserId">User ID</label>
+                    <input id="resumeUserId" type="text" value="test" />
+                  </div>
+                  <div class="form-actions">
+                    <button id="resumeBtn" class="primary">Resume</button>
+                    <button id="resumeStopBtn" class="ghost" disabled>Stop</button>
+                  </div>
+                  <div class="output-card" style="margin-top:12px">
+                    <div class="output-header">
+                      <h3>Resume Output</h3>
+                      <button id="clearResumeOutput" class="ghost">Clear</button>
+                    </div>
+                    <div id="resumeOutput" class="output-body"></div>
+                  </div>
+                </div>
+            </div>
+          </section>
+
+          <section class="panel" id="panel-security">
+            <div class="panel-header">
+              <h2>S-ABAC Security Dashboard</h2>
+              <p>权限策略演示、安全事件日志。</p>
+            </div>
+            <div class="panel-body security-body">
+              <div class="security-layout">
+                <div class="security-left">
+                  <div class="detail-card">
+                    <h3>安全状态</h3>
+                    <div id="securityStatus" class="security-status">Loading...</div>
+                  </div>
+                  <div class="detail-card">
+                    <h3>当前用户权限</h3>
+                    <div id="userProfileCard" class="security-profile">
+                      <select id="securityUserSelect" style="width:100%;margin-bottom:8px">
+                        <option value="">-- 选择模拟用户 --</option>
+                      </select>
+                      <div id="userProfileDetail"></div>
+                    </div>
+                  </div>
+                  <div class="detail-card">
+                    <h3>可用 Agent</h3>
+                    <div id="userAgentsList" class="security-agents"></div>
+                  </div>
+                </div>
+                <div class="security-right">
+                  <div class="detail-card">
+                    <h3>最近一次权限拒绝 / 场景错配详情</h3>
+                    <div id="securityLastDenied" class="sec-last-denied">
+                      <div class="sec-empty">暂无权限拒绝事件</div>
+                    </div>
+                  </div>
+                  <div class="detail-card">
+                    <h3>工具权限矩阵</h3>
+                    <div id="toolAccessGrid" class="sec-tool-grid"></div>
+                  </div>
+                  <div class="detail-card">
+                    <h3>安全策略</h3>
+                    <div id="policyList" class="sec-policies"></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+        </section>
+      </main>
+    </div>
+
+    <script src="/static/app.js"></script>
+    <script src="/static/security.js"></script>
+  </body>
+</html>

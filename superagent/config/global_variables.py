@@ -1,0 +1,36 @@
+from src.utils.path_utils import get_project_root
+
+workflow_dir = get_project_root() / "store" / "workflows"
+
+tools_dir = get_project_root() / "store" / "tools"
+agents_dir = get_project_root() / "store" / "agents"
+prompts_dir = get_project_root() / "store" / "prompts"
+workflows_dir = get_project_root() / "store" / "workflows"
+checkpoints_dir = get_project_root() / "store" / "checkpoints"
+task_logs_dir = get_project_root() / "store" / "task_logs"
+
+context_variables = {
+    "has_lauched": False
+}
+
+# Toggle Mermaid workflow visualization generation.
+# Set to True to enable, False to disable.
+mermaid_enabled = True
+
+system_agents = {
+        "coordinator": {
+            "type": "system_agent",
+            "name": "coordinator",
+            "description": "Coordinator node that communicate with customers."
+        },
+        "planner": {
+            "type": "system_agent",
+            "name": "planner",
+            "description": "Planner node that plan the task."
+        },
+        "publisher": {
+            "type": "system_agent",
+            "name": "publisher",
+            "description": "Publisher node that publish the task."
+        },
+}
