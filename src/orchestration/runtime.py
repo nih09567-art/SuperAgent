@@ -242,6 +242,41 @@ def _make_context_factory(state: dict):
     return _factory
 
 
+async def _compact_memory_at_safe_point(state: dict, step_id: str) -> None:
+    """Best-effort conversation compaction after durable step persistence."""
+
+    session_id = str(state.get("memory_session_id") or "")
+    user_id = str(state.get("user_id") or "")
+    if not session_id or not user_id:
+        return
+    try:
+        from src.memory import get_memory_manager
+
+        record = await get_memory_manager().compact_if_needed(
+            user_id=user_id,
+            session_id=session_id,
+            workflow_id=str(state.get("workflow_id") or "") or None,
+            current_step_id=step_id,
+            compaction_model_type=str(state.get("compaction_model_type") or "basic"),
+        )
+        if record is not None:
+            memory_context = dict(state.get("memory_context") or {})
+            memory_context.update(
+                {
+                    "compaction_id": record.compaction_id,
+                    "last_covered_sequence": record.boundary.last_sequence,
+                    "retained_turn_count": record.boundary.retained_turn_count,
+                }
+            )
+            state["memory_context"] = memory_context
+    except Exception as exc:  # noqa: BLE001 - memory cannot fail a durable step
+        logger.warning(
+            "scheduler: safe-point memory compaction deferred after %s: %s",
+            step_id,
+            type(exc).__name__,
+        )
+
+
 def _make_real_execute_step(state: dict) -> ExecuteStep:
     """Build the production ``execute_step`` mirroring ``agent_proxy_node``."""
 
@@ -533,6 +568,18 @@ async def run_scheduler_workflow(
             state["artifacts"] = artifacts_index
         state["completed_steps"] = completed
         state["current_step"] = counter["step"]
+
+        # This is deliberately last: StepResult, Artifact payload, checkpoint,
+        # and live execution position are already durable before any lossy
+        # conversation projection is replaced.
+        try:
+            await _compact_memory_at_safe_point(state, step.step_id)
+        except Exception as exc:  # noqa: BLE001 - defensive for injected adapters
+            logger.warning(
+                "scheduler: safe-point memory adapter failed after %s: %s",
+                step.step_id,
+                type(exc).__name__,
+            )
 
     async def on_step_end(*, step, result):
         # Non-critical hooks: logging + SSE event. Best effort (the scheduler

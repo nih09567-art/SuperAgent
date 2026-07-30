@@ -9,7 +9,14 @@ from src.workflow import build_graph
 from src.manager import agent_manager
 from rich.console import Console
 from src.interface.agent import State
-from src.service.env import USE_BROWSER, AUTO_RECOVERY_ENABLED, DISABLE_DEFAULT_AGENTS, S_ABAC_ENABLED
+from src.service.env import (
+    AUTO_RECOVERY_ENABLED,
+    DISABLE_DEFAULT_AGENTS,
+    MEMORY_ENABLED,
+    S_ABAC_ENABLED,
+    USE_BROWSER,
+)
+from src.memory import get_memory_manager
 from src.workflow.cache import workflow_cache as cache
 from src.workflow.graph import CompiledWorkflow
 from src.interface.agent import WorkMode
@@ -610,6 +617,8 @@ async def run_agent_workflow(
     original_user_query: str | None = None,
     memory_session_id: str | None = None,
     memory_context: dict[str, Any] | None = None,
+    project_id: str | None = None,
+    compaction_model_type: str | None = None,
     skill_reuse_enabled: bool | None = None,
     request_input_messages: list | None = None,
     current_request: str | None = None,
@@ -737,6 +746,43 @@ async def run_agent_workflow(
     routing_decision_for_prompt = dict(routing_decision)
     routing_decision_for_prompt.pop("excluded_agents", None)
     task_profile = task_profile_model.to_legacy_scenario()
+    resolved_memory_context = dict(memory_context or {})
+    if MEMORY_ENABLED and memory_session_id:
+        try:
+            scenario_memory_tags = tuple(
+                dict.fromkeys(
+                    [
+                        str(tag)
+                        for tag in task_profile.get("scenario_tags", [])
+                        if str(tag).strip()
+                    ]
+                    + [
+                        f"task.{tag}"
+                        for tag in task_profile.get("scenario_tags", [])
+                        if str(tag).strip()
+                    ]
+                    + [
+                        f"task.{item.get('intent')}"
+                        for item in task_profile.get("subtasks", [])
+                        if isinstance(item, dict) and item.get("intent")
+                    ]
+                )
+            )
+            reference, memory_ids = await get_memory_manager().recall_labels(
+                user_id=user_id,
+                query=routing_query,
+                intent_tags=scenario_memory_tags,
+                scopes=("user", "task", "project") if project_id else ("user", "task"),
+                project_id=project_id or str(resolved_memory_context.get("project_id") or "") or None,
+            )
+            if reference:
+                resolved_memory_context["long_term_reference"] = reference
+            if memory_ids:
+                resolved_memory_context["retrieved_memory_ids"] = list(memory_ids)
+        except Exception as exc:
+            logger.warning(
+                "Scenario-tag memory recall skipped: %s", type(exc).__name__
+            )
     routed_member_ids = [
         item.agent_id for item in routing_decision_model.candidate_agents
     ]
@@ -817,7 +863,8 @@ async def run_agent_workflow(
             ),
             "agent_cards": [card.model_dump() for card in agent_cards],
             "memory_session_id": memory_session_id or "",
-            "memory_context": dict(memory_context or {}),
+            "memory_context": resolved_memory_context,
+            "compaction_model_type": compaction_model_type or "basic",
             "skill_reuse_enabled": skill_reuse_enabled is not False,
             "reused_skill_id": "",
             "reused_skill_owner_id": "",

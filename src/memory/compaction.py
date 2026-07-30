@@ -78,6 +78,57 @@ def _eligible(messages: Iterable[Any]) -> list[Any]:
     return [message for message in messages if _role(message) in {"user", "assistant"}]
 
 
+def completed_turns(messages: Sequence[Any]) -> list[tuple[Any, ...]]:
+    """Group complete user -> assistant exchanges without splitting responses.
+
+    A turn may contain several assistant messages because streaming and internal
+    orchestration can persist more than one visible response.  A trailing user
+    message without an assistant response is deliberately excluded.
+    """
+
+    turns: list[tuple[Any, ...]] = []
+    current: list[Any] = []
+    has_assistant = False
+    for message in _eligible(messages):
+        role = _role(message)
+        if role == "user":
+            if current and has_assistant:
+                turns.append(tuple(current))
+            current = [message]
+            has_assistant = False
+        elif current:
+            current.append(message)
+            has_assistant = True
+    if current and has_assistant:
+        turns.append(tuple(current))
+    return turns
+
+
+def select_recent_turns(
+    turns: Sequence[Sequence[Any]],
+    *,
+    available_tokens: int,
+    summary_target_tokens: int,
+    max_turns: int = 2,
+) -> tuple[tuple[Any, ...], ...]:
+    """Choose two, one, or zero whole turns before invoking a summarizer."""
+
+    if available_tokens <= 0 or summary_target_tokens < 0:
+        return ()
+    budget_for_tail = max(0, int(available_tokens) - int(summary_target_tokens))
+    bounded = min(max(0, int(max_turns)), 2)
+    for count in range(bounded, -1, -1):
+        candidate = tuple(tuple(turn) for turn in turns[-count:]) if count else ()
+        flattened = [message for turn in candidate for message in turn]
+        token_projection = [
+            {"role": _role(message), "content": _content(message)}
+            for message in flattened
+        ]
+        if estimate_tokens(token_projection) <= budget_for_tail:
+            return candidate
+    return ()
+
+
 def build_compaction_prompt(messages: Sequence[Any]) -> str:
     rendered = []
     for message in _eligible(messages):
@@ -99,6 +150,8 @@ def build_compaction_prompt(messages: Sequence[Any]) -> str:
         "permissions, credentials, or hidden reasoning. Preserve concrete user "
         "intent, decisions, constraints, paths, errors, fixes, plans, pending work, "
         "and the intent of every user message.\n\n"
+        "In the All User Messages section, enumerate every covered user message "
+        "using its exact ID in square brackets, for example [message-id].\n\n"
         "Return exactly this XML document and no surrounding text:\n"
         '<memory_compaction version="1">\n'
         "<analysis>A short extraction checklist. This block is discarded.</analysis>\n"
@@ -177,6 +230,23 @@ def validate_summary_sections(summary: str) -> None:
             raise CompactionValidationError(
                 f"summary section is empty: {match.group('title')}"
             )
+
+
+def summary_user_message_ids(summary: str) -> tuple[str, ...]:
+    matches = list(_HEADING_PATTERN.finditer(summary))
+    for index, match in enumerate(matches):
+        if match.group("title") != "All User Messages":
+            continue
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(summary)
+        body = summary[match.end() : end]
+        return tuple(
+            dict.fromkeys(
+                item.strip()
+                for item in re.findall(r"\[([^\[\]\r\n]+)\]", body)
+                if item.strip()
+            )
+        )
+    return ()
 
 
 def parse_compaction_response(candidate: Any) -> str:
@@ -300,6 +370,10 @@ class CompactionEngine:
         trigger: str = "auto",
         attachments: RecoveryAttachments | Mapping[str, Any] | None = None,
         hook_results: Sequence[Mapping[str, Any]] | None = None,
+        retained_message_ids: Sequence[str] = (),
+        retained_turn_count: int = 0,
+        covered_user_message_ids: Sequence[str] | None = None,
+        summarizer_override: Any | None = None,
     ) -> CompactionRecord:
         eligible = _eligible(messages)
         if not eligible:
@@ -310,14 +384,29 @@ class CompactionEngine:
         }
         if len(scopes) != 1:
             raise ValueError("compaction cannot cross user/session boundaries")
-        fallback = self.summarizer is None
+        summarizer = summarizer_override or self.summarizer
+        fallback = summarizer is None
         fallback_reason = "summarizer_disabled" if fallback else None
-        if self.summarizer is None:
+        if summarizer is None:
             summary = deterministic_summary(eligible)
         else:
             try:
-                response = await self._invoke(build_compaction_prompt(eligible))
+                response = await self._invoke(
+                    build_compaction_prompt(eligible), summarizer=summarizer
+                )
                 summary = parse_compaction_response(response)
+                if covered_user_message_ids:
+                    summarized_user_ids = set(summary_user_message_ids(summary))
+                    missing = [
+                        str(message_id)
+                        for message_id in covered_user_message_ids
+                        if str(message_id) not in summarized_user_ids
+                    ]
+                    if missing:
+                        raise CompactionValidationError(
+                            "summary omitted covered user message ids: "
+                            + ", ".join(missing)
+                        )
             except CompactionToolCallError:
                 raise
             except Exception as exc:
@@ -351,6 +440,8 @@ class CompactionEngine:
             last_message_id=_message_id(latest),
             last_sequence=_sequence(latest),
             schema_version=self.schema_version,
+            retained_message_ids=tuple(str(item) for item in retained_message_ids),
+            retained_turn_count=max(0, int(retained_turn_count)),
         )
         return CompactionRecord(
             compaction_id=compaction_id,
@@ -363,8 +454,8 @@ class CompactionEngine:
             metadata={"fallback": fallback, "fallback_reason": fallback_reason},
         )
 
-    async def _invoke(self, prompt: str) -> Any:
-        target = self.summarizer
+    async def _invoke(self, prompt: str, *, summarizer: Any | None = None) -> Any:
+        target = summarizer or self.summarizer
         if hasattr(target, "ainvoke"):
             result = target.ainvoke(prompt)
         elif hasattr(target, "invoke"):
@@ -443,8 +534,11 @@ __all__ = [
     "SUMMARY_SECTIONS",
     "build_bounded_emergency_context",
     "build_compaction_prompt",
+    "completed_turns",
     "deterministic_summary",
     "parse_compaction_response",
     "render_compaction_segments",
+    "select_recent_turns",
+    "summary_user_message_ids",
     "validate_summary_sections",
 ]

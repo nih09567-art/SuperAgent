@@ -16,15 +16,45 @@ from src.workflow.cache import workflow_cache
 from src.service.env import USE_MCP_TOOLS
 from src.manager.mcp import get_mcp_hot_reload_manager
 from src.manager.registry import ToolRegistry
-from src.memory import get_memory_manager
+from src.memory import (
+    CurrentRequestOverflowError,
+    PlanContextOverflowError,
+    get_memory_manager,
+)
 from src.service.env import MEMORY_ENABLED
 from src.memory.utils import redact_secrets
 from src.orchestrator.context_resolver import resolve_conversation_request
+from src.orchestration.plan_snapshot import plan_hash
+from src.llm.agents import AGENT_LLM_MAP
 
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.WARNING)
 session_manager = SessionManager()
+
+
+def _active_compaction_model_type(request: AgentRequest) -> str:
+    if request.deep_thinking_mode:
+        return "reasoning"
+    stage = "coordinator" if request.workmode == "production" else "planner"
+    return AGENT_LLM_MAP[stage]
+
+
+def _compact_execution_result(data: Dict) -> str:
+    """Persist a bounded governed outcome, never raw child-Agent streams."""
+
+    if not isinstance(data, dict):
+        return ""
+    payload = {
+        "workflow_status": data.get("workflow_status") or data.get("status"),
+        "available": bool(data.get("available")),
+        "result": data.get("result"),
+        "unavailable_artifacts": data.get("unavailable_artifacts") or [],
+    }
+    rendered = redact_secrets(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+    )
+    return rendered if len(rendered) <= 8000 else rendered[:7997] + "..."
 
 class Server:
     def __init__(self, host="0.0.0.0", port=8001) -> None:
@@ -146,20 +176,84 @@ class Server:
                 )
             except Exception:
                 current_plan = request.instruction_history
-            prepared = await memory_manager.prepare_context(
-                user_id=request.user_id,
-                incoming_messages=incoming_messages,
-                session_id=request.memory_session_id or request.session_id,
-                workflow_id=request.workflow_id,
-                request_enabled=request.memory_enabled,
-                retrieval_query=resolved_request.resolved_message,
-                attachments={
-                    "current_plan": current_plan,
-                    "extra": {"workflow_id": request.workflow_id},
-                },
+            if request.workmode == "production":
+                plan_status = "active"
+            elif request.workflow_id and getattr(request, "stop_after_planner", False):
+                plan_status = "waiting_approval"
+            else:
+                plan_status = "planning"
+            current_plan_hash = (
+                plan_hash(current_plan)
+                if isinstance(current_plan, list)
+                and all(isinstance(item, dict) for item in current_plan)
+                else None
             )
+            try:
+                prepared = await memory_manager.prepare_context(
+                    user_id=request.user_id,
+                    incoming_messages=incoming_messages,
+                    session_id=request.memory_session_id or request.session_id,
+                    workflow_id=request.workflow_id,
+                    request_enabled=request.memory_enabled,
+                    retrieval_query=resolved_request.resolved_message,
+                    attachments={
+                        "current_plan": current_plan,
+                        "extra": {
+                            "workflow_id": request.workflow_id,
+                            "plan_status": plan_status,
+                            "plan_hash": current_plan_hash,
+                            "project_id": request.project_id,
+                            "intent_tags": [
+                                f"entity.{key}"
+                                for key in sorted(resolved_request.entity_overrides)
+                            ],
+                        },
+                    },
+                    intent_tags=[
+                        f"entity.{key}"
+                        for key in sorted(resolved_request.entity_overrides)
+                    ],
+                    compaction_model_type=_active_compaction_model_type(request),
+                )
+            except PlanContextOverflowError as exc:
+                yield {
+                    "event": "workflow_error",
+                    "data": {
+                        "workflow_id": request.workflow_id,
+                        "reason_code": "PLAN_CONTEXT_OVERFLOW",
+                        "reason": "The confirmed Plan and current request exceed the model input budget",
+                        "plan_tokens": exc.plan_tokens,
+                        "current_request_tokens": exc.current_request_tokens,
+                        "input_budget": exc.input_budget,
+                    },
+                }
+                return
+            except CurrentRequestOverflowError as exc:
+                yield {
+                    "event": "workflow_error",
+                    "data": {
+                        "workflow_id": request.workflow_id,
+                        "reason_code": "CURRENT_REQUEST_CONTEXT_OVERFLOW",
+                        "reason": (
+                            "The current request exceeds the model input budget; "
+                            "shorten it or provide large content as an attachment"
+                        ),
+                        "current_request_tokens": exc.current_request_tokens,
+                        "input_budget": exc.input_budget,
+                    },
+                }
+                return
             session_messages = list(prepared.messages)
             memory_metadata = prepared.metadata.to_dict()
+            memory_metadata["long_term_reference"] = next(
+                (
+                    str(message.get("content") or "")
+                    for message in prepared.messages
+                    if (message.get("metadata") or {}).get("memory_type")
+                    == "long_term_reference"
+                ),
+                "",
+            )
             memory_session_id = prepared.metadata.session_id
             if prepared.metadata.warning:
                 yield {
@@ -187,6 +281,8 @@ class Server:
             original_user_query=getattr(request, "original_user_query", None),
             memory_session_id=memory_session_id,
             memory_context=memory_metadata,
+            project_id=request.project_id,
+            compaction_model_type=_active_compaction_model_type(request),
             skill_reuse_enabled=request.skill_reuse_enabled,
             current_request=resolved_request.resolved_message,
             raw_request=resolved_request.raw_message,
@@ -216,10 +312,15 @@ class Server:
                         actual_workflow_id = data.get("workflow_id")
                     if event_type == "messages":
                         agent_name = str(res.get("agent_name") or "assistant")
-                        delta = (data.get("delta") or {}).get("content", "")
-                        assistant_buffers[agent_name] = (
-                            assistant_buffers.get(agent_name, "") + str(delta)
-                        )
+                        if agent_name in {"planner", "coordinator", "assistant"}:
+                            delta = (data.get("delta") or {}).get("content", "")
+                            assistant_buffers[agent_name] = (
+                                assistant_buffers.get(agent_name, "") + str(delta)
+                            )
+                    elif event_type == "final_result":
+                        compact_result = _compact_execution_result(data)
+                        if compact_result:
+                            assistant_buffers["execution_result"] = compact_result
                     # replace agent_obj with agent_json
                     if event_type == "new_agent_created" and "agent_obj" in data:
                         agent_obj: BaseModel = data["agent_obj"]
@@ -299,6 +400,8 @@ class Server:
             original_user_query=getattr(request, "original_user_query", None),
             memory_session_id=memory_session_id,
             memory_context=memory_metadata,
+            project_id=request.project_id,
+            compaction_model_type=_active_compaction_model_type(request),
             skill_reuse_enabled=request.skill_reuse_enabled,
             request_input_messages=session_messages,
         )
@@ -310,10 +413,15 @@ class Server:
                     data = res.get("data") or {}
                     if event_type == "messages":
                         agent_name = str(res.get("agent_name") or "assistant")
-                        delta = (data.get("delta") or {}).get("content", "")
-                        assistant_buffers[agent_name] = (
-                            assistant_buffers.get(agent_name, "") + str(delta)
-                        )
+                        if agent_name in {"planner", "coordinator", "assistant"}:
+                            delta = (data.get("delta") or {}).get("content", "")
+                            assistant_buffers[agent_name] = (
+                                assistant_buffers.get(agent_name, "") + str(delta)
+                            )
+                    elif event_type == "final_result":
+                        compact_result = _compact_execution_result(data)
+                        if compact_result:
+                            assistant_buffers["execution_result"] = compact_result
                     if event_type == "new_agent_created" and "agent_obj" in data:
                         agent_obj: BaseModel = data["agent_obj"]
                         agent_json = agent_obj.model_dump_json(indent=2) if agent_obj else None

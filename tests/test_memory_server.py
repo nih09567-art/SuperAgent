@@ -1,5 +1,6 @@
 from fastapi.testclient import TestClient
 
+from src.memory import CurrentRequestOverflowError
 from src.memory.models import MemoryContextMetadata, PreparedMemoryContext
 from src.service.server import Server
 from src.service.web_app import app
@@ -13,7 +14,11 @@ def test_web_aligned_launch_request_uses_memory_and_captures_stream(monkeypatch)
             captured["prepare"] = kwargs
             return PreparedMemoryContext(
                 messages=(
-                    {"role": "assistant", "content": "prior memory"},
+                    {
+                        "role": "assistant",
+                        "content": "prior memory",
+                        "metadata": {"memory_type": "long_term_reference"},
+                    },
                     {"role": "user", "content": "current request"},
                 ),
                 metadata=MemoryContextMetadata(
@@ -102,7 +107,49 @@ def test_web_aligned_launch_request_uses_memory_and_captures_stream(monkeypatch)
     assert captured["workflow"]["instruction_history"] == [instruction]
     assert captured["workflow"]["original_user_query"] == instruction
     assert captured["workflow"]["memory_session_id"] == "thread"
+    assert captured["workflow"]["memory_context"]["long_term_reference"] == "prior memory"
     assert captured["outputs"]["workflow_id"] == "alice:wf"
     assert captured["outputs"]["outputs"] == [
         {"agent_name": "planner", "content": "plan done"}
     ]
+
+
+def test_web_reports_typed_error_for_oversized_current_request(monkeypatch):
+    class FakeMemoryManager:
+        def resolve_session_id(self, user_id, *, session_id=None):
+            return session_id or user_id
+
+        async def prepare_context(self, **_kwargs):
+            raise CurrentRequestOverflowError(
+                current_request_tokens=5000,
+                input_budget=1000,
+            )
+
+    async def fake_initialize():
+        return None
+
+    async def fake_reload(force=False):
+        return None
+
+    monkeypatch.setattr("src.service.server.get_memory_manager", lambda: FakeMemoryManager())
+    monkeypatch.setattr("src.service.server.agent_manager.ensure_initialized", fake_initialize)
+    monkeypatch.setattr(Server, "_trigger_mcp_reload", staticmethod(fake_reload))
+    payload = {
+        "user_id": "alice",
+        "lang": "zh",
+        "workmode": "launch",
+        "messages": [{"role": "user", "content": "large request"}],
+        "debug": False,
+        "deep_thinking_mode": False,
+        "search_before_planning": False,
+        "coor_agents": None,
+        "memory_enabled": True,
+        "memory_session_id": "thread",
+    }
+
+    with TestClient(app) as client:
+        response = client.post("/api/workflows/run", json=payload)
+
+    assert response.status_code == 200
+    assert "CURRENT_REQUEST_CONTEXT_OVERFLOW" in response.text
+    assert '"current_request_tokens": 5000' in response.text

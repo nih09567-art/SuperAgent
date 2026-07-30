@@ -105,7 +105,10 @@ def test_remote_tool_uses_tool_arguments_contract_and_bearer_auth():
     asyncio.run(scenario())
 
 
-def test_remote_agent_does_not_receive_long_term_memory_by_default():
+def test_remote_agent_does_not_receive_long_term_memory_even_if_legacy_flag_is_set(
+    monkeypatch,
+):
+    monkeypatch.setenv("MEMORY_ALLOW_REMOTE_LONG_TERM", "true")
     executor = RemoteExecutor()
     agent = SimpleNamespace(agent_name="RemoteDemoAgent",
                             prompt="", selected_tools=[])

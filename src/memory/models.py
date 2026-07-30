@@ -33,6 +33,7 @@ class MemoryRole(StrEnum):
 
 class LongTermMemoryStatus(StrEnum):
     ACTIVE = "active"
+    PENDING = "pending"
     SUPERSEDED = "superseded"
     DELETED = "deleted"
     EXPIRED = "expired"
@@ -111,6 +112,8 @@ class CompactionBoundary:
     last_sequence: int
     created_at: datetime = field(default_factory=utc_now)
     schema_version: int = 1
+    retained_message_ids: tuple[str, ...] = ()
+    retained_turn_count: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         from .utils import to_json_safe
@@ -121,6 +124,10 @@ class CompactionBoundary:
     def from_dict(cls, data: Mapping[str, Any]) -> "CompactionBoundary":
         values = dict(data)
         values["created_at"] = parse_datetime(values.get("created_at")) or utc_now()
+        values["retained_message_ids"] = tuple(
+            str(item) for item in values.get("retained_message_ids") or ()
+        )
+        values["retained_turn_count"] = int(values.get("retained_turn_count") or 0)
         return cls(**values)
 
 
@@ -181,6 +188,16 @@ class LongTermMemory:
     superseded_by: str | None = None
     deleted_at: datetime | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    value: Any = None
+    label: str | None = None
+    importance: float = 1.0
+    decay_class: str = "medium"
+    last_reinforced_at: datetime | None = None
+    reinforcement_count: int = 0
+    source_message_ids: tuple[str, ...] = ()
+    sensitivity: str = "normal"
+    extractor_version: str | None = None
+    tags: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         from .utils import to_json_safe
@@ -196,12 +213,21 @@ class LongTermMemory:
             "expires_at",
             "superseded_at",
             "deleted_at",
+            "last_reinforced_at",
         ):
             values[key] = parse_datetime(values.get(key))
         values["created_at"] = values["created_at"] or utc_now()
         values["updated_at"] = values["updated_at"] or values["created_at"]
         values["provenance"] = dict(values.get("provenance") or {})
         values["metadata"] = dict(values.get("metadata") or {})
+        values["source_message_ids"] = tuple(
+            str(item) for item in values.get("source_message_ids") or ()
+        )
+        values["tags"] = tuple(str(item) for item in values.get("tags") or ())
+        values["importance"] = float(values.get("importance", 1.0) or 0.0)
+        values["reinforcement_count"] = int(values.get("reinforcement_count", 0) or 0)
+        values["decay_class"] = str(values.get("decay_class", "medium") or "medium")
+        values["sensitivity"] = str(values.get("sensitivity", "normal") or "normal")
         status = values.get("status", LongTermMemoryStatus.ACTIVE.value)
         values["status"] = status.value if isinstance(status, StrEnum) else str(status)
         return cls(**values)
@@ -232,6 +258,11 @@ class MemoryContextMetadata:
     retrieved_memory_ids: tuple[str, ...] = ()
     attachment_references: tuple[str, ...] = ()
     warning: str | None = None
+    retained_turn_count: int = 0
+    plan_status: str | None = None
+    plan_hash: str | None = None
+    consolidation_watermark: int = 0
+    markdown_projection_path: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         from .utils import to_json_safe

@@ -203,6 +203,15 @@ def _ensure_scenario_prompt_defaults(prompt_state: dict) -> dict:
             indent=2,
         )
 
+    memory_context = prompt_state.get("memory_context")
+    if not isinstance(memory_context, dict):
+        memory_context = {}
+        prompt_state["memory_context"] = memory_context
+    if not prompt_state.get("LONG_TERM_MEMORY_TEXT"):
+        prompt_state["LONG_TERM_MEMORY_TEXT"] = str(
+            memory_context.get("long_term_reference") or "No relevant durable memory."
+        )
+
     return prompt_state
 
 

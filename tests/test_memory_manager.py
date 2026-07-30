@@ -1,8 +1,18 @@
 import asyncio
 
-from src.memory import MemoryManager, MemorySettings, MemoryStore
+import pytest
+
+from src.memory import (
+    CurrentRequestOverflowError,
+    MemoryManager,
+    MemorySettings,
+    MemoryStore,
+    PlanContextOverflowError,
+)
 from src.memory.models import PreparedMemoryContext
 from src.memory.manager import set_memory_manager
+from src.memory.compaction import CompactionEngine, SUMMARY_SECTIONS
+from src.memory.consolidation import build_llm_extractor
 
 
 def _manager(tmp_path, **overrides):
@@ -149,3 +159,400 @@ def test_memory_web_crud_endpoints(tmp_path):
         assert deleted.status_code == 200
     finally:
         set_memory_manager(None)
+
+
+def test_compaction_retains_two_completed_turns_and_current_request(tmp_path):
+    manager = _manager(
+        tmp_path,
+        trigger_tokens=20,
+        target_tokens=40,
+        max_context_tokens=1000,
+        reserved_output_tokens=100,
+    )
+
+    for index in range(3):
+        asyncio.run(
+            manager.prepare_context(
+                user_id="alice",
+                session_id="thread",
+                incoming_messages=[
+                    {
+                        "role": "user",
+                        "content": f"request {index} " * 12,
+                        "message_id": f"u{index}",
+                    }
+                ],
+            )
+        )
+        asyncio.run(
+            manager.record_assistant_outputs(
+                user_id="alice",
+                session_id="thread",
+                outputs=[
+                    {
+                        "agent_name": "assistant",
+                        "content": f"answer {index}",
+                        "message_id": f"a{index}",
+                    }
+                ],
+            )
+        )
+
+    context = asyncio.run(
+        manager.prepare_context(
+            user_id="alice",
+            session_id="thread",
+            incoming_messages=[
+                {
+                    "role": "user",
+                    "content": "CURRENT REQUEST",
+                    "message_id": "current",
+                }
+            ],
+        )
+    )
+
+    record = manager.store.latest_compaction("alice", "thread")
+    assert record is not None
+    assert record.boundary.retained_turn_count == 2
+    assert record.boundary.retained_message_ids == ("u1", "a1", "u2", "a2")
+    assert context.messages[-1]["content"] == "CURRENT REQUEST"
+
+
+def test_completed_turn_consolidates_preference_and_projects_markdown(tmp_path):
+    manager = _manager(tmp_path, trigger_tokens=10000)
+    asyncio.run(
+        manager.prepare_context(
+            user_id="alice",
+            session_id="thread",
+            incoming_messages=[
+                {
+                    "role": "user",
+                    "content": "I prefer Chinese responses",
+                    "message_id": "u1",
+                }
+            ],
+        )
+    )
+    asyncio.run(
+        manager.record_assistant_outputs(
+            user_id="alice",
+            session_id="thread",
+            outputs=[
+                {
+                    "agent_name": "assistant",
+                    "content": "Understood.",
+                    "message_id": "a1",
+                }
+            ],
+        )
+    )
+
+    records = asyncio.run(manager.list_long_term("alice"))
+    markdown = (tmp_path / "memory_views" / "alice" / "MEMORY.md").read_text(
+        encoding="utf-8"
+    )
+    assert any(item.memory_key == "preference.language" for item in records)
+    assert "`preference.language`" in markdown
+    assert manager.store.get_consolidation_watermark("alice", "thread") == 2
+
+
+def test_raw_agent_proxy_output_is_not_persisted_as_main_conversation(tmp_path):
+    manager = _manager(tmp_path, trigger_tokens=10000)
+    stored = asyncio.run(
+        manager.record_assistant_outputs(
+            user_id="alice",
+            session_id="thread",
+            outputs=[
+                {"agent_name": "agent_proxy", "content": "raw internal trace"},
+                {"agent_name": "execution_result", "content": "final governed result"},
+            ],
+        )
+    )
+
+    assert [item.content for item in stored] == ["final governed result"]
+
+
+def test_active_plan_overflow_fails_instead_of_truncating_plan(tmp_path):
+    manager = _manager(
+        tmp_path,
+        max_context_tokens=100,
+        reserved_output_tokens=20,
+        trigger_tokens=50,
+        target_tokens=20,
+    )
+
+    with pytest.raises(PlanContextOverflowError) as captured:
+        asyncio.run(
+            manager.prepare_context(
+                user_id="alice",
+                session_id="thread",
+                incoming_messages=[{"role": "user", "content": "run it"}],
+                attachments={
+                    "current_plan": [{"description": "step " * 200}],
+                    "extra": {"plan_status": "active"},
+                },
+            )
+        )
+
+    assert captured.value.plan_tokens > captured.value.input_budget
+
+
+def test_single_oversized_current_request_fails_instead_of_being_compacted(tmp_path):
+    manager = _manager(
+        tmp_path,
+        max_context_tokens=100,
+        reserved_output_tokens=20,
+        trigger_tokens=50,
+        target_tokens=20,
+    )
+
+    with pytest.raises(CurrentRequestOverflowError) as captured:
+        asyncio.run(
+            manager.prepare_context(
+                user_id="alice",
+                session_id="thread",
+                incoming_messages=[
+                    {"role": "user", "content": "oversized " * 500, "message_id": "current"}
+                ],
+            )
+        )
+
+    assert captured.value.current_request_tokens > captured.value.input_budget
+    assert manager.store.list_compactions("alice", "thread") == []
+
+
+def test_request_compaction_calls_summary_model_once_after_local_tail_selection(tmp_path):
+    class CountingSummarizer:
+        calls = 0
+
+        async def ainvoke(self, prompt):
+            self.calls += 1
+            user_ids = [
+                part.split('"', 1)[0]
+                for part in prompt.split('<message id="')[1:]
+                if 'role="user"' in part.split("</message>", 1)[0]
+            ]
+            sections = []
+            for index, section in enumerate(SUMMARY_SECTIONS, 1):
+                body = "content"
+                if section == "All User Messages":
+                    body = "\n".join(f"- [{item}] covered" for item in user_ids)
+                sections.append(f"## {index}. {section}\n{body}")
+            return (
+                '<memory_compaction version="1"><analysis>discard</analysis><summary>'
+                + "\n\n".join(sections)
+                + "</summary></memory_compaction>"
+            )
+
+    summarizer = CountingSummarizer()
+    settings = MemorySettings(
+        enabled=True,
+        long_term_enabled=False,
+        auto_compact_enabled=True,
+        llm_compaction_enabled=True,
+        max_context_tokens=1000,
+        reserved_output_tokens=100,
+        trigger_tokens=20,
+        target_tokens=40,
+        store_path=tmp_path / "memory.sqlite3",
+    )
+    manager = MemoryManager(
+        settings=settings,
+        store=MemoryStore(settings.store_path),
+        compactor=CompactionEngine(
+            summarizer=summarizer,
+            trigger_tokens=20,
+            target_tokens=40,
+            fallback_on_error=False,
+        ),
+    )
+    for index in range(3):
+        asyncio.run(
+            manager.prepare_context(
+                user_id="alice",
+                session_id="thread",
+                incoming_messages=[
+                    {"role": "user", "content": f"request {index}", "message_id": f"u{index}"}
+                ],
+            )
+        )
+        asyncio.run(
+            manager.record_assistant_outputs(
+                user_id="alice",
+                session_id="thread",
+                outputs=[
+                    {"agent_name": "assistant", "content": "done", "message_id": f"a{index}"}
+                ],
+            )
+        )
+
+    asyncio.run(
+        manager.prepare_context(
+            user_id="alice",
+            session_id="thread",
+            incoming_messages=[
+                {"role": "user", "content": "current", "message_id": "current"}
+            ],
+        )
+    )
+
+    assert summarizer.calls == 1
+
+
+def test_llm_memory_extractor_is_tool_free_and_requires_user_source_ids():
+    class FakeModel:
+        def __init__(self, content):
+            self.content = content
+            self.prompts = []
+
+        async def ainvoke(self, prompt):
+            self.prompts.append(prompt)
+            return type("Response", (), {"content": self.content, "tool_calls": []})()
+
+    model = FakeModel(
+        '[{"kind":"preference","scope":"user","key":"preference.language",'
+        '"value":"Chinese","label":"Use Chinese.","source_text":"I prefer Chinese",'
+        '"source_message_ids":["u1"],"confidence":0.95,"importance":0.8,'
+        '"decay_class":"pinned","sensitivity":"normal","tags":["preference.language"]}]'
+    )
+    extractor = build_llm_extractor(model)
+    turn = [
+        {"message_id": "u1", "user_id": "alice", "session_id": "s", "role": "user", "content": "I prefer Chinese"},
+        {"message_id": "a1", "user_id": "alice", "session_id": "s", "role": "assistant", "content": "ok"},
+    ]
+    result = asyncio.run(extractor(turn))
+
+    assert result[0]["source_message_ids"] == ("u1",)
+    assert "Do not call tools" in model.prompts[0]
+
+    invalid = FakeModel(
+        '[{"kind":"preference","scope":"user","key":"preference.language",'
+        '"value":"English","label":"Use English.","source_text":"guess",'
+        '"source_message_ids":["a1"],"confidence":1,"importance":1,'
+        '"decay_class":"pinned","sensitivity":"normal","tags":[]}]'
+    )
+    assert asyncio.run(build_llm_extractor(invalid)(turn)) == []
+
+
+def test_request_compaction_uses_active_stage_model_override(tmp_path):
+    class SummaryModel:
+        def __init__(self):
+            self.calls = 0
+
+        async def ainvoke(self, prompt):
+            self.calls += 1
+            user_ids = [
+                part.split('"', 1)[0]
+                for part in prompt.split('<message id="')[1:]
+                if 'role="user"' in part.split("</message>", 1)[0]
+            ]
+            sections = []
+            for index, section in enumerate(SUMMARY_SECTIONS, 1):
+                body = "content"
+                if section == "All User Messages":
+                    body = "\n".join(f"- [{item}] covered" for item in user_ids)
+                sections.append(f"## {index}. {section}\n{body}")
+            return (
+                '<memory_compaction version="1"><analysis>discard</analysis><summary>'
+                + "\n\n".join(sections)
+                + "</summary></memory_compaction>"
+            )
+
+    default_model = SummaryModel()
+    active_model = SummaryModel()
+    manager = _manager(
+        tmp_path,
+        trigger_tokens=20,
+        target_tokens=40,
+        llm_compaction_enabled=False,
+    )
+    manager.compactor = CompactionEngine(
+        summarizer=default_model,
+        trigger_tokens=20,
+        target_tokens=40,
+        fallback_on_error=False,
+    )
+    selected = []
+    manager._build_summarizer = lambda model_type="basic": (
+        selected.append(model_type) or active_model
+    )
+    for index in range(3):
+        asyncio.run(
+            manager.prepare_context(
+                user_id="alice",
+                session_id="thread",
+                incoming_messages=[
+                    {"role": "user", "content": f"request {index}", "message_id": f"u{index}"}
+                ],
+                compaction_model_type="reasoning",
+            )
+        )
+        asyncio.run(
+            manager.record_assistant_outputs(
+                user_id="alice",
+                session_id="thread",
+                outputs=[{"agent_name": "assistant", "content": "done", "message_id": f"a{index}"}],
+            )
+        )
+
+    asyncio.run(
+        manager.prepare_context(
+            user_id="alice",
+            session_id="thread",
+            incoming_messages=[{"role": "user", "content": "current", "message_id": "current"}],
+            compaction_model_type="reasoning",
+        )
+    )
+
+    assert selected == ["reasoning"]
+    assert active_model.calls == 1
+    assert default_model.calls == 0
+
+
+def test_safe_point_compaction_preserves_unanswered_current_request(tmp_path):
+    manager = _manager(tmp_path, trigger_tokens=10000, target_tokens=40)
+    for index in range(3):
+        asyncio.run(
+            manager.prepare_context(
+                user_id="alice",
+                session_id="thread",
+                incoming_messages=[
+                    {"role": "user", "content": f"request {index} " * 10, "message_id": f"u{index}"}
+                ],
+            )
+        )
+        asyncio.run(
+            manager.record_assistant_outputs(
+                user_id="alice",
+                session_id="thread",
+                outputs=[{"agent_name": "assistant", "content": "done", "message_id": f"a{index}"}],
+            )
+        )
+    asyncio.run(
+        manager.prepare_context(
+            user_id="alice",
+            session_id="thread",
+            incoming_messages=[
+                {"role": "user", "content": "CURRENT EXECUTION REQUEST", "message_id": "current"}
+            ],
+        )
+    )
+    manager.compactor.trigger_tokens = 1
+
+    record = asyncio.run(
+        manager.compact_if_needed(
+            user_id="alice",
+            session_id="thread",
+            workflow_id="wf-1",
+            current_step_id="s1",
+        )
+    )
+    _, tail = manager.store.messages_after_compaction("alice", "thread")
+
+    assert record is not None
+    assert record.attachments.current_plan is None
+    assert record.attachments.extra["safe_point"] == "between_steps"
+    assert record.attachments.extra["current_step_id"] == "s1"
+    assert tail[-1].message_id == "current"
+    assert tail[-1].content == "CURRENT EXECUTION REQUEST"

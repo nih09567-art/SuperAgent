@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
+import tempfile
 import threading
 from contextlib import closing
 from datetime import UTC, datetime
@@ -19,7 +21,13 @@ from .models import (
     parse_datetime,
     utc_now,
 )
-from .utils import contains_secret, normalize_content, redact_secrets, to_json_safe
+from .utils import (
+    contains_secret,
+    normalize_content,
+    redact_secrets,
+    safe_identifier,
+    to_json_safe,
+)
 
 
 class MemoryStoreError(RuntimeError):
@@ -72,6 +80,8 @@ class MemoryStore:
         self.path = requested.resolve(strict=False)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._schema_lock = threading.Lock()
+        self._projection_lock_guard = threading.Lock()
+        self._projection_locks: dict[str, threading.Lock] = {}
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
@@ -149,8 +159,57 @@ class MemoryStore:
 
                 CREATE INDEX IF NOT EXISTS idx_memory_long_term_user_key
                 ON memory_long_term(user_id, memory_key, status);
+
+                CREATE TABLE IF NOT EXISTS memory_consolidation_watermarks (
+                    user_id TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    last_sequence INTEGER NOT NULL DEFAULT 0,
+                    extractor_version TEXT NOT NULL DEFAULT 'heuristic-v1',
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (user_id, session_id, extractor_version)
+                );
                 """
             )
+            self._ensure_columns(
+                connection,
+                "memory_compactions",
+                {
+                    "retained_message_ids_json": "TEXT NOT NULL DEFAULT '[]'",
+                    "retained_turn_count": "INTEGER NOT NULL DEFAULT 0",
+                },
+            )
+            self._ensure_columns(
+                connection,
+                "memory_long_term",
+                {
+                    "memory_value_json": "TEXT",
+                    "label": "TEXT",
+                    "importance": "REAL NOT NULL DEFAULT 1.0",
+                    "decay_class": "TEXT NOT NULL DEFAULT 'medium'",
+                    "last_reinforced_at": "TEXT",
+                    "reinforcement_count": "INTEGER NOT NULL DEFAULT 0",
+                    "source_message_ids_json": "TEXT NOT NULL DEFAULT '[]'",
+                    "sensitivity": "TEXT NOT NULL DEFAULT 'normal'",
+                    "extractor_version": "TEXT",
+                    "tags_json": "TEXT NOT NULL DEFAULT '[]'",
+                },
+            )
+
+    @staticmethod
+    def _ensure_columns(
+        connection: sqlite3.Connection,
+        table: str,
+        columns: Mapping[str, str],
+    ) -> None:
+        existing = {
+            str(row[1])
+            for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+        for name, definition in columns.items():
+            if name not in existing:
+                connection.execute(
+                    f"ALTER TABLE {table} ADD COLUMN {name} {definition}"
+                )
 
     @staticmethod
     def _validate_scope(user_id: str, session_id: str | None = None) -> None:
@@ -316,13 +375,27 @@ class MemoryStore:
                 ).fetchone()
                 if covered is None or covered["message_id"] != boundary.last_message_id:
                     raise MemoryStoreError("compaction boundary does not match transcript")
+                expected_watermark = record.metadata.get("transcript_watermark_sequence")
+                if expected_watermark is not None:
+                    current_watermark = connection.execute(
+                        """
+                        SELECT COALESCE(MAX(sequence), 0) FROM memory_messages
+                        WHERE user_id=? AND session_id=?
+                        """,
+                        (record.user_id, record.session_id),
+                    ).fetchone()[0]
+                    if int(current_watermark) != int(expected_watermark):
+                        raise MemoryStoreError(
+                            "compaction transcript watermark changed before commit"
+                        )
                 connection.execute(
                     """
                     INSERT INTO memory_compactions (
                         compaction_id, user_id, session_id, last_sequence,
                         last_message_id, boundary_json, summary, attachments_json,
-                        hook_results_json, metadata_json, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        hook_results_json, metadata_json, retained_message_ids_json,
+                        retained_turn_count, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         record.compaction_id,
@@ -335,6 +408,8 @@ class MemoryStore:
                         _json(record.attachments),
                         _json(record.hook_results),
                         _json(record.metadata),
+                        _json(boundary.retained_message_ids),
+                        int(boundary.retained_turn_count),
                         _iso(record.created_at),
                     ),
                 )
@@ -416,6 +491,17 @@ class MemoryStore:
         expires_at: datetime | str | None = None,
         metadata: Mapping[str, Any] | None = None,
         memory_id: str | None = None,
+        value: Any = None,
+        label: str | None = None,
+        importance: float = 1.0,
+        decay_class: str = "medium",
+        last_reinforced_at: datetime | str | None = None,
+        reinforcement_count: int = 0,
+        source_message_ids: Sequence[str] | None = None,
+        sensitivity: str = "normal",
+        extractor_version: str | None = None,
+        tags: Sequence[str] | None = None,
+        status: str = "active",
     ) -> LongTermMemory:
         self._validate_scope(user_id)
         clean = str(content).strip()
@@ -425,15 +511,27 @@ class MemoryStore:
             raise SecretDetectedError("secret-looking content cannot be remembered")
         if not 0.0 <= float(confidence) <= 1.0:
             raise ValueError("confidence must be between 0 and 1")
+        if not 0.0 <= float(importance) <= 1.0:
+            raise ValueError("importance must be between 0 and 1")
         allowed_kinds = {"fact", "preference", "constraint", "decision", "episodic"}
         if kind not in allowed_kinds:
             raise ValueError(f"unsupported memory kind: {kind}")
         if not str(scope).strip():
             raise ValueError("memory scope is required")
+        lifecycle_status = str(status or "active").casefold()
+        if lifecycle_status not in {"active", "pending"}:
+            raise ValueError("new memory status must be active or pending")
         normalized = normalize_content(clean)
+        normalized_tags = tuple(
+            sorted({str(item).strip().casefold() for item in tags or () if str(item).strip()})
+        )
+        normalized_label = redact_secrets(str(label or clean).strip())
+        if contains_secret(normalized_label):
+            raise SecretDetectedError("secret-looking label cannot be remembered")
         now = utc_now()
         identifier = memory_id or uuid4().hex
         expires = parse_datetime(expires_at)
+        reinforced = parse_datetime(last_reinforced_at) or now
 
         with closing(self._connect()) as connection:
             try:
@@ -442,24 +540,54 @@ class MemoryStore:
                     existing = connection.execute(
                         """
                         SELECT * FROM memory_long_term
-                        WHERE user_id=? AND memory_key=? AND status='active'
+                        WHERE user_id=? AND memory_key=? AND scope=? AND status=?
                         ORDER BY updated_at DESC LIMIT 1
                         """,
-                        (user_id, memory_key),
+                        (user_id, memory_key, scope, lifecycle_status),
                     ).fetchone()
                 else:
                     existing = connection.execute(
                         """
                         SELECT * FROM memory_long_term
-                        WHERE user_id=? AND normalized_content=? AND status='active'
+                        WHERE user_id=? AND normalized_content=? AND status=?
                         ORDER BY updated_at DESC LIMIT 1
                         """,
-                        (user_id, normalized),
+                        (user_id, normalized, lifecycle_status),
                     ).fetchone()
-                if existing is not None and not memory_key:
+                if existing is not None and (
+                    not memory_key or normalize_content(existing["content"]) == normalized
+                ):
+                    connection.execute(
+                        """
+                        UPDATE memory_long_term
+                        SET confidence=?, importance=?, label=?, memory_value_json=?,
+                            last_reinforced_at=?, reinforcement_count=?, updated_at=?,
+                            source_message_ids_json=?, tags_json=?, extractor_version=?
+                        WHERE memory_id=? AND user_id=?
+                        """,
+                        (
+                            max(float(existing["confidence"]), float(confidence)),
+                            max(float(existing["importance"] or 0.0), float(importance)),
+                            normalized_label,
+                            _json(value) if value is not None else None,
+                            _iso(reinforced),
+                            int(existing["reinforcement_count"] or 0)
+                            + max(1, int(reinforcement_count or 0)),
+                            _iso(now),
+                            _json(tuple(source_message_ids or ())),
+                            _json(normalized_tags),
+                            extractor_version,
+                            existing["memory_id"],
+                            user_id,
+                        ),
+                    )
+                    row = connection.execute(
+                        "SELECT * FROM memory_long_term WHERE memory_id=?",
+                        (existing["memory_id"],),
+                    ).fetchone()
                     connection.execute("COMMIT")
-                    return self._row_to_long_term(existing)
-                if existing is not None:
+                    return self._row_to_long_term(row)
+                if existing is not None and lifecycle_status == "active":
                     connection.execute(
                         """
                         UPDATE memory_long_term
@@ -475,8 +603,10 @@ class MemoryStore:
                         scope, confidence, provenance_json, status, memory_key,
                         workflow_id, session_id, created_at, updated_at,
                         expires_at, superseded_at, superseded_by, deleted_at,
-                        metadata_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?)
+                        metadata_json, memory_value_json, label, importance, decay_class,
+                        last_reinforced_at, reinforcement_count, source_message_ids_json,
+                        sensitivity, extractor_version, tags_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         identifier,
@@ -487,6 +617,7 @@ class MemoryStore:
                         scope,
                         float(confidence),
                         _json(dict(provenance or {})),
+                        lifecycle_status,
                         memory_key,
                         workflow_id,
                         session_id,
@@ -494,6 +625,16 @@ class MemoryStore:
                         _iso(now),
                         _iso(expires) if expires else None,
                         _json(dict(metadata or {})),
+                        _json(value) if value is not None else None,
+                        normalized_label,
+                        float(importance),
+                        str(decay_class or "medium"),
+                        _iso(reinforced),
+                        max(0, int(reinforcement_count or 0)),
+                        _json(tuple(source_message_ids or ())),
+                        str(sensitivity or "normal"),
+                        extractor_version,
+                        _json(normalized_tags),
                     ),
                 )
                 row = connection.execute(
@@ -569,6 +710,113 @@ class MemoryStore:
 
     forget = delete_long_term
 
+    def get_consolidation_watermark(
+        self, user_id: str, session_id: str, *, extractor_version: str = "heuristic-v1"
+    ) -> int:
+        self._validate_scope(user_id, session_id)
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                """
+                SELECT last_sequence FROM memory_consolidation_watermarks
+                WHERE user_id=? AND session_id=? AND extractor_version=?
+                """,
+                (user_id, session_id, extractor_version),
+            ).fetchone()
+        return int(row["last_sequence"] if row else 0)
+
+    def advance_consolidation_watermark(
+        self,
+        user_id: str,
+        session_id: str,
+        sequence: int,
+        *,
+        extractor_version: str = "heuristic-v1",
+    ) -> int:
+        self._validate_scope(user_id, session_id)
+        now = _iso()
+        with closing(self._connect()) as connection:
+            connection.execute(
+                """
+                INSERT INTO memory_consolidation_watermarks
+                    (user_id, session_id, last_sequence, extractor_version, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(user_id, session_id, extractor_version) DO UPDATE SET
+                    last_sequence=MAX(last_sequence, excluded.last_sequence),
+                    updated_at=excluded.updated_at
+                """,
+                (user_id, session_id, max(0, int(sequence)), extractor_version, now),
+            )
+            row = connection.execute(
+                """
+                SELECT last_sequence FROM memory_consolidation_watermarks
+                WHERE user_id=? AND session_id=? AND extractor_version=?
+                """,
+                (user_id, session_id, extractor_version),
+            ).fetchone()
+        return int(row["last_sequence"] if row else 0)
+
+    def project_markdown(
+        self,
+        user_id: str,
+        *,
+        scope: str | None = None,
+        path: str | Path | None = None,
+    ) -> Path:
+        """Atomically materialize active labels as an inspectable MEMORY.md view."""
+
+        self._validate_scope(user_id)
+        records = self.list_long_term(user_id)
+        if scope:
+            records = [item for item in records if item.scope in {"user", scope}]
+        target = Path(path) if path else self.markdown_path(user_id, scope=scope)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        lines = ["# Memory", "", f"<!-- user: {user_id} -->", ""]
+        grouped: dict[str, list[LongTermMemory]] = {}
+        for record in records:
+            grouped.setdefault(record.kind, []).append(record)
+        for kind in sorted(grouped):
+            lines.extend([f"## {kind}", ""])
+            for record in sorted(
+                grouped[kind], key=lambda item: (item.memory_key or item.label or item.content)
+            ):
+                label = redact_secrets(record.label or record.content).strip()
+                key = f"`{record.memory_key}` " if record.memory_key else ""
+                evidence_at = record.last_reinforced_at or record.updated_at
+                lines.append(
+                    f"- {key}{label} _(evidence: {evidence_at.isoformat()})_"
+                )
+            lines.append("")
+        payload = "\n".join(lines).rstrip() + "\n"
+        lock_key = str(target.resolve(strict=False)).casefold()
+        with self._projection_lock_guard:
+            projection_lock = self._projection_locks.setdefault(
+                lock_key, threading.Lock()
+            )
+        with projection_lock:
+            fd, temporary = tempfile.mkstemp(
+                dir=str(target.parent), prefix=f".{target.name}.", suffix=".tmp"
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                    handle.write(payload)
+                os.replace(temporary, target)
+            finally:
+                if os.path.exists(temporary):
+                    try:
+                        os.remove(temporary)
+                    except OSError:
+                        pass
+        return target
+
+    def markdown_path(self, user_id: str, *, scope: str | None = None) -> Path:
+        self._validate_scope(user_id)
+        target = self.path.parent / "memory_views" / safe_identifier(
+            user_id, prefix="user"
+        )
+        if scope and scope != "user":
+            target = target / safe_identifier(scope, prefix="scope")
+        return target / "MEMORY.md"
+
     @staticmethod
     def _row_to_long_term(row: sqlite3.Row) -> LongTermMemory:
         return LongTermMemory.from_dict(
@@ -592,6 +840,16 @@ class MemoryStore:
                 "superseded_by": row["superseded_by"],
                 "deleted_at": row["deleted_at"],
                 "metadata": _loads(row["metadata_json"], {}),
+                "value": _loads(row["memory_value_json"], None),
+                "label": row["label"],
+                "importance": float(row["importance"] or 1.0),
+                "decay_class": row["decay_class"] or "medium",
+                "last_reinforced_at": row["last_reinforced_at"],
+                "reinforcement_count": int(row["reinforcement_count"] or 0),
+                "source_message_ids": _loads(row["source_message_ids_json"], []),
+                "sensitivity": row["sensitivity"] or "normal",
+                "extractor_version": row["extractor_version"],
+                "tags": _loads(row["tags_json"], []),
             }
         )
 

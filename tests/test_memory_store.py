@@ -1,10 +1,15 @@
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+import sqlite3
 
 import pytest
 
 from src.memory.models import LongTermMemoryStatus
-from src.memory.retrieval import LexicalMemoryRetriever
+from src.memory.retrieval import (
+    LexicalMemoryRetriever,
+    TaggedMemoryRetriever,
+    format_untrusted_memories,
+)
 from src.memory.store import MemoryStore, SecretDetectedError
 
 
@@ -148,3 +153,199 @@ def test_lexical_retrieval_is_relevant_and_user_scoped(tmp_path):
     )
     assert results[0].memory.memory_id == weather.memory_id
     assert all(result.memory.user_id == "alice" for result in results)
+
+
+def test_tagged_retrieval_uses_label_and_read_time_decay(tmp_path):
+    store = MemoryStore(tmp_path / "memory.sqlite3")
+    active = store.remember(
+        user_id="alice",
+        content="raw source should not be injected",
+        kind="preference",
+        memory_key="preference.language",
+        value="zh",
+        label="Default response language: Chinese.",
+        importance=1.0,
+        confidence=1.0,
+        decay_class="pinned",
+        tags=("preference.language",),
+        provenance={"source": "test"},
+    )
+    store.remember(
+        user_id="alice",
+        content="old task hint",
+        kind="episodic",
+        memory_key="task.document.report",
+        label="Use an obsolete report hint.",
+        importance=1.0,
+        confidence=1.0,
+        decay_class="fast",
+        last_reinforced_at=datetime.now(UTC) - timedelta(days=180),
+        scope="task",
+        tags=("task.document.report",),
+        provenance={"source": "test"},
+    )
+
+    results = TaggedMemoryRetriever().retrieve(
+        "write report",
+        store.list_long_term("alice"),
+        user_id="alice",
+        intent_tags=("task.document.report",),
+    )
+    rendered = format_untrusted_memories(results)
+
+    assert [item.memory.memory_id for item in results] == [active.memory_id]
+    assert "Default response language: Chinese." in rendered
+    assert "raw source should not be injected" not in rendered
+    assert format_untrusted_memories(results, token_budget=1) == ""
+
+
+def test_project_retrieval_requires_matching_project_scope(tmp_path):
+    store = MemoryStore(tmp_path / "memory.sqlite3")
+    current = store.remember(
+        user_id="alice",
+        content="Project report uses Chinese",
+        kind="preference",
+        scope="project",
+        memory_key="project.report.language.current",
+        label="Project reports use Chinese.",
+        tags=("task.document.report",),
+        metadata={"project_id": "project-a"},
+        provenance={"source": "test"},
+    )
+    other = store.remember(
+        user_id="alice",
+        content="Other project report uses English",
+        kind="preference",
+        scope="project",
+        memory_key="project.report.language.other",
+        label="Other project reports use English.",
+        tags=("task.document.report",),
+        metadata={"project_id": "project-b"},
+        provenance={"source": "test"},
+    )
+
+    records = [*store.list_long_term("alice", statuses=("active",))]
+    retriever = TaggedMemoryRetriever()
+    result = retriever.retrieve(
+        "write report",
+        records,
+        user_id="alice",
+        scopes=("project",),
+        intent_tags=("task.document.report",),
+        project_id="project-a",
+    )
+
+    assert [item.memory.memory_id for item in result] == [current.memory_id]
+    assert other.memory_id not in {item.memory.memory_id for item in result}
+    assert retriever.retrieve(
+        "write report",
+        records,
+        user_id="alice",
+        scopes=("project",),
+        intent_tags=("task.document.report",),
+    ) == []
+
+
+def test_duplicate_tag_reinforces_one_logical_record(tmp_path):
+    store = MemoryStore(tmp_path / "memory.sqlite3")
+    first = store.remember(
+        user_id="alice",
+        content="Default language is Chinese",
+        kind="preference",
+        memory_key="preference.language",
+        label="Default language is Chinese",
+        confidence=0.8,
+        provenance={"source": "turn-1"},
+    )
+    reinforced = store.remember(
+        user_id="alice",
+        content="Default language is Chinese",
+        kind="preference",
+        memory_key="preference.language",
+        label="Default language is Chinese",
+        confidence=0.9,
+        provenance={"source": "turn-2"},
+    )
+
+    assert reinforced.memory_id == first.memory_id
+    assert reinforced.reinforcement_count == 1
+    assert reinforced.confidence == 0.9
+    assert len(store.list_long_term("alice")) == 1
+
+
+def test_schema_migration_keeps_legacy_long_term_rows_readable(tmp_path):
+    path = tmp_path / "memory.sqlite3"
+    connection = sqlite3.connect(path)
+    connection.execute(
+        """
+        CREATE TABLE memory_long_term (
+            memory_id TEXT PRIMARY KEY, user_id TEXT NOT NULL,
+            content TEXT NOT NULL, normalized_content TEXT NOT NULL,
+            kind TEXT NOT NULL, scope TEXT NOT NULL, confidence REAL NOT NULL,
+            provenance_json TEXT NOT NULL DEFAULT '{}', status TEXT NOT NULL,
+            memory_key TEXT, workflow_id TEXT, session_id TEXT,
+            created_at TEXT NOT NULL, updated_at TEXT NOT NULL, expires_at TEXT,
+            superseded_at TEXT, superseded_by TEXT, deleted_at TEXT,
+            metadata_json TEXT NOT NULL DEFAULT '{}'
+        )
+        """
+    )
+    now = datetime.now(UTC).isoformat()
+    connection.execute(
+        """
+        INSERT INTO memory_long_term (
+            memory_id, user_id, content, normalized_content, kind, scope,
+            confidence, provenance_json, status, created_at, updated_at
+        ) VALUES ('legacy', 'alice', 'legacy preference', 'legacy preference',
+                  'preference', 'user', 1.0, '{}', 'active', ?, ?)
+        """,
+        (now, now),
+    )
+    connection.commit()
+    connection.close()
+
+    record = MemoryStore(path).get_long_term("alice", "legacy")
+
+    assert record is not None
+    assert record.label is None
+    assert record.decay_class == "medium"
+    assert record.reinforcement_count == 0
+
+
+def test_markdown_projection_failure_preserves_previous_view_and_regenerates(
+    tmp_path, monkeypatch
+):
+    store = MemoryStore(tmp_path / "memory.sqlite3")
+    first = store.remember(
+        user_id="alice",
+        content="Use Chinese reports",
+        kind="preference",
+        memory_key="preference.language",
+        label="Reports use Chinese.",
+        provenance={"source": "test"},
+    )
+    target = store.project_markdown("alice")
+    previous = target.read_text(encoding="utf-8")
+    second = store.remember(
+        user_id="alice",
+        content="Use a concise report style",
+        kind="preference",
+        memory_key="preference.report_style",
+        label="Reports are concise.",
+        provenance={"source": "test"},
+    )
+
+    monkeypatch.setattr("src.memory.store.os.replace", lambda *_args: (_ for _ in ()).throw(OSError("disk full")))
+    with pytest.raises(OSError, match="disk full"):
+        store.project_markdown("alice")
+
+    assert target.read_text(encoding="utf-8") == previous
+    assert store.get_long_term("alice", second.memory_id).status == "active"
+
+    monkeypatch.undo()
+    target.unlink()
+    regenerated = store.project_markdown("alice")
+    assert regenerated == target
+    rebuilt = target.read_text(encoding="utf-8")
+    assert "preference.language" in rebuilt
+    assert "preference.report_style" in rebuilt

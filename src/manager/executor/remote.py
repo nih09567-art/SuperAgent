@@ -77,7 +77,6 @@ except Exception:  # pragma: no cover
         pass
 
 from .base import AgentExecutor, ExecuteResult, ExecutionContext, ExecutionStatus
-from src.service.env import MEMORY_ALLOW_REMOTE_LONG_TERM
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.WARNING)
@@ -324,10 +323,11 @@ class RemoteExecutor(AgentExecutor):
                 })
             elif isinstance(msg, dict):
                 memory_type = (msg.get("metadata") or {}).get("memory_type")
-                if (
-                    memory_type == "long_term_reference"
-                    and not MEMORY_ALLOW_REMOTE_LONG_TERM
-                ):
+                # Long-term memory is planner-only context.  The confirmed
+                # Plan/TaskGraph and resolved step inputs are the sole source
+                # of execution context for remote Agents; there is no runtime
+                # opt-in that can bypass this isolation boundary.
+                if memory_type == "long_term_reference":
                     continue
                 # If message is already a dict, ensure it has required fields
                 # and normalize the structure

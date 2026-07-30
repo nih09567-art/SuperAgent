@@ -158,6 +158,7 @@ class AgentRequest(BaseModel):
     session_id: Optional[str] = None
     memory_session_id: Optional[str] = None
     memory_enabled: Optional[bool] = None
+    project_id: Optional[str] = None
     skill_reuse_enabled: Optional[bool] = None
     # Chat 每轮请求的结构化上下文。旧客户端不传时继续按普通请求处理。
     turn_type: Literal["request", "clarification_answer"] = "request"
