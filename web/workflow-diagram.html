@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Workflow Diagram</title>
+    <link rel="stylesheet" href="/static/styles.css?v=20260731-chat-workflow-1" />
+    <link rel="stylesheet" href="/static/workflow-diagram.css?v=20260731-1" />
+  </head>
+  <body class="workflow-diagram-page">
+    <header class="workflow-diagram-toolbar">
+      <div class="workflow-diagram-heading">
+        <h1 id="diagramPageTitle">Workflow Diagram</h1>
+        <p id="diagramPageMeta"></p>
+      </div>
+      <div class="workflow-diagram-actions">
+        <button id="downloadDiagramPng" class="primary" type="button">下载 PNG</button>
+        <button id="printDiagram" class="ghost" type="button">打印</button>
+      </div>
+    </header>
+    <main class="workflow-diagram-document">
+      <div id="standaloneDiagram" class="workflow-diagram-standalone" aria-live="polite">
+        正在加载流程图...
+      </div>
+    </main>
+    <script src="/static/workflow-diagram.js?v=20260731-1"></script>
+  </body>
+</html>

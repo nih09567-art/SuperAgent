@@ -351,6 +351,10 @@ let activeConversationMessages = [];
 let activeConversationTranscript = [];
 let activeConversationId = null;
 let activeConversationCreatedAt = null;
+let activePendingPlan = null;
+let runningConversationId = null;
+let viewedConversationId = null;
+let runningConversationNodes = null;
 let coordinatorBuffer = "";
 let clarificationPending = false;
 let pendingClarificationContext = null;
@@ -493,11 +497,36 @@ const ensureChatLifecycle = () => {
     revisionForm.classList.remove("hidden");
     revisionHint.textContent = "";
     revisionInput.focus();
+    if (activePendingPlan) {
+      activePendingPlan = {
+        ...activePendingPlan,
+        revisionOpen: true,
+        revisionText: revisionInput.value,
+      };
+      saveActiveConversation();
+    }
     scrollChatToLatest();
   });
   cancelRevisionButton.addEventListener("click", () => {
     revisionForm.classList.add("hidden");
     revisionHint.textContent = "";
+    if (activePendingPlan) {
+      activePendingPlan = {
+        ...activePendingPlan,
+        revisionOpen: false,
+        revisionText: "",
+      };
+      saveActiveConversation();
+    }
+  });
+  revisionInput.addEventListener("input", () => {
+    if (!activePendingPlan) return;
+    activePendingPlan = {
+      ...activePendingPlan,
+      revisionOpen: true,
+      revisionText: revisionInput.value,
+    };
+    saveActiveConversation();
   });
   applyRevisionButton.addEventListener("click", applyChatPlanRevision);
   return currentChatLifecycle;
@@ -546,6 +575,14 @@ async function confirmChatPlanExecution() {
     lifecycle.revisionForm.classList.add("hidden");
     lifecycle.confirmPlanButton.textContent = "执行中...";
   }
+  activePendingPlan = {
+    steps: planSteps.map((step) => normalizeStep(step)),
+    workflowId: workflowIdInput?.value.trim() || "",
+    status: "executing",
+    revisionOpen: false,
+    revisionText: "",
+  };
+  saveActiveConversation();
   setChatPlanActionsDisabled(true);
   await runExecution();
   if (!lifecycle) return;
@@ -569,6 +606,15 @@ async function applyChatPlanRevision() {
     return;
   }
   lifecycle.revisionHint.textContent = "正在重新生成计划...";
+  activePendingPlan = {
+    steps: planSteps.map((step) => normalizeStep(step)),
+    workflowId: workflowIdInput?.value.trim() || "",
+    status: "revising",
+    revisionOpen: true,
+    revisionText: instruction,
+  };
+  saveActiveConversation();
+  beginConversationRuntime();
   setChatPlanActionsDisabled(true);
   runBtn.disabled = true;
   userIdInput.disabled = true;
@@ -582,12 +628,29 @@ async function applyChatPlanRevision() {
     lifecycle.revisionHint.textContent = "计划已更新，请确认执行。";
     lifecycle.revisionForm.classList.add("hidden");
     renderChatPlanCard(planSteps);
+    activePendingPlan = {
+      steps: planSteps.map((step) => normalizeStep(step)),
+      workflowId: workflowIdInput?.value.trim() || "",
+      status: "awaiting_confirmation",
+      revisionOpen: false,
+      revisionText: "",
+    };
+    saveActiveConversation();
     setStatus("Plan ready", true);
   } else {
     lifecycle.revisionHint.textContent = "计划修改失败，请调整修改要求后重试。";
+    activePendingPlan = {
+      steps: planSteps.map((step) => normalizeStep(step)),
+      workflowId: workflowIdInput?.value.trim() || "",
+      status: "awaiting_confirmation",
+      revisionOpen: true,
+      revisionText: instruction,
+    };
+    saveActiveConversation();
   }
   setChatPlanActionsDisabled(false);
   scrollChatToLatest();
+  finishConversationRuntime();
 }
 
 const updateChatExecutionProgress = (status, detail = "") => {
@@ -835,6 +898,23 @@ const captureAssistantConversationContext = () => {
 const getChatHistoryKey = (userId) => `${CHAT_HISTORY_KEY_PREFIX}:${encodeURIComponent(userId)}`;
 const getLegacyChatHistoryKey = (userId) => `${LEGACY_CHAT_HISTORY_KEY_PREFIX}:${encodeURIComponent(userId)}`;
 
+const normalizePendingPlan = (pendingPlan) => {
+  if (!pendingPlan || typeof pendingPlan !== "object") return null;
+  const steps = Array.isArray(pendingPlan.steps)
+    ? pendingPlan.steps.map((step) => normalizeStep(step))
+    : [];
+  const workflowId = String(pendingPlan.workflowId || "").trim();
+  if (!steps.length || !workflowId) return null;
+  return {
+    steps,
+    workflowId,
+    status: String(pendingPlan.status || "awaiting_confirmation"),
+    revisionOpen: Boolean(pendingPlan.revisionOpen),
+    revisionText: String(pendingPlan.revisionText || "")
+      .slice(0, CONVERSATION_MESSAGE_CHAR_LIMIT),
+  };
+};
+
 const normalizeStoredConversation = (conversation) => {
   if (!conversation || typeof conversation !== "object") return null;
   const messages = Array.isArray(conversation.messages)
@@ -882,6 +962,7 @@ const normalizeStoredConversation = (conversation) => {
     contextReferences: Array.isArray(conversation.contextReferences)
       ? conversation.contextReferences.map((item) => ({ ...item }))
       : [],
+    pendingPlan: normalizePendingPlan(conversation.pendingPlan),
     messages,
   };
 };
@@ -951,6 +1032,7 @@ const saveActiveConversation = () => {
     currentResolvedRequest,
     currentRequestEntities: { ...currentRequestEntities },
     contextReferences: currentContextReferences.map((item) => ({ ...item })),
+    pendingPlan: normalizePendingPlan(activePendingPlan),
     messages: activeConversationTranscript.map((message) => ({ ...message })),
   });
   persistChatHistory(userId, conversations);
@@ -988,7 +1070,7 @@ const renderChatHistory = () => {
     const item = document.createElement("button");
     item.type = "button";
     item.className = "conversation-history-item";
-    if (conversation.id === activeConversationId) item.classList.add("active");
+    if (conversation.id === (viewedConversationId || activeConversationId)) item.classList.add("active");
     const content = document.createElement("span");
     content.className = "conversation-history-content";
     content.textContent = conversation.title;
@@ -1063,12 +1145,104 @@ const renderLoadedConversation = (messages) => {
   scrollChatToLatest();
 };
 
+const renderPendingPlanForCurrentAnswer = (pendingPlan, interactive = true) => {
+  const normalized = normalizePendingPlan(pendingPlan);
+  if (!normalized || !answerOutput) return false;
+  renderChatPlanCard(normalized.steps);
+  const lifecycle = currentChatLifecycle;
+  if (!lifecycle) return false;
+  lifecycle.planActions.classList.remove("hidden");
+  lifecycle.confirmPlanButton.textContent = normalized.status === "executing"
+    ? "执行中..."
+    : "确认执行";
+  lifecycle.revisionInput.value = normalized.revisionText;
+  lifecycle.revisionForm.classList.toggle("hidden", !normalized.revisionOpen);
+  setChatPlanActionsDisabled(!interactive || normalized.status !== "awaiting_confirmation");
+  return true;
+};
+
+const isConversationRuntimeActive = () => Boolean(
+  runningConversationId
+  && (currentAbortController || executionInProgress || plannerOnlyMode || plannerOnlyController)
+);
+
+const beginConversationRuntime = () => {
+  if (!activeConversationId) saveActiveConversation();
+  runningConversationId = activeConversationId;
+  viewedConversationId = activeConversationId;
+  runningConversationNodes = null;
+  renderChatHistory();
+};
+
+const renderConversationPreview = (conversation) => {
+  if (!chatConversation) return;
+  if (!runningConversationNodes) {
+    runningConversationNodes = Array.from(chatConversation.childNodes);
+  }
+
+  const liveAnswerOutput = answerOutput;
+  const liveLifecycle = currentChatLifecycle;
+  const livePlanSteps = planSteps;
+  const liveExecutionStepCards = executionStepCards;
+
+  answerOutput = null;
+  currentChatLifecycle = null;
+  planSteps = [];
+  executionStepCards = [];
+  renderLoadedConversation(conversation.messages);
+  renderPendingPlanForCurrentAnswer(conversation.pendingPlan, false);
+
+  answerOutput = liveAnswerOutput;
+  currentChatLifecycle = liveLifecycle;
+  planSteps = livePlanSteps;
+  executionStepCards = liveExecutionStepCards;
+  scrollChatToLatest();
+};
+
+const restoreRunningConversationView = () => {
+  if (!chatConversation || !runningConversationNodes) return;
+  chatConversation.replaceChildren(...runningConversationNodes);
+  runningConversationNodes = null;
+  scrollChatToLatest();
+};
+
+const finishConversationRuntime = () => {
+  const completedConversationId = runningConversationId;
+  const requestedConversationId = viewedConversationId;
+  runningConversationId = null;
+  runningConversationNodes = null;
+
+  if (requestedConversationId && requestedConversationId !== completedConversationId) {
+    const conversation = loadChatHistory(activeConversationUserId)
+      .find((item) => item.id === requestedConversationId);
+    if (conversation) {
+      loadConversation(conversation);
+      return;
+    }
+  }
+  viewedConversationId = activeConversationId;
+  renderChatHistory();
+};
+
 const loadConversation = (conversation) => {
-  if (currentAbortController || executionInProgress || !conversation) return false;
+  if (!conversation) return false;
   const normalized = normalizeStoredConversation(conversation);
   if (!normalized) return false;
+
+  if (isConversationRuntimeActive()) {
+    viewedConversationId = normalized.id;
+    if (normalized.id === runningConversationId) {
+      restoreRunningConversationView();
+    } else {
+      renderConversationPreview(normalized);
+    }
+    renderChatHistory();
+    return true;
+  }
+
   activeConversationUserId = userIdInput.value.trim();
   activeConversationId = normalized.id;
+  viewedConversationId = normalized.id;
   activeConversationCreatedAt = normalized.createdAt;
   activeConversationTranscript = normalized.messages.map((message) => ({ ...message }));
   activeConversationMessages = activeConversationTranscript
@@ -1093,14 +1267,24 @@ const loadConversation = (conversation) => {
   currentContextReferences = Array.isArray(normalized.contextReferences)
     ? normalized.contextReferences.map((item) => ({ ...item }))
     : [];
+  activePendingPlan = normalizePendingPlan(normalized.pendingPlan);
   originalUserQuery = currentResolvedRequest || currentRequestQuery || originalUserQuery;
-  workflowIdInput.value = normalized.workflowId || "";
+  workflowIdInput.value = activePendingPlan?.workflowId || normalized.workflowId || "";
   messageInput.value = "";
   resizeMessageInput();
   clearOutput();
   resetSummary();
   resetPlan();
   renderLoadedConversation(activeConversationTranscript);
+  if (activePendingPlan) {
+    planSteps = activePendingPlan.steps.map((step) => normalizeStep(step));
+    renderPlanSummary(planSteps);
+    renderPlanEditor();
+    renderPendingPlanForCurrentAnswer(activePendingPlan, true);
+    showPlanHint("Planning completed. Waiting for confirmation.");
+    showPlanValidationHint("Plan ready. Choose Confirm execution or Modify plan.");
+    updateConfirmExecuteState();
+  }
   setStatus("Conversation loaded", true);
   renderChatHistory();
   return true;
@@ -1122,7 +1306,9 @@ const resetActiveConversation = (userId = userIdInput.value.trim()) => {
   activeConversationMessages = [];
   activeConversationTranscript = [];
   activeConversationId = null;
+  viewedConversationId = null;
   activeConversationCreatedAt = null;
+  activePendingPlan = null;
   instructionHistory = [];
   originalUserQuery = "";
   coordinatorBuffer = "";
@@ -3395,8 +3581,10 @@ const runWorkflow = async () => {
     : null;
 
   activeConversationUserId = userId;
+  activePendingPlan = null;
   appendActiveConversationMessage("user", message);
   showCurrentChatTurn(message);
+  beginConversationRuntime();
   messageInput.value = "";
   resizeMessageInput();
 
@@ -3505,6 +3693,14 @@ const runWorkflow = async () => {
     if (planReady) {
       pendingClarificationContext = null;
       clarificationPending = false;
+      activePendingPlan = {
+        steps: planSteps.map((step) => normalizeStep(step)),
+        workflowId: workflowIdInput?.value.trim() || "",
+        status: "awaiting_confirmation",
+        revisionOpen: false,
+        revisionText: "",
+      };
+      saveActiveConversation();
       showPlanHint("Planning completed. Waiting for confirmation.");
       showPlanValidationHint("Plan ready. Choose Confirm execution or Modify plan.");
       setStatus("Plan ready", true);
@@ -3520,6 +3716,7 @@ const runWorkflow = async () => {
     }
     if (clarificationPending) document.getElementById("chatMessage")?.focus();
     updateConfirmExecuteState();
+    finishConversationRuntime();
   }
 };
 
@@ -3539,6 +3736,16 @@ const runExecution = async () => {
     showPlanValidationHint("Plan is empty, so execution cannot start.", true);
     return;
   }
+
+  activePendingPlan = {
+    steps: planSteps.map((step) => normalizeStep(step)),
+    workflowId,
+    status: "executing",
+    revisionOpen: false,
+    revisionText: "",
+  };
+  saveActiveConversation();
+  beginConversationRuntime();
 
   setStatus("Executing", true);
   clearOutputPhase("executing");
@@ -3622,9 +3829,20 @@ const runExecution = async () => {
     }
   } finally {
     if (executionStreamCompleted && (latestFinalResultText || !currentRunHasError)) {
+      activePendingPlan = null;
       captureAssistantConversationContext();
     } else if (currentRunHasError) {
+      activePendingPlan = null;
       appendActiveConversationMessage("assistant", "执行失败，请查看执行日志。");
+    } else {
+      activePendingPlan = {
+        steps: planSteps.map((step) => normalizeStep(step)),
+        workflowId,
+        status: "awaiting_confirmation",
+        revisionOpen: false,
+        revisionText: "",
+      };
+      saveActiveConversation();
     }
     currentRunContext = null;
     executionInProgress = false;
@@ -3634,6 +3852,7 @@ const runExecution = async () => {
     if (newConversationBtn) newConversationBtn.disabled = false;
     currentAbortController = null;
     updateConfirmExecuteState();
+    finishConversationRuntime();
   }
 };
 
@@ -4729,6 +4948,232 @@ const getWorkflowTimestamp = (workflow) => {
   return latest;
 };
 
+const getWorkflowNodeType = (node, graphEntry) => (
+  node?.config?.type
+  || graphEntry?.config?.node_type
+  || ""
+);
+
+const getWorkflowNodeDescription = (node) => (
+  String(node?.description || node?.config?.description || "").trim()
+);
+
+const WORKFLOW_DIAGRAM_STORAGE_PREFIX = "cooragent.workflowDiagram.v1";
+
+const openWorkflowDiagramPage = (detail, diagram) => {
+  const workflowId = String(detail?.workflow_id || selectedWorkflowId || "").trim();
+  if (!workflowId || !diagram) return;
+  const payload = {
+    workflowId,
+    title: getWorkflowTaskName(detail) || workflowId,
+    diagramHtml: diagram.outerHTML,
+    savedAt: new Date().toISOString(),
+  };
+  try {
+    localStorage.setItem(`${WORKFLOW_DIAGRAM_STORAGE_PREFIX}:${workflowId}`, JSON.stringify(payload));
+  } catch (error) {
+    console.warn("Failed to prepare standalone workflow diagram:", error);
+    window.alert("无法准备流程图页面，请检查浏览器存储权限。");
+    return;
+  }
+  const url = `/static/workflow-diagram.html?workflow_id=${encodeURIComponent(workflowId)}`;
+  const popup = window.open(url, "_blank");
+  if (popup) {
+    popup.opener = null;
+  } else {
+    window.alert("浏览器阻止了新页面，请允许此网站打开弹出窗口。");
+  }
+};
+
+const shortenWorkflowDescription = (description) => (
+  description.length > 50 ? `${description.slice(0, 50)}...` : description
+);
+
+const createWorkflowTextElement = (tagName, className, text) => {
+  const element = document.createElement(tagName);
+  element.className = className;
+  element.textContent = text;
+  return element;
+};
+
+const createWorkflowDownArrow = (modifier = "") => {
+  const arrow = document.createElement("div");
+  arrow.className = `workflow-architecture-down-arrow${modifier ? ` ${modifier}` : ""}`;
+  arrow.setAttribute("aria-hidden", "true");
+  return arrow;
+};
+
+const createWorkflowSystemNode = (node, index) => {
+  const block = document.createElement("article");
+  block.className = `workflow-architecture-system ${index === 0
+    ? "workflow-architecture-system-primary"
+    : "workflow-architecture-system-secondary"}`;
+
+  const title = document.createElement("div");
+  title.className = "workflow-architecture-system-title";
+  title.append(
+    createWorkflowTextElement("strong", "", node.name || node.label || "system"),
+    createWorkflowTextElement("span", "", "系统代理")
+  );
+  block.appendChild(title);
+
+  const description = getWorkflowNodeDescription(node);
+  if (description) {
+    block.appendChild(createWorkflowTextElement("p", "", description));
+  }
+  return block;
+};
+
+const createWorkflowInfoRow = (label, value) => {
+  const row = document.createElement("div");
+  row.className = "workflow-architecture-info-row";
+  row.append(
+    createWorkflowTextElement("b", "", label),
+    createWorkflowTextElement("code", "", value)
+  );
+  return row;
+};
+
+const createWorkflowExecutionNode = (node, graphEntry, index) => {
+  const block = document.createElement("article");
+  block.className = `workflow-architecture-agent workflow-architecture-agent-${(index % 3) + 1}`;
+  block.appendChild(createWorkflowTextElement(
+    "div",
+    "workflow-architecture-agent-name",
+    node.name || node.label || "agent"
+  ));
+  block.appendChild(createWorkflowTextElement("div", "workflow-architecture-agent-type", "执行代理"));
+
+  const description = getWorkflowNodeDescription(node);
+  if (description) {
+    block.appendChild(createWorkflowTextElement(
+      "p",
+      "workflow-architecture-agent-description",
+      shortenWorkflowDescription(description)
+    ));
+  }
+
+  const tools = Array.isArray(node?.config?.tools)
+    ? node.config.tools
+      .map((tool) => tool?.name || tool?.label || tool?.config?.name || "")
+      .filter(Boolean)
+    : [];
+  if (tools.length) {
+    block.appendChild(createWorkflowInfoRow("工具", tools.join(", ")));
+  }
+
+  const condition = graphEntry?.config?.condition;
+  if (typeof condition === "string" && condition.trim()) {
+    block.appendChild(createWorkflowInfoRow("条件", condition.trim()));
+  }
+  return block;
+};
+
+const getOrderedWorkflowNodes = (detail) => {
+  const nodeEntries = Object.values(detail?.nodes || {}).filter((node) => node && typeof node === "object");
+  const graphEntries = Array.isArray(detail?.graph) ? detail.graph : [];
+  const graphByName = new Map(graphEntries.map((entry) => [entry?.name || entry?.config?.node_name, entry]));
+  const systemNodes = nodeEntries.filter((node) => (
+    getWorkflowNodeType(node, graphByName.get(node.name)) === "system_agent"
+  ));
+  const executionNodes = nodeEntries.filter((node) => (
+    getWorkflowNodeType(node, graphByName.get(node.name)) === "execution_agent"
+  ));
+
+  const orderedExecutionNames = Array.isArray(detail?.planning_steps)
+    ? detail.planning_steps.map((step) => step?.agent_name).filter(Boolean)
+    : [];
+  const orderIndex = new Map(orderedExecutionNames.map((name, index) => [name, index]));
+  executionNodes.sort((left, right) => {
+    const leftOrder = orderIndex.has(left.name) ? orderIndex.get(left.name) : Number.MAX_SAFE_INTEGER;
+    const rightOrder = orderIndex.has(right.name) ? orderIndex.get(right.name) : Number.MAX_SAFE_INTEGER;
+    return leftOrder - rightOrder;
+  });
+  return { systemNodes, executionNodes, graphByName };
+};
+
+const renderWorkflowArchitecture = (detail) => {
+  const { systemNodes, executionNodes, graphByName } = getOrderedWorkflowNodes(detail);
+  if (!systemNodes.length && !executionNodes.length) return false;
+
+  mermaidContainer.replaceChildren();
+  mermaidContainer.classList.add("workflow-architecture-host");
+  const diagram = document.createElement("div");
+  diagram.className = "workflow-architecture";
+  const executionFlowWidth = executionNodes.length
+    ? (executionNodes.length * 210) + (Math.max(0, executionNodes.length - 1) * 40) + 80
+    : 720;
+  diagram.style.setProperty("--workflow-architecture-min-width", `${Math.max(720, executionFlowWidth)}px`);
+  diagram.tabIndex = 0;
+  diagram.setAttribute("role", "button");
+  diagram.setAttribute("aria-label", "在新页面查看当前流程图");
+  diagram.title = "在新页面查看流程图";
+  const openStandaloneView = () => openWorkflowDiagramPage(detail, diagram);
+  diagram.addEventListener("click", () => {
+    if (window.getSelection()?.toString()) return;
+    openStandaloneView();
+  });
+  diagram.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    openStandaloneView();
+  });
+
+  if (systemNodes.length) {
+    const systemStage = document.createElement("section");
+    systemStage.className = "workflow-architecture-system-stage";
+    systemNodes.forEach((node, index) => {
+      if (index) systemStage.appendChild(createWorkflowDownArrow());
+      systemStage.appendChild(createWorkflowSystemNode(node, index));
+    });
+    if (executionNodes.length) {
+      systemStage.appendChild(createWorkflowDownArrow("workflow-architecture-arrow-compact"));
+      const confirmation = document.createElement("div");
+      confirmation.className = "workflow-architecture-confirm";
+      confirmation.appendChild(createWorkflowTextElement("span", "", "命令确认"));
+      systemStage.appendChild(confirmation);
+      systemStage.appendChild(createWorkflowDownArrow("workflow-architecture-arrow-to-zone"));
+    }
+    diagram.appendChild(systemStage);
+  }
+
+  if (executionNodes.length) {
+    const executionZone = document.createElement("section");
+    executionZone.className = "workflow-architecture-execution-zone";
+    executionZone.appendChild(createWorkflowTextElement("div", "workflow-architecture-zone-title", "执行代理"));
+    const agentFlow = document.createElement("div");
+    agentFlow.className = "workflow-architecture-agent-flow";
+    executionNodes.forEach((node, index) => {
+      if (index) {
+        const arrow = document.createElement("div");
+        arrow.className = "workflow-architecture-flow-arrow";
+        arrow.setAttribute("aria-hidden", "true");
+        agentFlow.appendChild(arrow);
+      }
+      agentFlow.appendChild(createWorkflowExecutionNode(node, graphByName.get(node.name), index));
+    });
+    executionZone.appendChild(agentFlow);
+    diagram.appendChild(executionZone);
+  }
+
+  const endStage = document.createElement("section");
+  endStage.className = "workflow-architecture-end-stage";
+  endStage.append(
+    createWorkflowDownArrow(),
+    createWorkflowTextElement("div", "workflow-architecture-end", "结束")
+  );
+  diagram.appendChild(endStage);
+  mermaidContainer.appendChild(diagram);
+  requestAnimationFrame(() => {
+    mermaidContainer.scrollLeft = Math.max(
+      0,
+      (mermaidContainer.scrollWidth - mermaidContainer.clientWidth) / 2,
+    );
+  });
+  return true;
+};
+
+
 const selectWorkflow = async (workflowId) => {
   selectedWorkflowId = workflowId;
   document.querySelectorAll(".workflow-item").forEach((item) => {
@@ -4737,14 +5182,18 @@ const selectWorkflow = async (workflowId) => {
 
   workflowDetail.textContent = "Loading...";
   mermaidContainer.textContent = "Loading...";
+  mermaidContainer.classList.remove("workflow-architecture-host");
 
+  let detail = null;
   const detailRes = await fetch(`/api/workflows/${encodeURIComponent(workflowId)}`);
   if (detailRes.ok) {
-    const detail = await detailRes.json();
+    detail = await detailRes.json();
     workflowDetail.textContent = JSON.stringify(detail, null, 2);
   } else {
     workflowDetail.textContent = "Failed to load workflow detail.";
   }
+
+  if (detail && renderWorkflowArchitecture(detail)) return;
 
   const mermaidRes = await fetch(`/api/workflows/${encodeURIComponent(workflowId)}/mermaid`);
   if (mermaidRes.ok) {
