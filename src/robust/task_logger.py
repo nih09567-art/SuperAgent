@@ -78,11 +78,48 @@ class TaskLogger:
         self.agent_capability_bindings: Dict[str, List[str]] = {}
         self.skill_execution_evidence: Dict[str, Any] = {}
         self.failures: List[Dict[str, Any]] = []
+        self.execution_attempt_id: str = ""
+        self.execution_idempotency_key: str = ""
+        self.execution_plan_hash: str = ""
         self._step_counter: Dict[str, int] = {}  # track per-node step
 
         self._logs_dir = _get_task_logs_dir()
         self._log_file = self._logs_dir / f"{task_id}.json"
         logger.info(f"TaskLogger initialized: {self._log_file}")
+
+    @classmethod
+    def reserve_execution(
+        cls,
+        *,
+        task_id: str,
+        workflow_id: str,
+        user_query: str,
+        attempt_id: str,
+        idempotency_key: str,
+        plan_hash: str,
+    ) -> tuple[bool, Optional["TaskLogger"]]:
+        """Atomically reserve a production task before its SSE stream starts."""
+
+        task = cls(task_id=task_id, workflow_id=workflow_id, user_query=user_query)
+        task.status = "reserved"
+        task.execution_phase = "execution"
+        task.execution_attempt_id = attempt_id
+        task.execution_idempotency_key = idempotency_key
+        task.execution_plan_hash = plan_hash
+        try:
+            with open(task._log_file, "x", encoding="utf-8") as stream:
+                json.dump(task.to_dict(), stream, indent=2, ensure_ascii=False, default=str)
+            return True, task
+        except FileExistsError:
+            return False, cls.load(task_id)
+
+    def activate_reserved_execution(self) -> None:
+        if self.status != "reserved":
+            raise RuntimeError(f"task {self.task_id} is not reserved")
+        self.status = "running"
+        self.finished_at = None
+        self.error = None
+        self._flush()
 
     def _next_step(self, node_name: str) -> int:
         """Return the current global step count (shared across nodes)."""
@@ -186,7 +223,7 @@ class TaskLogger:
 
     def log_workflow_end(self) -> None:
         """Log workflow successful completion."""
-        if self.status != "running":
+        if self.status not in {"running", "reserved"}:
             return
         self.status = "completed"
         self.finished_at = datetime.now().isoformat()
@@ -197,7 +234,7 @@ class TaskLogger:
         normalized = str(getattr(status, "value", status) or "").upper()
         if normalized not in SCHEDULER_TERMINAL_STATUSES:
             raise ValueError(f"unsupported scheduler terminal status: {normalized!r}")
-        if self.status != "running":
+        if self.status not in {"running", "reserved"}:
             return
 
         self.status = normalized
@@ -329,6 +366,9 @@ class TaskLogger:
             "agent_capability_bindings": self.agent_capability_bindings,
             "skill_execution_evidence": self.skill_execution_evidence,
             "failures": self.failures,
+            "execution_attempt_id": self.execution_attempt_id,
+            "execution_idempotency_key": self.execution_idempotency_key,
+            "execution_plan_hash": self.execution_plan_hash,
             "created_at": self.created_at,
             "finished_at": self.finished_at,
             "status": self.status,
@@ -378,6 +418,9 @@ class TaskLogger:
                 "skill_execution_evidence", {}
             )
             inst.failures = data.get("failures", [])
+            inst.execution_attempt_id = data.get("execution_attempt_id", "")
+            inst.execution_idempotency_key = data.get("execution_idempotency_key", "")
+            inst.execution_plan_hash = data.get("execution_plan_hash", "")
 
             inst._step_counter = {"__global__": len(inst.history)}
             inst._logs_dir = logs_dir
@@ -421,6 +464,8 @@ class TaskLogger:
                     "step_count": len(data.get("history", [])),
                     "error": data.get("error"),
                     "failure_count": len(data.get("failures", [])),
+                    "execution_attempt_id": data.get("execution_attempt_id", ""),
+                    "execution_plan_hash": data.get("execution_plan_hash", ""),
                 })
             except Exception:
                 continue

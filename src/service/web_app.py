@@ -1,12 +1,12 @@
 import asyncio
+import hashlib
 import hmac
 import json
+import math
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, AsyncGenerator, Optional
-
-import math
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
@@ -116,9 +116,18 @@ def _finalize_disconnected_task(task_id: Optional[str], reason: str) -> None:
     if not task_id:
         return
     task_log = TaskLogger.load(task_id)
-    if task_log is None or task_log.status != "running":
+    if task_log is None or task_log.status not in {"running", "reserved"}:
         return
     task_log.log_workflow_terminal("FAILED", error=reason)
+
+
+def _production_task_id(body: AgentRequest) -> str:
+    identity = "\0".join((
+        str(body.user_id),
+        str(body.workflow_id or ""),
+        str(body.execution_idempotency_key or ""),
+    ))
+    return f"exec-{hashlib.sha256(identity.encode('utf-8')).hexdigest()[:32]}"
 
 
 def _parse_workflow_id(workflow_id: str) -> tuple[str, str]:
@@ -389,10 +398,59 @@ def create_app() -> FastAPI:
 
     @app.post("/api/workflows/run")
     async def run_workflow(request: Request, body: AgentRequest):
+        # This identifier is assigned only after a server-side reservation.
+        # Never trust a client-provided value as a task log path or execution identity.
+        body.execution_task_id = None
+        execution_task_id: Optional[str] = None
+        response_headers = {"Cache-Control": "no-cache", "Connection": "keep-alive"}
+        if str(getattr(body.workmode, "value", body.workmode)) == "production":
+            identity_fields = (
+                body.execution_attempt_id,
+                body.execution_idempotency_key,
+                body.execution_plan_hash,
+            )
+            if any(identity_fields) and not all(identity_fields):
+                raise HTTPException(
+                    status_code=422,
+                    detail="production execution identity requires attempt_id, idempotency_key, and plan_hash",
+                )
+            if all(identity_fields):
+                if not body.workflow_id:
+                    raise HTTPException(status_code=422, detail="workflow_id is required for production execution")
+                execution_task_id = _production_task_id(body)
+                reserved, existing = TaskLogger.reserve_execution(
+                    task_id=execution_task_id,
+                    workflow_id=body.workflow_id,
+                    user_query=body.resolved_request or body.original_user_query or "",
+                    attempt_id=body.execution_attempt_id or "",
+                    idempotency_key=body.execution_idempotency_key or "",
+                    plan_hash=body.execution_plan_hash or "",
+                )
+                if not reserved:
+                    existing_data = existing.to_dict() if existing else {}
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "code": "DUPLICATE_EXECUTION",
+                            "message": "This production execution attempt already has a task.",
+                            "task_id": execution_task_id,
+                            "status": existing_data.get("status", "unknown"),
+                            "workflow_id": existing_data.get("workflow_id", body.workflow_id),
+                            "execution_attempt_id": existing_data.get("execution_attempt_id", ""),
+                            "execution_plan_hash": existing_data.get("execution_plan_hash", ""),
+                        },
+                    )
+                body.execution_task_id = execution_task_id
+                response_headers.update({
+                    "X-Task-ID": execution_task_id,
+                    "X-Execution-Attempt-ID": body.execution_attempt_id or "",
+                    "X-Execution-Plan-Hash": body.execution_plan_hash or "",
+                })
+
         server = Server()
 
         async def event_stream() -> AsyncGenerator[str, None]:
-            active_task_id: Optional[str] = None
+            active_task_id: Optional[str] = execution_task_id
             disconnected = False
             try:
                 async for event in server._run_agent_workflow(body):
@@ -405,6 +463,12 @@ def create_app() -> FastAPI:
                     yield _sse_format(event_type, event)
             except asyncio.CancelledError:
                 disconnected = True
+            except Exception:
+                _finalize_disconnected_task(
+                    active_task_id,
+                    "workflow stream failed before terminal completion",
+                )
+                raise
             finally:
                 if disconnected:
                     _finalize_disconnected_task(
@@ -415,7 +479,7 @@ def create_app() -> FastAPI:
         return StreamingResponse(
             event_stream(),
             media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+            headers=response_headers,
         )
 
     @app.get("/api/memory/long-term")

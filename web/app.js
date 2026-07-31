@@ -576,31 +576,23 @@ const setChatPlanActionsDisabled = (disabled) => {
 };
 
 async function confirmChatPlanExecution() {
-  if (executionInProgress || currentAbortController || !planSteps.length) return;
+  if (["recovery_pending", "recovery_unknown"].includes(activePendingPlan?.status)) {
+    await resolvePendingExecution(activePendingPlan);
+    return;
+  }
+  if (
+    executionInProgress
+    || currentAbortController
+    || !planSteps.length
+    || activePendingPlan?.status !== "awaiting_confirmation"
+  ) return;
   const lifecycle = currentChatLifecycle;
   if (lifecycle) {
     lifecycle.revisionForm.classList.add("hidden");
     lifecycle.confirmPlanButton.textContent = "执行中...";
   }
-  activePendingPlan = {
-    steps: planSteps.map((step) => normalizeStep(step)),
-    workflowId: workflowIdInput?.value.trim() || "",
-    status: "executing",
-    revisionOpen: false,
-    revisionText: "",
-  };
-  saveActiveConversation();
   setChatPlanActionsDisabled(true);
   await runExecution();
-  if (!lifecycle) return;
-  if (currentRunHasError) {
-    lifecycle.confirmPlanButton.textContent = "重新执行";
-    setChatPlanActionsDisabled(false);
-  } else {
-    lifecycle.confirmPlanButton.textContent = "已执行";
-    lifecycle.confirmPlanButton.disabled = true;
-    lifecycle.modifyPlanButton.disabled = true;
-  }
 }
 
 async function applyChatPlanRevision() {
@@ -924,22 +916,45 @@ const normalizePendingPlan = (pendingPlan) => {
     revisionText: String(pendingPlan.revisionText || "")
       .slice(0, CONVERSATION_MESSAGE_CHAR_LIMIT),
     interruptedFrom,
+    taskId: String(pendingPlan.taskId || "").slice(0, 128),
+    attemptId: String(pendingPlan.attemptId || "").slice(0, 128),
+    idempotencyKey: String(pendingPlan.idempotencyKey || "").slice(0, 256),
+    planHash: String(pendingPlan.planHash || "").slice(0, 128),
+    recoveryMessage: String(pendingPlan.recoveryMessage || "")
+      .slice(0, CONVERSATION_MESSAGE_CHAR_LIMIT),
+    serverStatus: String(pendingPlan.serverStatus || "").slice(0, 64),
   };
 };
 
 const recoverInterruptedPendingPlan = (pendingPlan) => {
   const normalized = normalizePendingPlan(pendingPlan);
-  if (!normalized || !["executing", "revising"].includes(normalized.status)) {
-    return { pendingPlan: normalized, recovered: false };
+  if (!normalized) return { pendingPlan: null, recovered: false, needsResolution: false };
+  if (normalized.status === "revising") {
+    return {
+      pendingPlan: {
+        ...normalized,
+        interruptedFrom: "revising",
+        status: "awaiting_confirmation",
+      },
+      recovered: true,
+      needsResolution: false,
+    };
   }
-  return {
-    pendingPlan: {
-      ...normalized,
-      interruptedFrom: normalized.status,
-      status: "awaiting_confirmation",
-    },
-    recovered: true,
-  };
+  if (normalized.status === "executing") {
+    return {
+      pendingPlan: {
+        ...normalized,
+        interruptedFrom: "executing",
+        status: "recovery_checking",
+        recoveryMessage: "正在查询上次生产任务的服务端状态。",
+      },
+      recovered: true,
+      needsResolution: true,
+    };
+  }
+  const needsResolution = ["recovery_checking", "recovery_pending"].includes(normalized.status)
+    || (normalized.status === "recovery_unknown" && Boolean(normalized.taskId));
+  return { pendingPlan: normalized, recovered: false, needsResolution };
 };
 
 const persistRecoveredPendingPlan = (userId, conversationId, pendingPlan) => {
@@ -949,6 +964,124 @@ const persistRecoveredPendingPlan = (userId, conversationId, pendingPlan) => {
   if (!conversation) return;
   conversation.pendingPlan = normalizePendingPlan(pendingPlan);
   persistChatHistory(userId, conversations);
+};
+
+const createExecutionAttemptId = () => {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+};
+
+const computeExecutionPlanHash = async (workflowId, steps) => {
+  const canonicalPlan = JSON.stringify({
+    workflowId: String(workflowId || ""),
+    steps: steps.map((step) => {
+      const normalized = normalizeStep(step);
+      return {
+        title: normalized.title,
+        description: normalized.description,
+        agent_name: normalized.agent_name,
+        note: normalized.note,
+      };
+    }),
+  });
+  if (!globalThis.crypto?.subtle) {
+    throw new Error("Web Crypto SHA-256 is unavailable; production execution requires a secure browser context");
+  }
+  const digest = await globalThis.crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(canonicalPlan)
+  );
+  return Array.from(new Uint8Array(digest))
+    .map((value) => value.toString(16).padStart(2, "0"))
+    .join("");
+};
+
+const createExecutionIdentity = async (workflowId, steps) => {
+  const planHash = await computeExecutionPlanHash(workflowId, steps);
+  const attemptId = createExecutionAttemptId();
+  return {
+    attemptId,
+    idempotencyKey: `${activeConversationId || "conversation"}:${planHash}`,
+    planHash,
+  };
+};
+
+const applyPendingExecutionRecoveryState = (conversationId, pendingPlan, updates) => {
+  if (!conversationId || conversationId !== activeConversationId || !activePendingPlan) return false;
+  if (
+    pendingPlan.attemptId
+    && activePendingPlan.attemptId
+    && pendingPlan.attemptId !== activePendingPlan.attemptId
+  ) return false;
+  activePendingPlan = normalizePendingPlan({ ...activePendingPlan, ...updates });
+  saveActiveConversation();
+  renderPendingPlanForCurrentAnswer(activePendingPlan, true);
+  updateConfirmExecuteState();
+  return true;
+};
+
+const resolvePendingExecution = async (pendingPlan = activePendingPlan) => {
+  const normalized = normalizePendingPlan(pendingPlan);
+  const conversationId = activeConversationId;
+  if (!normalized || normalized.interruptedFrom !== "executing") return false;
+  if (!normalized.taskId) {
+    return applyPendingExecutionRecoveryState(conversationId, normalized, {
+      status: "recovery_unknown",
+      recoveryMessage: "该记录没有保存 Task ID，无法确认原任务是否产生过业务副作用。请先在 Task History 中人工核对，系统已禁止直接重新执行。",
+    });
+  }
+
+  applyPendingExecutionRecoveryState(conversationId, normalized, {
+    status: "recovery_checking",
+    recoveryMessage: "正在查询上次生产任务的服务端状态。",
+  });
+  try {
+    const response = await fetch(`/api/tasks/${encodeURIComponent(normalized.taskId)}/log`);
+    if (!response.ok) throw new Error(`Task status query returned HTTP ${response.status}`);
+    const task = await response.json();
+    const identityMatches = (
+      String(task.task_id || "") === normalized.taskId
+      && String(task.workflow_id || "") === normalized.workflowId
+      && String(task.execution_phase || "") === "execution"
+      && Boolean(normalized.attemptId)
+      && String(task.execution_attempt_id || "") === normalized.attemptId
+      && Boolean(normalized.planHash)
+      && String(task.execution_plan_hash || "") === normalized.planHash
+    );
+    if (!identityMatches) {
+      return applyPendingExecutionRecoveryState(conversationId, normalized, {
+        status: "recovery_blocked",
+        serverStatus: String(task.status || "unknown"),
+        recoveryMessage: "服务端任务身份与当前会话的工作流、执行尝试或计划哈希不一致。为避免重复副作用，已禁止执行，请人工核对 Task History。",
+      });
+    }
+
+    const serverStatus = String(task.status || "unknown").toUpperCase();
+    if (["RUNNING", "RESERVED"].includes(serverStatus)) {
+      return applyPendingExecutionRecoveryState(conversationId, normalized, {
+        status: "recovery_pending",
+        serverStatus,
+        recoveryMessage: "原任务仍在服务端运行或等待启动。系统不会创建新的执行任务，可稍后再次检查状态。",
+      });
+    }
+    if (["COMPLETED", "SUCCEEDED"].includes(serverStatus)) {
+      return applyPendingExecutionRecoveryState(conversationId, normalized, {
+        status: "recovery_completed",
+        serverStatus,
+        recoveryMessage: "原任务已在服务端完成。为防止重复业务操作，本计划不能再次执行。",
+      });
+    }
+    return applyPendingExecutionRecoveryState(conversationId, normalized, {
+      status: "recovery_blocked",
+      serverStatus,
+      recoveryMessage: `原任务服务端状态为 ${serverStatus}。失败或断连不代表外部副作用已回滚，请先人工核对 Task History，系统已禁止直接重新执行。`,
+    });
+  } catch (error) {
+    return applyPendingExecutionRecoveryState(conversationId, normalized, {
+      status: "recovery_unknown",
+      recoveryMessage: `暂时无法确认原任务状态：${error.message || error}。系统不会在状态未知时重新执行。`,
+    });
+  }
 };
 
 const normalizeStoredConversation = (conversation) => {
@@ -1188,20 +1321,34 @@ const renderPendingPlanForCurrentAnswer = (pendingPlan, interactive = true) => {
   const lifecycle = currentChatLifecycle;
   if (!lifecycle) return false;
   lifecycle.planActions.classList.remove("hidden");
-  const interruptedExecution = normalized.interruptedFrom === "executing";
   const interruptedRevision = normalized.interruptedFrom === "revising";
-  lifecycle.confirmPlanButton.textContent = normalized.status === "executing"
-    ? "执行中..."
-    : (interruptedExecution ? "重新执行" : "确认执行");
-  if (interruptedExecution || interruptedRevision) {
-    lifecycle.recoveryNotice.textContent = interruptedExecution
-      ? "上次执行被中断，可重新执行或修改计划。"
-      : "上次计划修改被中断，可继续修改或执行原计划。";
+  const recoveryStatus = String(normalized.status || "").startsWith("recovery_");
+  const recoveryCanCheck = ["recovery_pending", "recovery_unknown"].includes(normalized.status);
+  const confirmLabels = {
+    executing: "执行中...",
+    recovery_checking: "正在恢复...",
+    recovery_pending: "检查任务状态",
+    recovery_unknown: "重新检查状态",
+    recovery_completed: "任务已完成",
+    recovery_blocked: "已禁止重复执行",
+  };
+  lifecycle.confirmPlanButton.textContent = confirmLabels[normalized.status] || "确认执行";
+  if (recoveryStatus || interruptedRevision) {
+    lifecycle.recoveryNotice.textContent = normalized.recoveryMessage || (
+      interruptedRevision
+        ? "上次计划修改被中断，可继续修改或执行原计划。"
+        : "正在恢复上次生产任务状态。"
+    );
     lifecycle.recoveryNotice.classList.remove("hidden");
   }
   lifecycle.revisionInput.value = normalized.revisionText;
-  lifecycle.revisionForm.classList.toggle("hidden", !normalized.revisionOpen);
-  setChatPlanActionsDisabled(!interactive || normalized.status !== "awaiting_confirmation");
+  lifecycle.revisionForm.classList.toggle("hidden", recoveryStatus || !normalized.revisionOpen);
+  setChatPlanActionsDisabled(true);
+  if (interactive && normalized.status === "awaiting_confirmation") {
+    setChatPlanActionsDisabled(false);
+  } else if (interactive && recoveryCanCheck) {
+    lifecycle.confirmPlanButton.disabled = false;
+  }
   return true;
 };
 
@@ -1222,6 +1369,10 @@ const beginConversationRuntime = (kind = "workflow") => {
     kind,
     controller: null,
     stopRequested: false,
+    taskId: "",
+    terminalReceived: false,
+    terminalStatus: "",
+    recoveryRequired: false,
   };
   activeConversationRuntime = runtime;
   runningConversationId = activeConversationId;
@@ -1356,6 +1507,9 @@ const loadConversation = (conversation) => {
     showPlanHint("Planning completed. Waiting for confirmation.");
     showPlanValidationHint("Plan ready. Choose Confirm execution or Modify plan.");
     updateConfirmExecuteState();
+    if (recoveredPlan.needsResolution) {
+      void resolvePendingExecution(activePendingPlan);
+    }
   }
   setStatus("Conversation loaded", true);
   renderChatHistory();
@@ -1563,24 +1717,30 @@ const showPlanValidationHint = (text, isError = false) => {
 };
 
 const updateConfirmExecuteState = () => {
+  const recoveryLocked = Boolean(
+    activePendingPlan?.interruptedFrom === "executing"
+    && String(activePendingPlan?.status || "").startsWith("recovery_")
+  );
   if (confirmExecuteBtn) {
     const hasPlan = planSteps.length > 0;
     const hasWorkflowId = workflowIdInput && workflowIdInput.value.trim();
-    confirmExecuteBtn.disabled = executionInProgress || !(hasPlan && hasWorkflowId);
-    confirmExecuteBtn.textContent = executionInProgress ? "Executing..." : "Confirm execution";
+    confirmExecuteBtn.disabled = recoveryLocked || executionInProgress || !(hasPlan && hasWorkflowId);
+    confirmExecuteBtn.textContent = recoveryLocked
+      ? "Recovery required"
+      : (executionInProgress ? "Executing..." : "Confirm execution");
   }
   if (nlPlanEditBtn) {
-    nlPlanEditBtn.disabled = executionInProgress;
+    nlPlanEditBtn.disabled = recoveryLocked || executionInProgress;
   }
   if (validatePlanBtn) {
     validatePlanBtn.disabled = executionInProgress;
   }
   const hasPlan = planSteps.length > 0;
   if (retryPlanBtn) {
-    retryPlanBtn.disabled = executionInProgress || !instructionHistory.length;
+    retryPlanBtn.disabled = recoveryLocked || executionInProgress || !instructionHistory.length;
   }
   if (addPlanStepBtn) {
-    addPlanStepBtn.disabled = executionInProgress;
+    addPlanStepBtn.disabled = recoveryLocked || executionInProgress;
   }
 };
 
@@ -3220,6 +3380,17 @@ const parseSse = (buffer, onEvent) => {
 };
 
 const handleEvent = (eventName, payload) => {
+  const eventTaskId = String(payload?.data?.task_id || "").trim();
+  if (currentRunContext === "executing" && eventTaskId && activeConversationRuntime) {
+    activeConversationRuntime.taskId = eventTaskId;
+    if (activePendingPlan && activePendingPlan.taskId !== eventTaskId) {
+      activePendingPlan = normalizePendingPlan({
+        ...activePendingPlan,
+        taskId: eventTaskId,
+      });
+      saveActiveConversation();
+    }
+  }
   if (eventName === "messages") {
     const agentName = payload.agent_name || payload.data?.agent_name || payload.data?.tool || "assistant";
     const content = payload.data?.delta?.content || payload.data?.message || payload.raw || "";
@@ -3501,6 +3672,10 @@ const handleEvent = (eventName, payload) => {
     const workflowData = payload.data || {};
     const rawStatus = workflowData.status || "";
     const status = String(rawStatus).toUpperCase();
+    if (currentRunContext === "executing" && activeConversationRuntime) {
+      activeConversationRuntime.terminalReceived = true;
+      activeConversationRuntime.terminalStatus = status || "COMPLETED";
+    }
     if (plannerOnlyMode) {
       if (!plannerOnlyStepsUpdated) {
         showPlanNlHint("Planner completed, but no executable steps were generated. Please refine the instruction and try again.", true);
@@ -3628,6 +3803,17 @@ const runWorkflow = async () => {
     return;
   }
   if (runBtn.disabled || executionInProgress || currentAbortController) return;
+  if (
+    activePendingPlan?.interruptedFrom === "executing"
+    && String(activePendingPlan?.status || "").startsWith("recovery_")
+  ) {
+    setStatus("Recovery required", false);
+    showPlanValidationHint(
+      "Resolve the previous production task in Task History or start a new conversation before planning another task.",
+      true
+    );
+    return;
+  }
   const userId = userIdInput.value.trim();
   if (!userId) {
     setStatus("User ID required", false);
@@ -3797,6 +3983,17 @@ const runWorkflow = async () => {
 };
 
 const runExecution = async () => {
+  const recoveryLocked = Boolean(
+    activePendingPlan?.interruptedFrom === "executing"
+    && String(activePendingPlan?.status || "").startsWith("recovery_")
+  );
+  if (recoveryLocked) {
+    showPlanValidationHint(
+      "The previous production task must be verified in Task History before another execution can start.",
+      true
+    );
+    return;
+  }
   const userId = userIdInput.value.trim();
   if (!userId) {
     setStatus("User ID required", false);
@@ -3813,12 +4010,26 @@ const runExecution = async () => {
     return;
   }
 
+  let executionIdentity;
+  try {
+    executionIdentity = await createExecutionIdentity(workflowId, planSteps);
+  } catch (error) {
+    showPlanValidationHint(`Unable to create execution identity: ${error.message || error}`, true);
+    return;
+  }
   activePendingPlan = {
     steps: planSteps.map((step) => normalizeStep(step)),
     workflowId,
     status: "executing",
     revisionOpen: false,
     revisionText: "",
+    interruptedFrom: "executing",
+    taskId: "",
+    attemptId: executionIdentity.attemptId,
+    idempotencyKey: executionIdentity.idempotencyKey,
+    planHash: executionIdentity.planHash,
+    recoveryMessage: "",
+    serverStatus: "",
   };
   saveActiveConversation();
   const runtime = beginConversationRuntime("executing");
@@ -3867,6 +4078,9 @@ const runExecution = async () => {
     workflow_id: workflowId,
     session_id: activeConversationId,
     memory_session_id: activeConversationId,
+    execution_attempt_id: executionIdentity.attemptId,
+    execution_idempotency_key: executionIdentity.idempotencyKey,
+    execution_plan_hash: executionIdentity.planHash,
   };
 
   const controller = new AbortController();
@@ -3879,6 +4093,35 @@ const runExecution = async () => {
       body: JSON.stringify(payload),
       signal: controller.signal,
     });
+
+    const responseTaskId = String(response.headers.get("X-Task-ID") || "").trim();
+    if (responseTaskId) {
+      runtime.taskId = responseTaskId;
+      activePendingPlan = normalizePendingPlan({ ...activePendingPlan, taskId: responseTaskId });
+      saveActiveConversation();
+    }
+
+    if (response.status === 409) {
+      const duplicatePayload = await response.json().catch(() => ({}));
+      const duplicateDetail = duplicatePayload.detail || duplicatePayload;
+      runtime.taskId = String(duplicateDetail.task_id || runtime.taskId || "");
+      runtime.recoveryRequired = true;
+      runtime.recoveryMessage = "服务端已存在同一执行尝试，系统没有创建重复任务。请检查原任务状态。";
+      const existingPlanHash = String(duplicateDetail.execution_plan_hash || "");
+      const existingAttemptId = String(duplicateDetail.execution_attempt_id || "");
+      runtime.attemptId = existingPlanHash === executionIdentity.planHash
+        ? existingAttemptId
+        : "";
+      activePendingPlan = normalizePendingPlan({
+        ...activePendingPlan,
+        taskId: runtime.taskId,
+        attemptId: runtime.attemptId
+          ? runtime.attemptId
+          : activePendingPlan.attemptId,
+      });
+      saveActiveConversation();
+      return;
+    }
 
     if (!response.ok || !response.body) {
       throw new Error(`HTTP ${response.status}`);
@@ -3906,30 +4149,45 @@ const runExecution = async () => {
     }
   } finally {
     if (!isCurrentConversationRuntime(runtime)) return;
-    if (runtime.stopRequested) {
+    const executionIdentityState = {
+      steps: planSteps.map((step) => normalizeStep(step)),
+      workflowId,
+      revisionOpen: false,
+      revisionText: "",
+      interruptedFrom: "executing",
+      taskId: runtime.taskId || activePendingPlan?.taskId || "",
+      attemptId: runtime.attemptId || activePendingPlan?.attemptId || executionIdentity.attemptId,
+      idempotencyKey: executionIdentity.idempotencyKey,
+      planHash: executionIdentity.planHash,
+    };
+    const terminalConfirmed = executionStreamCompleted && runtime.terminalReceived;
+    const terminalStatus = String(runtime.terminalStatus || "").toUpperCase();
+    const terminalSucceeded = terminalConfirmed
+      && ["SUCCEEDED", "COMPLETED"].includes(terminalStatus);
+    if (runtime.stopRequested || runtime.recoveryRequired || !terminalConfirmed) {
       activePendingPlan = {
-        steps: planSteps.map((step) => normalizeStep(step)),
-        workflowId,
-        status: "awaiting_confirmation",
-        revisionOpen: false,
-        revisionText: "",
-        interruptedFrom: "executing",
+        ...executionIdentityState,
+        status: "recovery_unknown",
+        recoveryMessage: runtime.recoveryMessage || (
+          runtime.stopRequested
+            ? "停止请求已发送，但外部业务副作用是否完成尚未确认。请检查服务端任务状态，系统已禁止直接重新执行。"
+            : "执行连接在收到可信终态前结束。请检查服务端任务状态，系统不会自动重新执行。"
+        ),
+        serverStatus: "",
       };
       saveActiveConversation();
-    } else if (executionStreamCompleted && (latestFinalResultText || !currentRunHasError)) {
+    } else if (!terminalSucceeded) {
+      activePendingPlan = {
+        ...executionIdentityState,
+        status: "recovery_blocked",
+        recoveryMessage: `原任务已返回 ${terminalStatus || "UNKNOWN"}。失败、拒绝或需核对状态不代表外部副作用已回滚，系统已禁止直接重新执行。`,
+        serverStatus: terminalStatus || "UNKNOWN",
+      };
+      saveActiveConversation();
+      appendActiveConversationMessage("assistant", "执行未成功，请在 Task History 中核对原任务后再决定后续操作。");
+    } else if (latestFinalResultText || !currentRunHasError) {
       activePendingPlan = null;
       captureAssistantConversationContext();
-    } else if (currentRunHasError) {
-      activePendingPlan = null;
-      appendActiveConversationMessage("assistant", "执行失败，请查看执行日志。");
-    } else {
-      activePendingPlan = {
-        steps: planSteps.map((step) => normalizeStep(step)),
-        workflowId,
-        status: "awaiting_confirmation",
-        revisionOpen: false,
-        revisionText: "",
-      };
       saveActiveConversation();
     }
     currentRunContext = null;
@@ -3938,6 +4196,7 @@ const runExecution = async () => {
     stopBtn.disabled = true;
     userIdInput.disabled = false;
     if (newConversationBtn) newConversationBtn.disabled = false;
+    if (activePendingPlan) renderPendingPlanForCurrentAnswer(activePendingPlan, true);
     updateConfirmExecuteState();
     finishConversationRuntime(runtime);
   }
