@@ -355,6 +355,8 @@ let activePendingPlan = null;
 let runningConversationId = null;
 let viewedConversationId = null;
 let runningConversationNodes = null;
+let activeConversationRuntime = null;
+let conversationRuntimeSequence = 0;
 let coordinatorBuffer = "";
 let clarificationPending = false;
 let pendingClarificationContext = null;
@@ -407,6 +409,8 @@ const ensureChatLifecycle = () => {
   planSection.className = "chat-lifecycle-section chat-plan-card hidden";
   const planTitle = document.createElement("h4");
   planTitle.textContent = "计划卡片";
+  const recoveryNotice = document.createElement("div");
+  recoveryNotice.className = "chat-plan-recovery-notice hidden";
   const planContent = document.createElement("div");
   planContent.className = "chat-plan-content";
   const planActions = document.createElement("div");
@@ -443,7 +447,7 @@ const ensureChatLifecycle = () => {
   revisionHint.className = "chat-plan-revision-hint";
   revisionActions.append(applyRevisionButton, cancelRevisionButton);
   revisionForm.append(revisionLabel, revisionActions, revisionHint);
-  planSection.append(planTitle, planContent, planActions, revisionForm);
+  planSection.append(planTitle, recoveryNotice, planContent, planActions, revisionForm);
 
   const progressSection = document.createElement("section");
   progressSection.className = "chat-lifecycle-section chat-execution-progress hidden";
@@ -475,6 +479,7 @@ const ensureChatLifecycle = () => {
   currentChatLifecycle = {
     answerElement: answerOutput,
     planSection,
+    recoveryNotice,
     planContent,
     planActions,
     confirmPlanButton,
@@ -538,6 +543,8 @@ const renderChatPlanCard = (steps) => {
   if (!lifecycle) return;
   lifecycle.planSection.classList.remove("hidden");
   lifecycle.planActions.classList.remove("hidden");
+  lifecycle.recoveryNotice.classList.add("hidden");
+  lifecycle.recoveryNotice.textContent = "";
   lifecycle.confirmPlanButton.textContent = "确认执行";
   const planBusy = executionInProgress || plannerOnlyMode || Boolean(currentAbortController);
   lifecycle.confirmPlanButton.disabled = planBusy;
@@ -614,12 +621,13 @@ async function applyChatPlanRevision() {
     revisionText: instruction,
   };
   saveActiveConversation();
-  beginConversationRuntime();
+  const runtime = beginConversationRuntime("revising");
   setChatPlanActionsDisabled(true);
   runBtn.disabled = true;
   userIdInput.disabled = true;
   if (newConversationBtn) newConversationBtn.disabled = true;
-  await runPlannerUpdate(instruction, true);
+  await runPlannerUpdate(instruction, true, runtime);
+  if (!isCurrentConversationRuntime(runtime)) return;
   runBtn.disabled = false;
   userIdInput.disabled = false;
   if (newConversationBtn) newConversationBtn.disabled = false;
@@ -650,7 +658,7 @@ async function applyChatPlanRevision() {
   }
   setChatPlanActionsDisabled(false);
   scrollChatToLatest();
-  finishConversationRuntime();
+  finishConversationRuntime(runtime);
 }
 
 const updateChatExecutionProgress = (status, detail = "") => {
@@ -905,6 +913,9 @@ const normalizePendingPlan = (pendingPlan) => {
     : [];
   const workflowId = String(pendingPlan.workflowId || "").trim();
   if (!steps.length || !workflowId) return null;
+  const interruptedFrom = ["executing", "revising"].includes(pendingPlan.interruptedFrom)
+    ? pendingPlan.interruptedFrom
+    : "";
   return {
     steps,
     workflowId,
@@ -912,7 +923,32 @@ const normalizePendingPlan = (pendingPlan) => {
     revisionOpen: Boolean(pendingPlan.revisionOpen),
     revisionText: String(pendingPlan.revisionText || "")
       .slice(0, CONVERSATION_MESSAGE_CHAR_LIMIT),
+    interruptedFrom,
   };
+};
+
+const recoverInterruptedPendingPlan = (pendingPlan) => {
+  const normalized = normalizePendingPlan(pendingPlan);
+  if (!normalized || !["executing", "revising"].includes(normalized.status)) {
+    return { pendingPlan: normalized, recovered: false };
+  }
+  return {
+    pendingPlan: {
+      ...normalized,
+      interruptedFrom: normalized.status,
+      status: "awaiting_confirmation",
+    },
+    recovered: true,
+  };
+};
+
+const persistRecoveredPendingPlan = (userId, conversationId, pendingPlan) => {
+  if (!userId || !conversationId || !pendingPlan) return;
+  const conversations = loadChatHistory(userId);
+  const conversation = conversations.find((item) => item.id === conversationId);
+  if (!conversation) return;
+  conversation.pendingPlan = normalizePendingPlan(pendingPlan);
+  persistChatHistory(userId, conversations);
 };
 
 const normalizeStoredConversation = (conversation) => {
@@ -1152,26 +1188,54 @@ const renderPendingPlanForCurrentAnswer = (pendingPlan, interactive = true) => {
   const lifecycle = currentChatLifecycle;
   if (!lifecycle) return false;
   lifecycle.planActions.classList.remove("hidden");
+  const interruptedExecution = normalized.interruptedFrom === "executing";
+  const interruptedRevision = normalized.interruptedFrom === "revising";
   lifecycle.confirmPlanButton.textContent = normalized.status === "executing"
     ? "执行中..."
-    : "确认执行";
+    : (interruptedExecution ? "重新执行" : "确认执行");
+  if (interruptedExecution || interruptedRevision) {
+    lifecycle.recoveryNotice.textContent = interruptedExecution
+      ? "上次执行被中断，可重新执行或修改计划。"
+      : "上次计划修改被中断，可继续修改或执行原计划。";
+    lifecycle.recoveryNotice.classList.remove("hidden");
+  }
   lifecycle.revisionInput.value = normalized.revisionText;
   lifecycle.revisionForm.classList.toggle("hidden", !normalized.revisionOpen);
   setChatPlanActionsDisabled(!interactive || normalized.status !== "awaiting_confirmation");
   return true;
 };
 
-const isConversationRuntimeActive = () => Boolean(
-  runningConversationId
-  && (currentAbortController || executionInProgress || plannerOnlyMode || plannerOnlyController)
+const isConversationRuntimeActive = () => Boolean(activeConversationRuntime);
+
+const isCurrentConversationRuntime = (runtime) => Boolean(
+  runtime
+  && activeConversationRuntime
+  && runtime.id === activeConversationRuntime.id
 );
 
-const beginConversationRuntime = () => {
+const beginConversationRuntime = (kind = "workflow") => {
   if (!activeConversationId) saveActiveConversation();
+  const runtime = {
+    id: `${Date.now()}-${++conversationRuntimeSequence}`,
+    conversationId: activeConversationId,
+    userId: activeConversationUserId || userIdInput.value.trim(),
+    kind,
+    controller: null,
+    stopRequested: false,
+  };
+  activeConversationRuntime = runtime;
   runningConversationId = activeConversationId;
   viewedConversationId = activeConversationId;
   runningConversationNodes = null;
   renderChatHistory();
+  return runtime;
+};
+
+const attachConversationRuntimeController = (runtime, controller) => {
+  if (!isCurrentConversationRuntime(runtime)) return false;
+  runtime.controller = controller;
+  currentAbortController = controller;
+  return true;
 };
 
 const renderConversationPreview = (conversation) => {
@@ -1206,9 +1270,12 @@ const restoreRunningConversationView = () => {
   scrollChatToLatest();
 };
 
-const finishConversationRuntime = () => {
-  const completedConversationId = runningConversationId;
+const finishConversationRuntime = (runtime = activeConversationRuntime) => {
+  if (!isCurrentConversationRuntime(runtime)) return false;
+  const completedConversationId = runtime.conversationId;
   const requestedConversationId = viewedConversationId;
+  if (currentAbortController === runtime.controller) currentAbortController = null;
+  activeConversationRuntime = null;
   runningConversationId = null;
   runningConversationNodes = null;
 
@@ -1217,11 +1284,12 @@ const finishConversationRuntime = () => {
       .find((item) => item.id === requestedConversationId);
     if (conversation) {
       loadConversation(conversation);
-      return;
+      return true;
     }
   }
   viewedConversationId = activeConversationId;
   renderChatHistory();
+  return true;
 };
 
 const loadConversation = (conversation) => {
@@ -1267,7 +1335,11 @@ const loadConversation = (conversation) => {
   currentContextReferences = Array.isArray(normalized.contextReferences)
     ? normalized.contextReferences.map((item) => ({ ...item }))
     : [];
-  activePendingPlan = normalizePendingPlan(normalized.pendingPlan);
+  const recoveredPlan = recoverInterruptedPendingPlan(normalized.pendingPlan);
+  activePendingPlan = recoveredPlan.pendingPlan;
+  if (recoveredPlan.recovered) {
+    persistRecoveredPendingPlan(activeConversationUserId, normalized.id, activePendingPlan);
+  }
   originalUserQuery = currentResolvedRequest || currentRequestQuery || originalUserQuery;
   workflowIdInput.value = activePendingPlan?.workflowId || normalized.workflowId || "";
   messageInput.value = "";
@@ -1808,7 +1880,7 @@ const validatePlanSteps = () => {
   return errors;
 };
 
-const runPlannerUpdate = async (instruction, appendHistory = true) => {
+const runPlannerUpdate = async (instruction, appendHistory = true, runtime = null) => {
   const userId = userIdInput.value.trim();
   if (!userId) {
     showPlanNlHint("User ID required.", true);
@@ -1866,6 +1938,7 @@ const runPlannerUpdate = async (instruction, appendHistory = true) => {
   };
 
   plannerOnlyController = new AbortController();
+  if (runtime) attachConversationRuntimeController(runtime, plannerOnlyController);
   schedulePlannerTimeout();
   try {
     const response = await fetch("/api/workflows/run", {
@@ -3584,7 +3657,7 @@ const runWorkflow = async () => {
   activePendingPlan = null;
   appendActiveConversationMessage("user", message);
   showCurrentChatTurn(message);
-  beginConversationRuntime();
+  const runtime = beginConversationRuntime("planning");
   messageInput.value = "";
   resizeMessageInput();
 
@@ -3645,14 +3718,15 @@ const runWorkflow = async () => {
     memory_session_id: activeConversationId,
   };
 
-  currentAbortController = new AbortController();
+  const controller = new AbortController();
+  attachConversationRuntimeController(runtime, controller);
   let planningStreamCompleted = false;
   try {
     const response = await fetch("/api/workflows/run", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
-      signal: currentAbortController.signal,
+      signal: controller.signal,
     });
 
     if (!response.ok || !response.body) {
@@ -3678,6 +3752,7 @@ const runWorkflow = async () => {
       showSummaryHint("Workflow error.", true);
     }
   } finally {
+    if (!isCurrentConversationRuntime(runtime)) return;
     const planReady = planningStreamCompleted
       && !currentRunHasError
       && !clarificationPending
@@ -3686,11 +3761,12 @@ const runWorkflow = async () => {
       && Boolean(workflowIdInput?.value.trim());
     currentRunContext = null;
     stopBtn.disabled = true;
-    currentAbortController = null;
     runBtn.disabled = false;
     userIdInput.disabled = false;
     if (newConversationBtn) newConversationBtn.disabled = false;
-    if (planReady) {
+    if (runtime.stopRequested) {
+      setStatus("Stopped", false);
+    } else if (planReady) {
       pendingClarificationContext = null;
       clarificationPending = false;
       activePendingPlan = {
@@ -3716,7 +3792,7 @@ const runWorkflow = async () => {
     }
     if (clarificationPending) document.getElementById("chatMessage")?.focus();
     updateConfirmExecuteState();
-    finishConversationRuntime();
+    finishConversationRuntime(runtime);
   }
 };
 
@@ -3745,7 +3821,7 @@ const runExecution = async () => {
     revisionText: "",
   };
   saveActiveConversation();
-  beginConversationRuntime();
+  const runtime = beginConversationRuntime("executing");
 
   setStatus("Executing", true);
   clearOutputPhase("executing");
@@ -3793,14 +3869,15 @@ const runExecution = async () => {
     memory_session_id: activeConversationId,
   };
 
-  currentAbortController = new AbortController();
+  const controller = new AbortController();
+  attachConversationRuntimeController(runtime, controller);
   let executionStreamCompleted = false;
   try {
     const response = await fetch("/api/workflows/run", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
-      signal: currentAbortController.signal,
+      signal: controller.signal,
     });
 
     if (!response.ok || !response.body) {
@@ -3828,7 +3905,18 @@ const runExecution = async () => {
       setEmptyAnswerMessage("执行失败，请查看执行日志。");
     }
   } finally {
-    if (executionStreamCompleted && (latestFinalResultText || !currentRunHasError)) {
+    if (!isCurrentConversationRuntime(runtime)) return;
+    if (runtime.stopRequested) {
+      activePendingPlan = {
+        steps: planSteps.map((step) => normalizeStep(step)),
+        workflowId,
+        status: "awaiting_confirmation",
+        revisionOpen: false,
+        revisionText: "",
+        interruptedFrom: "executing",
+      };
+      saveActiveConversation();
+    } else if (executionStreamCompleted && (latestFinalResultText || !currentRunHasError)) {
       activePendingPlan = null;
       captureAssistantConversationContext();
     } else if (currentRunHasError) {
@@ -3850,9 +3938,8 @@ const runExecution = async () => {
     stopBtn.disabled = true;
     userIdInput.disabled = false;
     if (newConversationBtn) newConversationBtn.disabled = false;
-    currentAbortController = null;
     updateConfirmExecuteState();
-    finishConversationRuntime();
+    finishConversationRuntime(runtime);
   }
 };
 
@@ -3909,22 +3996,17 @@ if (validatePlanBtn) {
 }
 
 const stopWorkflow = () => {
-  if (currentAbortController) {
-    currentAbortController.abort();
-    currentAbortController = null;
-    executionInProgress = false;
-    runBtn.disabled = false;
-    stopBtn.disabled = true;
-    currentRunHasError = true;
-    setStatus("Stopped", false);
-    showSummaryHint("Workflow stopped.");
-    showPlanValidationHint("Execution stopped. You can run it again.", true);
-    setEmptyAnswerMessage("任务已停止。");
-    userIdInput.disabled = false;
-    if (newConversationBtn) newConversationBtn.disabled = false;
-    setChatPlanActionsDisabled(false);
-    updateConfirmExecuteState();
-  }
+  const runtime = activeConversationRuntime;
+  const controller = runtime?.controller || currentAbortController;
+  if (!runtime || !controller || runtime.stopRequested) return;
+  runtime.stopRequested = true;
+  currentRunHasError = true;
+  controller.abort();
+  stopBtn.disabled = true;
+  setStatus("Stopping", false);
+  showSummaryHint("Workflow stop requested. Waiting for cleanup.");
+  showPlanValidationHint("Stopping the current task. You can view another conversation while cleanup finishes.", true);
+  setEmptyAnswerMessage("正在停止任务...");
 };
 
 const createStateCard = (text, variant = "info") => {
@@ -4948,8 +5030,25 @@ const getWorkflowTimestamp = (workflow) => {
   return latest;
 };
 
+const getWorkflowGraphEntryName = (entry) => String(
+  entry?.name
+  || entry?.node_name
+  || entry?.config?.node_name
+  || ""
+).trim();
+
+const getWorkflowGraphTargets = (entry) => {
+  const nextTo = entry?.config?.next_to ?? entry?.next_to;
+  const targets = Array.isArray(nextTo) ? nextTo : (nextTo ? [nextTo] : []);
+  return targets
+    .map((target) => String(target?.name || target?.node_name || target || "").trim())
+    .filter((target) => target && !["__end__", "FINISH"].includes(target));
+};
+
 const getWorkflowNodeType = (node, graphEntry) => (
-  node?.config?.type
+  node?.type
+  || node?.config?.type
+  || graphEntry?.node_type
   || graphEntry?.config?.node_type
   || ""
 );
@@ -5069,10 +5168,79 @@ const createWorkflowExecutionNode = (node, graphEntry, index) => {
   return block;
 };
 
+const getWorkflowNodes = (detail) => Object.entries(detail?.nodes || {})
+  .filter(([, node]) => node && typeof node === "object")
+  .map(([key, node]) => ({
+    ...node,
+    name: String(node.name || node.config?.name || key).trim(),
+  }));
+
+const getLinearWorkflowGraphOrder = (nodeEntries, graphEntries, graphByName) => {
+  if (!graphEntries.length) return { isLinear: true, orderedNames: [] };
+
+  const nodeNames = nodeEntries
+    .filter((node) => ["system_agent", "execution_agent"].includes(
+      getWorkflowNodeType(node, graphByName.get(node.name))
+    ))
+    .map((node) => node.name);
+  if (nodeNames.length <= 1) return { isLinear: true, orderedNames: nodeNames };
+
+  const nodeNameSet = new Set(nodeNames);
+  if (nodeNames.some((name) => !graphByName.has(name))) {
+    return { isLinear: false, orderedNames: [] };
+  }
+
+  const outgoing = new Map(nodeNames.map((name) => [name, []]));
+  const incomingCount = new Map(nodeNames.map((name) => [name, 0]));
+  for (const name of nodeNames) {
+    const targets = getWorkflowGraphTargets(graphByName.get(name));
+    if (targets.some((target) => !nodeNameSet.has(target)) || targets.length > 1) {
+      return { isLinear: false, orderedNames: [] };
+    }
+    outgoing.set(name, targets);
+    targets.forEach((target) => incomingCount.set(target, incomingCount.get(target) + 1));
+  }
+
+  if (Array.from(incomingCount.values()).some((count) => count > 1)) {
+    return { isLinear: false, orderedNames: [] };
+  }
+  const starts = nodeNames.filter((name) => incomingCount.get(name) === 0);
+  if (starts.length !== 1) return { isLinear: false, orderedNames: [] };
+
+  const orderedNames = [];
+  const visited = new Set();
+  let currentName = starts[0];
+  while (currentName) {
+    if (visited.has(currentName)) return { isLinear: false, orderedNames: [] };
+    visited.add(currentName);
+    orderedNames.push(currentName);
+    currentName = outgoing.get(currentName)?.[0] || "";
+  }
+  if (visited.size !== nodeNames.length) return { isLinear: false, orderedNames: [] };
+
+  let executionStageStarted = false;
+  for (const name of orderedNames) {
+    const type = getWorkflowNodeType(
+      nodeEntries.find((node) => node.name === name),
+      graphByName.get(name)
+    );
+    if (type === "execution_agent") executionStageStarted = true;
+    if (type === "system_agent" && executionStageStarted) {
+      return { isLinear: false, orderedNames: [] };
+    }
+  }
+  return { isLinear: true, orderedNames };
+};
+
 const getOrderedWorkflowNodes = (detail) => {
-  const nodeEntries = Object.values(detail?.nodes || {}).filter((node) => node && typeof node === "object");
+  const nodeEntries = getWorkflowNodes(detail);
   const graphEntries = Array.isArray(detail?.graph) ? detail.graph : [];
-  const graphByName = new Map(graphEntries.map((entry) => [entry?.name || entry?.config?.node_name, entry]));
+  const graphByName = new Map(
+    graphEntries
+      .map((entry) => [getWorkflowGraphEntryName(entry), entry])
+      .filter(([name]) => name)
+  );
+  const topology = getLinearWorkflowGraphOrder(nodeEntries, graphEntries, graphByName);
   const systemNodes = nodeEntries.filter((node) => (
     getWorkflowNodeType(node, graphByName.get(node.name)) === "system_agent"
   ));
@@ -5080,21 +5248,24 @@ const getOrderedWorkflowNodes = (detail) => {
     getWorkflowNodeType(node, graphByName.get(node.name)) === "execution_agent"
   ));
 
-  const orderedExecutionNames = Array.isArray(detail?.planning_steps)
+  const fallbackExecutionNames = Array.isArray(detail?.planning_steps)
     ? detail.planning_steps.map((step) => step?.agent_name).filter(Boolean)
     : [];
-  const orderIndex = new Map(orderedExecutionNames.map((name, index) => [name, index]));
-  executionNodes.sort((left, right) => {
+  const orderedNames = topology.orderedNames.length ? topology.orderedNames : fallbackExecutionNames;
+  const orderIndex = new Map(orderedNames.map((name, index) => [name, index]));
+  const sortByTopology = (left, right) => {
     const leftOrder = orderIndex.has(left.name) ? orderIndex.get(left.name) : Number.MAX_SAFE_INTEGER;
     const rightOrder = orderIndex.has(right.name) ? orderIndex.get(right.name) : Number.MAX_SAFE_INTEGER;
     return leftOrder - rightOrder;
-  });
-  return { systemNodes, executionNodes, graphByName };
+  };
+  systemNodes.sort(sortByTopology);
+  executionNodes.sort(sortByTopology);
+  return { systemNodes, executionNodes, graphByName, isLinear: topology.isLinear };
 };
 
 const renderWorkflowArchitecture = (detail) => {
-  const { systemNodes, executionNodes, graphByName } = getOrderedWorkflowNodes(detail);
-  if (!systemNodes.length && !executionNodes.length) return false;
+  const { systemNodes, executionNodes, graphByName, isLinear } = getOrderedWorkflowNodes(detail);
+  if (!isLinear || (!systemNodes.length && !executionNodes.length)) return false;
 
   mermaidContainer.replaceChildren();
   mermaidContainer.classList.add("workflow-architecture-host");

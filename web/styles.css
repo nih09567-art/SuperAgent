@@ -3936,7 +3936,8 @@ button.danger:hover {
 
 .chat-lifecycle-section.hidden,
 .chat-plan-actions.hidden,
-.chat-plan-revision.hidden {
+.chat-plan-revision.hidden,
+.chat-plan-recovery-notice.hidden {
   display: none;
 }
 
@@ -3961,6 +3962,16 @@ button.danger:hover {
   margin-top: 2px;
   color: var(--muted);
   font-size: 12px;
+}
+
+.chat-plan-recovery-notice {
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border-left: 3px solid #b7791f;
+  color: #744210;
+  background: #fff8e6;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .chat-plan-actions,
