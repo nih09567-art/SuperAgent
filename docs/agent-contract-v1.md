@@ -6,21 +6,20 @@ the tools used to obtain them. This version applies to
 Agents without a contract continue to use the legacy registration and execution
 path.
 
-This document specifies and validates results that already follow the new
-protocol. It does not normalize legacy Agent output, change Scheduler behavior,
-or implement Artifact fan-in.
+This document specifies the contract data that the runtime validates. The
+Scheduler currently normalizes contracted and compatible legacy Agent results
+before publishing Artifacts, and assembles synthetic fan-in inputs before the
+consumer Agent runs; this document does not redefine those Scheduler policies.
 
 ## Scope of runtime enforcement
 
-Contract v1 ships the validation building blocks only. `validate_agent_result`
-and `register_agent_schemas` are not yet called on the runtime execution path;
-they are wired in by the result-normalization layer (the follow-up
-"Agent result normalization / Artifact fan-in" PR), which registers the schema
-catalog on the scheduler execution path and runs `validate_agent_result` on
-every contracted remote result before it reaches downstream steps. Until that
-layer lands, contracted results are still gated by the remote error envelope
-(`status=error` fails the step), but schema conformance is not enforced at
-runtime.
+Contracted results are enforced on the runtime execution path. The result
+normalization layer installs the built-in schema catalog, attaches the
+versioned semantic validators (including the provenance invariants for
+`policy.info@v2`), and runs `validate_agent_result` on every contracted result
+before it reaches downstream steps. A caller-provided Registry may retain a
+stricter structural schema, but the built-in semantic validator is still
+attached for the corresponding versioned Agent schema.
 
 `DataContractRef.required` and `cardinality` are declared for forward
 compatibility and are not enforced by v1 validation.
@@ -112,10 +111,20 @@ Contract v1 registers these schemas in the existing `SchemaRegistry`:
   provenance group (`sources`, `matched_items`, and `not_found`) is optional as
   a whole for compatibility with v1 callers. If any provenance field is present,
   all three must be present; partial provenance metadata is contract-invalid.
+- `policy.info@v2`: keeps the v1 fields and requires provenance metadata. A
+  successful match must provide aligned, non-empty `sources` and `matched_items`;
+  each source must identify its category, source, demo status, and effective or
+  snapshot date; the top-level `policy_scope` must summarize the source scopes;
+  a `not_found` result must report `policy_scope=unknown`, a zero count, and
+  empty lists. Source and matched-item IDs must form the same unique set; their
+  display order is not part of the contract. The v1 schema remains registered
+  for compatibility with older tools.
 - `report.sources@v1`: generic report sources, instruction, and title.
 - `report.markdown@v1`: title, Markdown body, and source count.
 
 `policy_scope` is one of `company`, `statutory`, `mixed`, or `unknown`.
+The Knowledge Agent envelope still uses contract version `1.0`; `@v2` versions
+the `policy.info` data shape rather than the envelope protocol.
 Statutory material must not be presented as a current internal company policy.
 For a matched result, `knowledge_items_count` must equal the lengths of `sources`
 and `matched_items`, source IDs must match item IDs, and IDs and source names
@@ -142,9 +151,10 @@ empty `sources` list, and does not call the LLM.
 `RemoteReportAgent` requires the generic `report.sources` input and produces
 `report.markdown`. Its contract is not tied to HR-specific source names.
 Because `report.sources` is a synthetic fan-in input that no single Agent
-produces, the registry entry defers this `requires` declaration until the
-fan-in layer lands; until then the planner treats the Report Agent as
-autonomous, exactly as before this contract existed.
+produces, the Scheduler assembles it from upstream Artifacts before invoking
+the Report Agent. The planner and runtime therefore keep the generic
+`report.sources@v1` boundary rather than assigning ownership of that input to
+one producer Agent.
 
 ## Validation order
 

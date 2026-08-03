@@ -23,7 +23,7 @@ def test_remote_contract_fields_survive_resource_sync(tmp_path) -> None:
             "requires": [],
             "produces": ["policy.info"],
             "input_schema_refs": {},
-            "output_schema_refs": {"policy.info": "policy.info@v1"},
+            "output_schema_refs": {"policy.info": "policy.info@v2"},
         },
     )
 
@@ -37,12 +37,12 @@ def test_remote_contract_fields_survive_resource_sync(tmp_path) -> None:
     assert agent is not None
     assert agent.contract_version == "1.0"
     assert agent.produces == ["policy.info"]
-    assert agent.output_schema_refs == {"policy.info": "policy.info@v1"}
-    assert agent.agent_contract.produces[0].schema_ref == "policy.info@v1"
+    assert agent.output_schema_refs == {"policy.info": "policy.info@v2"}
+    assert agent.agent_contract.produces[0].schema_ref == "policy.info@v2"
     card = build_agent_cards([agent])[0]
     assert card.contract_version == "1.0"
     assert card.produces[0].name == "policy.info"
-    assert card.output_schema_refs == {"policy.info": "policy.info@v1"}
+    assert card.output_schema_refs == {"policy.info": "policy.info@v2"}
 
 
 def test_legacy_remote_agent_still_registers_without_contract(tmp_path) -> None:

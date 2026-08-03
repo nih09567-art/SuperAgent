@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from src.orchestration.schema_registry import SchemaRegistry, get_schema_registry
-
+from src.orchestration.schema_registry import (
+    SchemaRegistry,
+    get_schema_registry,
+    register_default_semantic_validators,
+)
 
 _POLICY_SCOPES = {"company", "statutory", "mixed", "unknown"}
 
@@ -193,6 +196,56 @@ AGENT_SCHEMA_CATALOG: dict[str, dict[str, Any]] = {
             "not_found": {"type": "boolean"},
         },
     },
+    "policy.info@v2": {
+        "required": [
+            "query",
+            "answer",
+            "knowledge_items_count",
+            "policy_scope",
+            "sources",
+            "matched_items",
+            "not_found",
+        ],
+        "properties": {
+            "query": {"type": "string"},
+            "answer": {"type": "string"},
+            "knowledge_items_count": {"type": "integer"},
+            "policy_scope": {
+                "type": "string",
+                "enum": ["company", "statutory", "mixed", "unknown"],
+            },
+            "sources": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": [
+                        "id",
+                        "category",
+                        "source",
+                        "is_demo",
+                        "policy_scope",
+                    ],
+                    "properties": {
+                        "id": {"type": "string"},
+                        "category": {"type": "string"},
+                        "source": {"type": "string"},
+                        "effective_date": {"type": "string"},
+                        "source_updated_at": {"type": "string"},
+                        "is_demo": {"type": "boolean"},
+                        "policy_scope": {
+                            "type": "string",
+                            "enum": ["company", "statutory", "mixed", "unknown"],
+                        },
+                    },
+                },
+            },
+            "matched_items": {
+                "type": "array",
+                "items": {"type": "string"},
+            },
+            "not_found": {"type": "boolean"},
+        },
+    },
     "report.sources@v1": {
         "required": ["sources", "instruction", "title"],
         "properties": {
@@ -223,10 +276,208 @@ AGENT_SCHEMA_CATALOG: dict[str, dict[str, Any]] = {
 }
 
 
+def _validate_policy_info_v2(payload: dict[str, Any]) -> list[str]:
+    """Enforce the provenance invariants promised by ``policy.info@v2``."""
+
+    errors: list[str] = []
+    for field in (
+        "knowledge_items_count",
+        "sources",
+        "matched_items",
+        "not_found",
+        "policy_scope",
+    ):
+        if field not in payload:
+            errors.append(f"payload: missing required field: {field!r}")
+    if errors:
+        return errors
+
+    count = payload["knowledge_items_count"]
+    sources = payload["sources"]
+    matched_items = payload["matched_items"]
+    not_found = payload["not_found"]
+    policy_scope = payload["policy_scope"]
+    if type(count) is not int:
+        errors.append(
+            "payload.knowledge_items_count: expected integer, "
+            f"got {type(count).__name__}"
+        )
+    if not isinstance(sources, list):
+        errors.append(
+            "payload.sources: expected array, "
+            f"got {type(sources).__name__}"
+        )
+    if not isinstance(matched_items, list):
+        errors.append(
+            "payload.matched_items: expected array, "
+            f"got {type(matched_items).__name__}"
+        )
+    if type(not_found) is not bool:
+        errors.append(
+            "payload.not_found: expected boolean, "
+            f"got {type(not_found).__name__}"
+        )
+    if not isinstance(policy_scope, str):
+        errors.append(
+            "payload.policy_scope: expected string, "
+            f"got {type(policy_scope).__name__}"
+        )
+    elif policy_scope not in _POLICY_SCOPES:
+        errors.append(
+            "payload.policy_scope: expected one of "
+            f"{sorted(_POLICY_SCOPES)!r}, got {policy_scope!r}"
+        )
+    if errors:
+        return errors
+
+    for index, source in enumerate(sources):
+        source_path = f"payload.sources[{index}]"
+        if not isinstance(source, dict):
+            errors.append(
+                f"{source_path}: expected object, got {type(source).__name__}"
+            )
+            continue
+        for field in ("id", "category", "source", "is_demo", "policy_scope"):
+            if field not in source:
+                errors.append(f"{source_path}: missing required field: {field!r}")
+        for field in ("id", "category", "source"):
+            if field not in source:
+                continue
+            value = source[field]
+            if not isinstance(value, str):
+                errors.append(
+                    f"{source_path}.{field}: expected string, "
+                    f"got {type(value).__name__}"
+                )
+            elif not value.strip():
+                errors.append(f"{source_path}.{field}: must be non-empty")
+        if "is_demo" in source and type(source["is_demo"]) is not bool:
+            errors.append(
+                f"{source_path}.is_demo: expected boolean, "
+                f"got {type(source['is_demo']).__name__}"
+            )
+        if "policy_scope" in source:
+            source_scope = source["policy_scope"]
+            if not isinstance(source_scope, str):
+                errors.append(
+                    f"{source_path}.policy_scope: expected string, "
+                    f"got {type(source_scope).__name__}"
+                )
+            elif source_scope not in _POLICY_SCOPES:
+                errors.append(
+                    f"{source_path}.policy_scope: expected one of "
+                    f"{sorted(_POLICY_SCOPES)!r}, got {source_scope!r}"
+                )
+        for date_field in ("effective_date", "source_updated_at"):
+            if date_field in source and not isinstance(source[date_field], str):
+                errors.append(
+                    f"{source_path}.{date_field}: expected string, "
+                    f"got {type(source[date_field]).__name__}"
+                )
+        if not (source.get("effective_date") or source.get("source_updated_at")):
+            errors.append(
+                f"{source_path}: requires effective_date or source_updated_at"
+            )
+
+    for index, item_id in enumerate(matched_items):
+        if not isinstance(item_id, str):
+            errors.append(
+                f"payload.matched_items[{index}]: expected string, "
+                f"got {type(item_id).__name__}"
+            )
+        elif not item_id.strip():
+            errors.append(f"payload.matched_items[{index}]: ids must be non-empty")
+    if errors:
+        return errors
+
+    if not_found:
+        if count != 0:
+            errors.append(
+                "payload.knowledge_items_count: must be 0 when not_found is true"
+            )
+        if sources:
+            errors.append("payload.sources: must be empty when not_found is true")
+        if matched_items:
+            errors.append("payload.matched_items: must be empty when not_found is true")
+    else:
+        if count <= 0:
+            errors.append(
+                "payload.knowledge_items_count: must be greater than 0 "
+                "when not_found is false"
+            )
+        if not sources:
+            errors.append("payload.sources: must be non-empty when not_found is false")
+        if not matched_items:
+            errors.append(
+                "payload.matched_items: must be non-empty when not_found is false"
+            )
+
+    source_scopes = {source["policy_scope"] for source in sources}
+    if not_found:
+        expected_scope = "unknown"
+    elif source_scopes == {"company"}:
+        expected_scope = "company"
+    elif source_scopes == {"statutory"}:
+        expected_scope = "statutory"
+    elif source_scopes == {"unknown"}:
+        expected_scope = "unknown"
+    elif source_scopes:
+        expected_scope = "mixed"
+    else:
+        expected_scope = None
+    if expected_scope is not None and payload["policy_scope"] != expected_scope:
+        errors.append(
+            "payload.policy_scope: must summarize the source policy scopes "
+            f"as {expected_scope!r}"
+        )
+
+    if count != len(sources):
+        errors.append("payload.knowledge_items_count: must equal the number of sources")
+    if count != len(matched_items):
+        errors.append(
+            "payload.knowledge_items_count: must equal the number of matched_items"
+        )
+
+    source_ids = [source["id"] for source in sources]
+    for index, source in enumerate(sources):
+        for field in ("id", "category", "source"):
+            if not source[field].strip():
+                errors.append(f"payload.sources[{index}].{field}: must be non-empty")
+        if not (source.get("effective_date") or source.get("source_updated_at")):
+            errors.append(
+                f"payload.sources[{index}]: requires effective_date or "
+                "source_updated_at"
+            )
+    if any(not source_id.strip() for source_id in source_ids):
+        errors.append("payload.sources: source ids must be non-empty")
+    if any(not item_id.strip() for item_id in matched_items):
+        errors.append("payload.matched_items: ids must be non-empty")
+    if len(set(source_ids)) != len(source_ids):
+        errors.append("payload.sources: source ids must be unique")
+    if len(set(matched_items)) != len(matched_items):
+        errors.append("payload.matched_items: ids must be unique")
+    if set(source_ids) != set(matched_items):
+        errors.append(
+            "payload.matched_items: ids must match source ids"
+        )
+
+    return errors
+
+
+AGENT_SCHEMA_VALIDATORS = {
+    "policy.info@v2": _validate_policy_info_v2,
+}
+register_default_semantic_validators(AGENT_SCHEMA_VALIDATORS)
+
+
 def register_agent_schemas(
     registry: SchemaRegistry | None = None,
 ) -> SchemaRegistry:
     target = registry or get_schema_registry()
     for schema_ref, schema in AGENT_SCHEMA_CATALOG.items():
-        target.register(schema_ref, schema)
+        target.register(
+            schema_ref,
+            schema,
+            semantic_validator=AGENT_SCHEMA_VALIDATORS.get(schema_ref),
+        )
     return target
