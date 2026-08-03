@@ -191,6 +191,16 @@ async def _trusted_registry_contract_data(
         for agent in registered_agents
         if agent.user_id == "share" or agent.user_id == user_id
     }
+    # Built-in contracts and live Agent Cards may enumerate the same logical
+    # outputs in different orders. Preserve the server-owned catalog order when
+    # the sets are identical so snapshot re-derivation is deterministic and the
+    # primary output used for implicit bindings does not drift across restarts.
+    from src.orchestration.output_contracts import get_agent_output_logical_names
+
+    for agent_name, live_outputs in list(produces.items()):
+        catalog_outputs = get_agent_output_logical_names(agent_name)
+        if catalog_outputs and set(catalog_outputs) == set(live_outputs):
+            produces[agent_name] = catalog_outputs
     return contracts, produces
 
 
@@ -284,11 +294,14 @@ def load_production_task_graph(
             else _current_agent_contracts(state.get("agent_cards"))
         ),
         current_agent_produces=current_agent_produces,
+        subtasks=(state.get("task_profile") or {}).get("subtasks"),
     )
     if task_graph is None:
         logger.warning("plan snapshot rejected for %s: %s",
                        workflow_id, reason)
+        state["task_graph_rejection_reason"] = reason
         return False, reason
+    state.pop("task_graph_rejection_reason", None)
     state["task_graph"] = task_graph
     return True, "loaded"
 
@@ -962,15 +975,9 @@ async def _process_workflow(
         from src.robust.task_logger import TaskLogger as TL
         existing_logger = TL.load(task_id)
         if existing_logger:
-            # Truncate history: remove entries from resume_step onwards and workflow_end events
-            existing_logger.history = [
-                entry for entry in existing_logger.history
-                if entry.get("step", 0) < resume_step and entry.get("event") != "workflow_end"
-            ]
-            existing_logger.status = "running"
-            existing_logger.finished_at = None
-            existing_logger.error = None
-            existing_logger._step_counter = {"__global__": resume_step - 1}
+            # Truncate history/failures and reset terminal fields so the re-run
+            # starts from a consistent pre-resume log state.
+            existing_logger.truncate_for_resume(resume_step)
             task_logger = existing_logger
             user_query = existing_logger.user_query
             logger.info(
@@ -1366,6 +1373,7 @@ async def _process_workflow(
         # publisher/while loop. Gated OFF by default -> B1 behavior is unchanged.
         if orchestration_scheduler_enabled:
             from src.orchestration.runtime import run_scheduler_workflow, scheduler_ready
+            from src.orchestration.failure_mapper import make_failure
             from src.interface.task_graph import WorkflowStatus
 
             # Production execution: load + verify the approved PlanSnapshot and
@@ -1409,6 +1417,9 @@ async def _process_workflow(
                 )
 
             ready, category, detail = scheduler_ready(state)
+            if category == "no_graph" and state.get("task_graph_rejection_reason"):
+                category = "invalid"
+                detail = str(state["task_graph_rejection_reason"])
             if ready:
                 terminal_event = None
                 async for scheduler_event in run_scheduler_workflow(
@@ -1461,9 +1472,17 @@ async def _process_workflow(
                     "scheduler gate: fail-closed (category=%s): %s", category, detail
                 )
                 state["workflow_execution_failed"] = True
+                gate_code = {
+                    "invalid": "TASK_GRAPH_INVALID",
+                    "no_graph": "TASK_GRAPH_MISSING",
+                    "unknown": "OPERATION_MODE_UNCLASSIFIED",
+                }.get(category, "INTERNAL_SCHEDULER_ERROR")
+                failure = make_failure(gate_code)
+                if hasattr(task_logger, "log_failure"):
+                    task_logger.log_failure(failure.model_dump(mode="json"))
                 task_logger.log_workflow_terminal(
                     WorkflowStatus.FAILED,
-                    error=f"scheduler gate fail-closed: {category}: {detail}",
+                    error=failure.message,
                 )
                 if state.get("workflow_mode") == "production":
                     try:
@@ -1484,8 +1503,11 @@ async def _process_workflow(
                         "task_id": task_id,
                         "mode": "scheduler",
                         "status": WorkflowStatus.FAILED.value,
-                        "error": f"{category}: {detail}",
+                        "error": failure.message,
                         "reason": "scheduler_gate_fail_closed",
+                        "failures": [failure.model_dump(mode="json")],
+                        "failed_steps": [],
+                        "blocked_steps": [],
                     },
                 }
                 return
@@ -1496,6 +1518,10 @@ async def _process_workflow(
 
             # Store original node name to avoid being overwritten in message loop
             original_node_name = agent_name
+            # A workflow can enter agent_proxy multiple times.  Each entry must
+            # have its own event identity; otherwise the frontend treats all
+            # remote-agent executions as one result card.
+            node_event_id = f"{workflow_id}_{original_node_name}_{step_count}"
 
             # For agent_proxy, get the actual sub-agent name from state["next"]
             # Note: state["next"] is set by publisher in the previous iteration
@@ -1526,7 +1552,7 @@ async def _process_workflow(
                 "event": "start_of_agent",
                 "data": {
                     "agent_name": display_name,
-                    "agent_id": f"{workflow_id}_{agent_name}_1",
+                    "agent_id": node_event_id,
                     "sub_agent_name": sub_agent_name,
                 },
             }
@@ -1655,7 +1681,7 @@ async def _process_workflow(
                 "event": "end_of_agent",
                 "data": {
                     "agent_name": end_display_name,
-                    "agent_id": f"{workflow_id}_{original_node_name}_1",
+                    "agent_id": node_event_id,
                     "sub_agent_name": sub_agent_name,
                 },
             }

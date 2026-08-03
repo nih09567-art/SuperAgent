@@ -6,6 +6,23 @@ const readinessHint = document.getElementById("readinessHint");
 const tabs = document.querySelectorAll(".tab");
 const panels = document.querySelectorAll(".panel");
 
+const TASK_OWNER_TOKEN_KEY = "superagentTaskOwnerCapability";
+const getTaskOwnerToken = () => {
+  let token = window.localStorage.getItem(TASK_OWNER_TOKEN_KEY) || "";
+  if (!token) {
+    const bytes = new Uint8Array(32);
+    window.crypto.getRandomValues(bytes);
+    token = Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("");
+    window.localStorage.setItem(TASK_OWNER_TOKEN_KEY, token);
+  }
+  return token;
+};
+const getTaskCleanupHeaders = (includeJson = false) => ({
+  ...(includeJson ? { "Content-Type": "application/json" } : {}),
+  "X-Task-Owner-Token": getTaskOwnerToken(),
+});
+window.getTaskCleanupHeaders = getTaskCleanupHeaders;
+
 const userIdInput = document.getElementById("userId");
 const deepThinkingInput = document.getElementById("deepThinking");
 const searchBeforeInput = document.getElementById("searchBefore");
@@ -307,6 +324,7 @@ let planningOutputBlocks = new Map();
 let executionOutputBlocks = new Map();
 let executionStepCards = [];       // Step cards for execution log: {id, agentName, displayName, status, content, startTime, endTime, summary}
 let executionStepCardsByKey = new Map();
+let workflowFailureSummary = null;
 let currentStepCard = null;        // Currently active (running) step card
 let executionStepCount = 0;        // Monotonic step counter
 let finalResultReceived = false;
@@ -350,6 +368,7 @@ let activeConversationMessages = [];
 let activeConversationTranscript = [];
 let activeConversationId = null;
 let activeConversationCreatedAt = null;
+let activeConversationTaskIds = new Set();
 let coordinatorBuffer = "";
 let clarificationPending = false;
 let pendingClarificationContext = null;
@@ -595,7 +614,7 @@ const updateChatExecutionProgress = (status, detail = "") => {
   if (!lifecycle) return;
   const total = Math.max(planSteps.length, executionStepCards.length, 1);
   const completed = executionStepCards.filter((card) => card.status === "done").length;
-  const hasError = executionStepCards.some((card) => card.status === "error");
+  const hasError = executionStepCards.some((card) => ["error", "blocked"].includes(card.status));
   const running = executionStepCards.filter((card) => card.status === "running").length;
   const current = status === "completed" ? total : Math.min(completed + running, total);
   const percentage = status === "completed" ? 100 : Math.round((completed / total) * 100);
@@ -864,6 +883,9 @@ const normalizeStoredConversation = (conversation) => {
     createdAt: conversation.createdAt || new Date().toISOString(),
     updatedAt: conversation.updatedAt || conversation.createdAt || new Date().toISOString(),
     workflowId: String(conversation.workflowId || ""),
+    taskIds: Array.isArray(conversation.taskIds)
+      ? [...new Set(conversation.taskIds.map(String).filter(Boolean))]
+      : [],
     contextEntities: conversation.contextEntities && typeof conversation.contextEntities === "object"
       ? { ...conversation.contextEntities }
       : {},
@@ -941,6 +963,7 @@ const saveActiveConversation = () => {
     createdAt: activeConversationCreatedAt,
     updatedAt: now,
     workflowId: workflowIdInput?.value.trim() || "",
+    taskIds: Array.from(activeConversationTaskIds),
     contextEntities: { ...conversationContextEntities },
     contextArtifacts: conversationContextArtifacts.map((item) => ({ ...item })),
     pendingClarification: pendingClarificationContext
@@ -1069,6 +1092,7 @@ const loadConversation = (conversation) => {
   activeConversationUserId = userIdInput.value.trim();
   activeConversationId = normalized.id;
   activeConversationCreatedAt = normalized.createdAt;
+  activeConversationTaskIds = new Set(normalized.taskIds || []);
   activeConversationTranscript = normalized.messages.map((message) => ({ ...message }));
   activeConversationMessages = activeConversationTranscript
     .slice(-ACTIVE_CONVERSATION_LIMIT)
@@ -1105,14 +1129,54 @@ const loadConversation = (conversation) => {
   return true;
 };
 
-const clearChatHistory = () => {
+const clearChatHistory = async () => {
   const userId = userIdInput.value.trim();
-  if (!userId || !loadChatHistory(userId).length) return;
+  const conversations = userId ? loadChatHistory(userId) : [];
+  if (!userId || !conversations.length) return;
   if (!window.confirm(`确定清空用户 ${userId} 的最近对话吗？`)) return;
+  const workflowIds = [...new Set(
+    conversations
+      .map((conversation) => String(conversation.workflowId || "").trim())
+      .filter(Boolean)
+  )];
+  const taskIds = [...new Set(
+    conversations.flatMap((conversation) => (
+      Array.isArray(conversation.taskIds) ? conversation.taskIds : []
+    )).map(String).filter(Boolean)
+  )];
+  try {
+    await Promise.all(taskIds.map(async (taskId) => {
+      const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}`, {
+        method: "DELETE",
+        headers: window.getTaskCleanupHeaders(false),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok && response.status !== 404) {
+        throw new Error(data.detail || `清理任务 ${taskId} 失败（HTTP ${response.status}）`);
+      }
+    }));
+    await Promise.all(workflowIds.map(async (workflowId) => {
+      const query = new URLSearchParams({ workflow_id: workflowId });
+      const response = await fetch(`/api/conversation-history?${query}`, {
+        method: "DELETE",
+        headers: window.getTaskCleanupHeaders(false),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.detail || `清理 ${workflowId} 失败（HTTP ${response.status}）`);
+      }
+    }));
+  } catch (err) {
+    window.alert(`对话没有删除：后端关联记录清理失败。${err.message}`);
+    return;
+  }
   localStorage.removeItem(getChatHistoryKey(userId));
   localStorage.removeItem(getLegacyChatHistoryKey(userId));
   resetActiveConversation(userId);
   renderChatHistory();
+  if (window.SecurityModule?.loadSecurityReconciliations) {
+    window.SecurityModule.loadSecurityReconciliations();
+  }
 };
 
 const resetActiveConversation = (userId = userIdInput.value.trim()) => {
@@ -1122,6 +1186,7 @@ const resetActiveConversation = (userId = userIdInput.value.trim()) => {
   activeConversationTranscript = [];
   activeConversationId = null;
   activeConversationCreatedAt = null;
+  activeConversationTaskIds = new Set();
   instructionHistory = [];
   originalUserQuery = "";
   coordinatorBuffer = "";
@@ -1683,7 +1748,7 @@ const runPlannerUpdate = async (instruction, appendHistory = true) => {
   try {
     const response = await fetch("/api/workflows/run", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: window.getTaskCleanupHeaders(true),
       body: JSON.stringify(payload),
       signal: plannerOnlyController.signal,
     });
@@ -1731,6 +1796,7 @@ tabs.forEach((tab) => {
 const clearStepCards = () => {
   executionStepCards = [];
   executionStepCardsByKey = new Map();
+  workflowFailureSummary = null;
   currentStepCard = null;
   executionStepCount = 0;
   finalResultReceived = false;
@@ -1742,8 +1808,14 @@ const createStepCard = (displayName, subAgentName, eventKey = "", stepId = "") =
   const normalizedKey = String(eventKey || stepId || "");
   if (normalizedKey && executionStepCardsByKey.has(normalizedKey)) {
     const existing = executionStepCardsByKey.get(normalizedKey);
-    currentStepCard = existing;
-    return existing;
+    // Reuse duplicate events only while the same execution is active. Some
+    // legacy backends reused one agent_id for multiple sequential agents; a
+    // new start event after the previous card finished must create a new card.
+    if (existing.status === "running") {
+      currentStepCard = existing;
+      return existing;
+    }
+    executionStepCardsByKey.delete(normalizedKey);
   }
   const card = {
     id: ++executionStepCount,
@@ -1756,6 +1828,7 @@ const createStepCard = (displayName, subAgentName, eventKey = "", stepId = "") =
     startTime: Date.now(),
     endTime: null,
     summary: "",
+    governance: null,
   };
   executionStepCards.push(card);
   if (normalizedKey) executionStepCardsByKey.set(normalizedKey, card);
@@ -1802,6 +1875,155 @@ const formatStepResultContent = (data) => {
   return data?.error || "该步骤未返回可展示的结果。";
 };
 
+const FAILURE_CATEGORY_LABELS = {
+  routing: "路由",
+  execution: "执行",
+  contract: "契约",
+  schema: "Schema",
+  artifact: "Artifact",
+  permission: "权限",
+  timeout: "超时",
+  persistence: "持久化",
+  reconciliation: "状态核对",
+  planning: "计划",
+  internal: "系统",
+};
+
+const normalizeFailure = (failure, legacyError = "") => {
+  if (!failure || typeof failure !== "object" || Array.isArray(failure)) return null;
+  const details = failure.details_safe && typeof failure.details_safe === "object"
+    ? failure.details_safe
+    : {};
+  const code = String(failure.code || "UNKNOWN_WORKFLOW_FAILURE").trim().toUpperCase();
+  const categoryValue = String(failure.category || "internal").trim().toLowerCase();
+  const category = Object.prototype.hasOwnProperty.call(FAILURE_CATEGORY_LABELS, categoryValue)
+    ? categoryValue
+    : "internal";
+  const blockedBy = Array.isArray(failure.blocked_by)
+    ? failure.blocked_by
+    : (Array.isArray(details.blocked_by) ? details.blocked_by : []);
+  return {
+    code,
+    category,
+    message: String(failure.message || legacyError || "工作流步骤执行失败。"),
+    action: failure.action ? String(failure.action) : "",
+    retryable: failure.retryable === true,
+    stepId: failure.step_id ? String(failure.step_id) : "",
+    parameterName: failure.parameter_name ? String(failure.parameter_name) : "",
+    sourceStep: failure.source_step ? String(failure.source_step) : "",
+    sourceOutput: failure.source_output ? String(failure.source_output) : "",
+    blockedBy: blockedBy.map(String).filter(Boolean),
+    details,
+  };
+};
+
+const getFailurePresentation = (failure) => {
+  const code = failure.code;
+  const category = failure.category;
+  if (code === "CLARIFICATION_BLOCKED") {
+    return {
+      title: "等待补充信息，当前步骤未执行",
+      guidance: "请先回答工作流提出的问题，再重新执行。",
+      state: "blocked",
+    };
+  }
+  const isBlocked = code === "UPSTREAM_STEP_FAILED"
+    || code === "UPSTREAM_OUTPUT_MISSING"
+    || failure.blockedBy.length > 0;
+
+  if (isBlocked) {
+    return {
+      title: "上游数据不可用，当前步骤未执行",
+      guidance: "请先修复上游失败步骤，再从安全检查点恢复。",
+      state: "blocked",
+    };
+  }
+  if (category === "permission") {
+    return {
+      title: "权限校验未通过",
+      guidance: "请检查当前用户、角色及资源授权；重复执行通常不会解决权限问题。",
+      state: "error",
+    };
+  }
+  if (category === "schema" || category === "contract") {
+    return {
+      title: category === "schema" ? "输出 Schema 校验失败" : "Agent 契约不兼容",
+      guidance: "请检查 Agent 输出字段、Contract 声明和协议版本。",
+      state: "error",
+    };
+  }
+  if (category === "reconciliation" || code === "SIDE_EFFECT_UNCONFIRMED") {
+    return {
+      title: "外部操作状态尚未确认",
+      guidance: "请人工核对外部系统；为避免重复操作，当前不应自动重试。",
+      state: "error",
+    };
+  }
+  return {
+    title: "步骤执行失败",
+    guidance: "请根据错误码检查步骤配置或服务状态。",
+    state: "error",
+  };
+};
+
+const formatFailureDetails = (failure) => {
+  const presentation = getFailurePresentation(failure);
+  const categoryLabel = FAILURE_CATEGORY_LABELS[failure.category] || "其他";
+  const requiresManualHandling = failure.category === "reconciliation"
+    || failure.code === "SIDE_EFFECT_UNCONFIRMED";
+  const action = requiresManualHandling
+    ? presentation.guidance
+    : (failure.action || presentation.guidance);
+  const blockedBy = failure.blockedBy.length
+    ? `<div class="failure-meta-row"><span>阻断来源</span><strong>${escapeHtml(failure.blockedBy.join("、"))}</strong></div>`
+    : "";
+  const source = failure.sourceStep || failure.sourceOutput
+    ? `<div class="failure-meta-row"><span>上游来源</span><strong>${escapeHtml(
+      [failure.sourceStep, failure.sourceOutput].filter(Boolean).join(" / ")
+    )}</strong></div>`
+    : "";
+  const parameter = failure.parameterName
+    ? `<div class="failure-meta-row"><span>输入参数</span><strong>${escapeHtml(failure.parameterName)}</strong></div>`
+    : "";
+  const detailLabels = {
+    logical_name: "Artifact",
+    schema_ref: "目标 Schema",
+    expected_schema_ref: "期望 Schema",
+    actual_schema_ref: "实际 Schema",
+    missing_outputs: "缺少输出",
+    undeclared_outputs: "未声明输出",
+  };
+  const safeDetails = Object.entries(failure.details || {})
+    .filter(([key, value]) => Object.prototype.hasOwnProperty.call(detailLabels, key)
+      && value !== null && value !== undefined && value !== "")
+    .map(([key, value]) => {
+      const display = Array.isArray(value) ? value.join("、") : String(value);
+      return `<div class="failure-meta-row"><span>${escapeHtml(detailLabels[key])}</span><strong>${escapeHtml(display)}</strong></div>`;
+    })
+    .join("");
+  const retryText = failure.retryable && !requiresManualHandling
+    ? "可从安全检查点重试"
+    : "不建议直接重试";
+
+  return `
+    <section class="failure-detail failure-${escapeHtml(failure.category)}" aria-label="步骤失败详情">
+      <div class="failure-heading">
+        <span class="failure-category">${escapeHtml(categoryLabel)}</span>
+        <strong>${escapeHtml(presentation.title)}</strong>
+      </div>
+      <p class="failure-message">${escapeHtml(failure.message)}</p>
+      <div class="failure-meta">
+        <div class="failure-meta-row"><span>错误码</span><code>${escapeHtml(failure.code)}</code></div>
+        ${blockedBy}
+        ${source}
+        ${parameter}
+        ${safeDetails}
+        <div class="failure-meta-row"><span>重试策略</span><strong>${escapeHtml(retryText)}</strong></div>
+      </div>
+      <p class="failure-action"><span>建议</span>${escapeHtml(action)}</p>
+    </section>`;
+};
+
 const appendStepContent = (content, card = currentStepCard) => {
   if (!card) return;
   card.content += content;
@@ -1829,14 +2051,19 @@ const finalizeStepCard = (card = currentStepCard) => {
   updateChatExecutionProgress("running");
 };
 
-const errorStepCard = (errMsg, card = currentStepCard) => {
+const errorStepCard = (errMsg, card = currentStepCard, failure = null, trustedHtml = false) => {
   if (card) {
-    card.status = "error";
+    const normalizedFailure = normalizeFailure(failure, errMsg);
+    const presentation = normalizedFailure ? getFailurePresentation(normalizedFailure) : null;
+    card.status = presentation?.state || "error";
     card.endTime = Date.now();
-    const plainText = errMsg.replace(/<[^>]*>/g, "").trim();
+    const plainText = normalizedFailure
+      ? normalizedFailure.message.trim()
+      : String(errMsg || "").replace(/<[^>]*>/g, "").trim();
     card.summary = plainText.substring(0, 80) || "Execution error";
     card.content = errMsg;
-    card._isHtml = true;
+    card.failure = normalizedFailure;
+    card._isHtml = !normalizedFailure && trustedHtml;
     if (currentStepCard === card) currentStepCard = null;
   }
   renderAllStepCards();
@@ -1865,7 +2092,21 @@ const formatFinalResultContent = (data = {}) => {
     ? data.unavailable_artifacts
     : [];
   if (unavailable.length) {
-    return "最终结果已生成，但当前用户无权读取或结果未通过 Schema 校验。";
+    const reasons = [...new Set(
+      unavailable
+        .map((item) => String(item?.reason || "").trim())
+        .filter(Boolean)
+    )];
+    const reasonLabels = {
+      ArtifactAccessDenied: "当前用户没有结果读取权限",
+      ArtifactSchemaInvalid: "Agent 返回结果未通过 Schema 校验",
+      ArtifactSchemaMismatch: "结果 Schema 与任务契约不一致",
+      invalid_artifact_ref: "结果引用格式无效",
+    };
+    const details = reasons
+      .map((reason) => reasonLabels[reason] || reason)
+      .join("；");
+    return `最终结果已生成，但暂时无法展示：${details || "结果读取校验未通过"}。`;
   }
   return "工作流未产生可展示的最终结果。";
 };
@@ -1945,6 +2186,9 @@ const renderAllStepCards = () => {
   executionStepCards.forEach((card) => {
     renderStepCardInto(card, frag);
   });
+  if (workflowFailureSummary) {
+    renderWorkflowFailureSummaryInto(workflowFailureSummary, frag);
+  }
   executionOutput.innerHTML = "";
   executionOutput.appendChild(frag);
 };
@@ -1960,7 +2204,7 @@ const renderStepCardInto = (card, parent) => {
     ? `${Math.round((card.endTime - card.startTime) / 1000)}s`
     : (card.status === "running" ? "..." : "");
 
-  const iconMap = { running: "[...]", done: "[ok]", error: "[x]", pending: "[ ]" };
+  const iconMap = { running: "[...]", done: "[ok]", error: "[x]", blocked: "[!]", pending: "[ ]" };
   const icon = iconMap[card.status] || "[ ]";
 
   const cardEl = document.createElement("div");
@@ -1986,10 +2230,26 @@ const renderStepCardInto = (card, parent) => {
     `<span class="step-toggle">></span>`;
 
   // Body (collapsed by default, but expanded for error cards)
-  const isError = card.status === "error";
+  const isError = ["error", "blocked"].includes(card.status);
   const body = document.createElement("div");
   body.className = `step-card-body${isError ? "" : " hidden"}`;
-  if (card.content) {
+  if (card.governance) {
+    const governance = document.createElement("div");
+    governance.className = "step-governance-strip";
+    governance.innerHTML = card.governance
+      .map(([label, value, tone]) =>
+        `<span class="step-governance-chip ${escapeHtml(tone || "")}">` +
+        `<small>${escapeHtml(label)}</small>${escapeHtml(String(value))}</span>`
+      )
+      .join("");
+    body.appendChild(governance);
+  }
+  if (card.failure) {
+    const div = document.createElement("div");
+    div.className = "step-result";
+    div.innerHTML = formatFailureDetails(card.failure);
+    body.appendChild(div);
+  } else if (card.content) {
     if (card._isHtml) {
       const div = document.createElement("div");
       div.className = "step-result";
@@ -2009,6 +2269,40 @@ const renderStepCardInto = (card, parent) => {
     const toggle = cardEl.querySelector(".step-toggle");
     if (toggle) toggle.textContent = "v";
   }
+};
+
+const renderWorkflowFailureSummaryInto = (summary, parent) => {
+  const failures = Array.isArray(summary.failures)
+    ? summary.failures
+      .map((failure) => normalizeFailure(failure?.failure || failure, failure?.error || ""))
+      .filter(Boolean)
+    : [];
+  const blockedSteps = Array.isArray(summary.blockedSteps) ? summary.blockedSteps : [];
+  if (!failures.length && !blockedSteps.length) return;
+
+  const section = document.createElement("section");
+  section.className = "workflow-failure-summary";
+  section.setAttribute("aria-label", "工作流失败摘要");
+  const failureItems = failures.map((failure) => (
+    `<li><code>${escapeHtml(failure.code)}</code><span>${escapeHtml(failure.message)}</span></li>`
+  )).join("");
+  const blockedItems = blockedSteps.map((step) => {
+    const stepId = typeof step === "object" && step !== null
+      ? step.step_id || step.id || "unknown"
+      : step;
+    const blockedBy = typeof step === "object" && step !== null && Array.isArray(step.blocked_by)
+      ? `（上游：${step.blocked_by.map(String).join("、")}）`
+      : "";
+    return `<li><strong>${escapeHtml(String(stepId))}</strong>${escapeHtml(blockedBy)}</li>`;
+  }).join("");
+  section.innerHTML = `
+    <div class="workflow-failure-summary-heading">
+      <strong>工作流异常摘要</strong>
+      <span>${escapeHtml(`${failures.length} 条异常记录，${blockedSteps.length} 个步骤被阻断`)}</span>
+    </div>
+    ${failureItems ? `<ul class="workflow-failure-list">${failureItems}</ul>` : ""}
+    ${blockedItems ? `<div class="workflow-blocked-list"><span>未执行步骤</span><ul>${blockedItems}</ul></div>` : ""}`;
+  parent.appendChild(section);
 };
 
 // Result Formatting
@@ -2763,6 +3057,10 @@ const parseSse = (buffer, onEvent) => {
 };
 
 const handleEvent = (eventName, payload) => {
+  const observedTaskId = payload?.data?.task_id || payload?.task_id;
+  if (observedTaskId) {
+    activeConversationTaskIds.add(String(observedTaskId));
+  }
   if (eventName === "messages") {
     const agentName = payload.agent_name || payload.data?.agent_name || payload.data?.tool || "assistant";
     const content = payload.data?.delta?.content || payload.data?.message || payload.raw || "";
@@ -2883,9 +3181,25 @@ const handleEvent = (eventName, payload) => {
           data.step_id,
         );
       }
+      const metrics = data.metrics || {};
+      const attempts = Number(metrics.attempts || 1);
+      const maxAttempts = Number(metrics.max_attempts || attempts);
+      card.governance = [
+        ["操作", metrics.operation_mode || "-"],
+        ["风险", metrics.risk_level || "-",
+          ["HIGH", "CRITICAL"].includes(String(metrics.risk_level || "").toUpperCase()) ? "warn" : ""],
+        ["尝试", `${attempts}/${maxAttempts}`],
+        ["耗时", `${Number(metrics.duration_seconds || 0).toFixed(2)}s`],
+        ["权限", metrics.permission_decision || (metrics.permission_denied ? "DENY" : "ALLOW"),
+          metrics.permission_denied ? "danger" : "ok"],
+        ["Checkpoint", metrics.checkpoint_step ?? "-"],
+        ["回执", metrics.receipt_status || (metrics.receipt_released ? "RELEASED" : "-")],
+        ["异常", metrics.reason_code || metrics.failure_category || "-",
+          metrics.reason_code ? "warn" : ""],
+      ];
       const content = formatStepResultContent(data);
-      if (status && status !== "SUCCEEDED") {
-        errorStepCard(content, card);
+      if (data.failure || (status && status !== "SUCCEEDED")) {
+        errorStepCard(content, card, data.failure);
       } else {
         appendStepContent(content, card);
       }
@@ -2940,6 +3254,81 @@ const handleEvent = (eventName, payload) => {
     }
     return;
   }
+  if (eventName === "retry_scheduled") {
+    const data = payload.data || {};
+    const card = findStepCard(data);
+    const message =
+      `第 ${data.attempt || 1} 次执行失败（${data.reason_code || "READ_FAILURE"}），` +
+      `${Number(data.next_delay_seconds || 0).toFixed(2)} 秒后进行第 ${data.next_attempt || 2}/${data.max_attempts || "?"} 次尝试。`;
+    if (card) {
+      appendStepContent(`\n${message}\n`, card);
+    } else {
+      appendOutput("system", `\n[retry] ${message}\n`);
+    }
+    showPlanValidationHint(message, true);
+    return;
+  }
+  if (eventName === "recovery_plan") {
+    const data = payload.data || {};
+    const summary =
+      `恢复评估：保留步骤 ${Number(data.keep_steps?.length || 0)} 个，` +
+      `待恢复步骤 ${Number(data.retry_steps?.length || 0)} 个；` +
+      `${data.automatic && data.enabled ? "允许自动恢复" : "不执行自动恢复"}。`;
+    appendOutput("system", `\n[recovery plan] ${summary}\n`);
+    showPlanValidationHint(summary, !(data.automatic && data.enabled));
+    return;
+  }
+  if (eventName === "recovery_started") {
+    const data = payload.data || {};
+    const message =
+      `正在进行第 ${data.attempt || 1}/${data.max_attempts || 1} 次 DAG 局部恢复，` +
+      `仅重跑：${(data.retry_steps || []).join(", ") || "失败分支"}。`;
+    appendOutput("system", `\n[auto recovery] ${message}\n`);
+    showPlanValidationHint(message);
+    setStatus("Recovering", true);
+    return;
+  }
+  if (eventName === "approval_required") {
+    currentRunHasError = true;
+    const data = payload.data || {};
+    const reason = data.reason || "当前操作需要人工审批。";
+    if (currentRunContext === "executing") {
+      errorStepCard(
+        `<strong>等待人工审批</strong><br>` +
+        `<div style="margin-top:8px;font-size:13px;color:var(--muted)">` +
+        `<div><strong>审批编号：</strong>${escapeHtml(data.approval_id || "-")}</div>` +
+        `<div style="margin-top:4px"><strong>步骤：</strong>${escapeHtml(data.step_id || "-")}</div>` +
+        `<div style="margin-top:4px;color:var(--warning)"><strong>原因：</strong>${escapeHtml(reason)}</div>` +
+        `<div style="margin-top:6px">请在 Security → 人工审批队列中处理，批准后可恢复原任务。</div>` +
+        `</div>`
+      );
+    }
+    showSummaryHint("任务已暂停，等待人工审批。", true);
+    showPlanValidationHint("执行已暂停：请处理人工审批请求。", true);
+    setStatus("Approval Required", false);
+    if (window.SecurityModule?.loadSecurityApprovals) {
+      window.SecurityModule.loadSecurityApprovals();
+    }
+    return;
+  }
+  if (eventName === "reconciliation_required") {
+    const d = payload.data || {};
+    currentRunHasError = true;
+    appendOutput(
+      "system",
+      `\n[需要人工核对] ${d.step_id || "step"}: ${d.error || "外部副作用结果不确定"}\n`
+    );
+    showSummaryHint("任务需要人工核对。", true);
+    showPlanValidationHint(
+      "外部操作结果不确定，已停止自动重试。请前往 Security → 人工核对队列核对并处置。",
+      true
+    );
+    setStatus("Needs Reconciliation", false);
+    if (window.SecurityModule?.loadSecurityReconciliations) {
+      window.SecurityModule.loadSecurityReconciliations();
+    }
+    return;
+  }
   if (eventName === "permission_denied") {
     currentRunHasError = true;
     const d = payload.data || {};
@@ -2976,7 +3365,10 @@ const handleEvent = (eventName, payload) => {
         (scenarioFitReason
           ? `<div style="margin-top:4px;color:var(--warning)"><strong>${escapeHtml(scenarioFitLabel)}:</strong> ${escapeHtml(scenarioFitReason)}</div>`
           : ``) +
-        `</div>`
+        `</div>`,
+        currentStepCard,
+        null,
+        true
       );
     }
 
@@ -3016,7 +3408,10 @@ const handleEvent = (eventName, payload) => {
         `<div style="color:var(--warning)"><strong>Hint:</strong> ${escapeHtml(errorPresentation.hint)}</div>` +
         `<div style="margin-top:6px;color:var(--danger)"><strong>Reason:</strong> ${escapeHtml(detail)}</div>` +
         `<div style="margin-top:6px">${escapeHtml(errorPresentation.action)}</div>` +
-        `</div>`
+        `</div>`,
+        currentStepCard,
+        null,
+        true
       );
     } else {
       appendOutput(
@@ -3035,7 +3430,8 @@ const handleEvent = (eventName, payload) => {
     return;
   }
   if (eventName === "end_of_workflow") {
-    const rawStatus = (payload.data && payload.data.status) || "";
+    const workflowData = payload.data || {};
+    const rawStatus = workflowData.status || "";
     const status = String(rawStatus).toUpperCase();
     if (plannerOnlyMode) {
       if (!plannerOnlyStepsUpdated) {
@@ -3057,6 +3453,10 @@ const handleEvent = (eventName, payload) => {
       }
     }
     if (currentRunContext === "executing") {
+      workflowFailureSummary = {
+        failures: Array.isArray(workflowData.failures) ? workflowData.failures : [],
+        blockedSteps: Array.isArray(workflowData.blocked_steps) ? workflowData.blocked_steps : [],
+      };
       finalizeRunningStepCards();
     }
     switch (status) {
@@ -3097,6 +3497,16 @@ const handleEvent = (eventName, payload) => {
         setStatus("Clarification Required", false);
         break;
       }
+      case "APPROVAL_REQUIRED":
+        currentRunHasError = true;
+        showSummaryHint("Workflow paused for approval.", true);
+        showPlanValidationHint("执行已暂停，等待人工审批；批准后可从 Security 页面恢复。", true);
+        updateChatExecutionProgress("error", "任务等待人工审批。");
+        setStatus("Approval Required", false);
+        if (window.SecurityModule?.loadSecurityApprovals) {
+          window.SecurityModule.loadSecurityApprovals();
+        }
+        break;
       case "REJECTED":
         currentRunHasError = true;
         showSummaryHint("Request rejected.", true);
@@ -3106,10 +3516,13 @@ const handleEvent = (eventName, payload) => {
         break;
       case "NEEDS_RECONCILIATION":
         currentRunHasError = true;
-        showSummaryHint("Needs reconciliation.", true);
-        showPlanValidationHint("A side effect may have completed but could not be confirmed. Manual reconciliation required; automatic retry is disabled.", true);
-        updateChatExecutionProgress("error", "外部副作用状态不确定，需要人工核对。");
+        showSummaryHint("任务需要人工核对。", true);
+        showPlanValidationHint("外部副作用可能已发生但无法确认；自动重试已停止。请前往 Security → 人工核对队列核对并处置。", true);
+        updateChatExecutionProgress("error", "外部副作用状态不确定，请前往 Security 人工核对队列。");
         setStatus("Needs Reconciliation", false);
+        if (window.SecurityModule?.loadSecurityReconciliations) {
+          window.SecurityModule.loadSecurityReconciliations();
+        }
         break;
       default:
         currentRunHasError = false;
@@ -3253,7 +3666,7 @@ const runWorkflow = async () => {
   try {
     const response = await fetch("/api/workflows/run", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: window.getTaskCleanupHeaders(true),
       body: JSON.stringify(payload),
       signal: currentAbortController.signal,
     });
@@ -3382,7 +3795,7 @@ const runExecution = async () => {
   try {
     const response = await fetch("/api/workflows/run", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: window.getTaskCleanupHeaders(true),
       body: JSON.stringify(payload),
       signal: currentAbortController.signal,
     });
@@ -4806,6 +5219,9 @@ const tasksList = document.getElementById("tasksList");
 const checkpointPanel = document.getElementById("checkpointPanel");
 const checkpointTaskIdBadge = document.getElementById("checkpointTaskId");
 const checkpointsList = document.getElementById("checkpointsList");
+const governancePanel = document.getElementById("governancePanel");
+const governanceTaskId = document.getElementById("governanceTaskId");
+const governanceTimeline = document.getElementById("governanceTimeline");
 const logPanel = document.getElementById("logPanel");
 const logMeta = document.getElementById("logMeta");
 const logHistory = document.getElementById("logHistory");
@@ -4840,6 +5256,7 @@ const statusBadgeClass = (status) => {
   if (["FAILED", "PARTIAL_FAILED", "REJECTED", "NEEDS_RECONCILIATION"].includes(normalized)) {
     return "badge-error";
   }
+  if (normalized === "APPROVAL_REQUIRED") return "badge-info";
   return "badge-muted";
 };
 
@@ -4955,6 +5372,7 @@ const selectTask = async (task) => {
 
   // Load checkpoints
   await loadTaskCheckpoints(task.task_id);
+  await loadTaskGovernance(task.task_id);
   // Load log
   await loadTaskLog(task.task_id);
 };
@@ -5034,13 +5452,18 @@ const loadTaskCheckpoints = async (taskId) => {
             const res = await fetch(`/api/tasks/${encodeURIComponent(selectedTaskId)}/checkpoints/${cp.step}`);
             if (res.ok) {
               const data = await res.json();
-              detailsDiv.innerHTML = `<pre class="checkpoint-json">${JSON.stringify(data, null, 2)}</pre>`;
+              detailsDiv.textContent = "";
+              const pre = document.createElement("pre");
+              pre.className = "checkpoint-json";
+              pre.textContent = JSON.stringify(data, null, 2);
+              detailsDiv.appendChild(pre);
               loaded = true;
             } else {
               detailsDiv.innerHTML = '<div style="color:var(--danger)">Failed to load checkpoint data</div>';
             }
           } catch (err) {
-            detailsDiv.innerHTML = `<div style="color:var(--danger)">Error: ${err.message}</div>`;
+            detailsDiv.textContent = `Error: ${String(err?.message || "Failed to load checkpoint data")}`;
+            detailsDiv.style.color = "var(--danger)";
           }
         }
       });
@@ -5062,12 +5485,12 @@ const loadTaskLog = async (taskId) => {
     const log = await res.json();
 
     logMeta.innerHTML = `
-      <div class="log-meta-item"><b>Task ID</b><span>${log.task_id}</span></div>
-      <div class="log-meta-item"><b>Execution phase</b><span class="phase-badge">${executionPhaseLabel(log.execution_phase)}</span></div>
-      <div class="log-meta-item"><b>Task status</b><span class="status-badge ${statusBadgeClass(log.status)}">${log.status}</span></div>
-      <div class="log-meta-item"><b>Created</b><span>${formatDateTime(log.created_at)}</span></div>
-      <div class="log-meta-item"><b>Finished</b><span>${formatDateTime(log.finished_at) || "-"}</span></div>
-      ${log.error ? `<div class="log-meta-item error-text"><b>Error</b><span>${log.error}</span></div>` : ""}
+      <div class="log-meta-item"><b>Task ID</b><span>${escapeHtml(log.task_id || "")}</span></div>
+      <div class="log-meta-item"><b>Execution phase</b><span class="phase-badge">${escapeHtml(executionPhaseLabel(log.execution_phase))}</span></div>
+      <div class="log-meta-item"><b>Task status</b><span class="status-badge ${statusBadgeClass(log.status)}">${escapeHtml(log.status || "")}</span></div>
+      <div class="log-meta-item"><b>Created</b><span>${escapeHtml(formatDateTime(log.created_at))}</span></div>
+      <div class="log-meta-item"><b>Finished</b><span>${escapeHtml(formatDateTime(log.finished_at) || "-")}</span></div>
+      ${log.error ? `<div class="log-meta-item error-text"><b>Error</b><span>${escapeHtml(log.error)}</span></div>` : ""}
     `;
 
     if (!log.history || !log.history.length) {
@@ -5195,7 +5618,7 @@ const resumeTask = async () => {
   try {
     const response = await fetch("/api/tasks/resume", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: window.getTaskCleanupHeaders(true),
       body: JSON.stringify(payload),
       signal: resumeAbortController.signal,
     });
@@ -5265,12 +5688,83 @@ const stopResume = () => {
   }
 };
 
+const loadTaskGovernance = async (taskId) => {
+  governancePanel.style.display = "";
+  governanceTaskId.textContent = taskId;
+  governanceTimeline.textContent = "Loading...";
+  try {
+    const response = await fetch(
+      `/api/tasks/${encodeURIComponent(taskId)}/governance`,
+      { headers: window.getGovernanceAuthHeaders(false) }
+    );
+    if (!response.ok) throw new Error("request failed");
+    const events = await response.json();
+    if (!events.length) {
+      governanceTimeline.textContent = "No governance events found.";
+      return;
+    }
+    governanceTimeline.replaceChildren();
+    events.forEach((event) => {
+      const item = document.createElement("div");
+      const type = String(event.event_type || "");
+      const isError = /FAILED|DENIED|REJECTED|RECONCILIATION/.test(type);
+      const isReview = /APPROVAL|RETRY|ROLLBACK|RECOVERY|RESUME/.test(type);
+      item.className = `governance-event${isError ? " is-error" : ""}${isReview ? " is-review" : ""}`;
+
+      const time = document.createElement("span");
+      time.className = "governance-event-time";
+      time.textContent = formatDateTime(event.timestamp);
+
+      const eventType = document.createElement("span");
+      eventType.className = "governance-event-type";
+      eventType.textContent = type;
+
+      const detail = document.createElement("span");
+      detail.className = "governance-event-detail";
+      const parts = [
+        event.step_id ? `step=${event.step_id}` : "",
+        event.agent ? `agent=${event.agent}` : "",
+        event.decision ? `decision=${event.decision}` : "",
+        event.reason_code ? `reason=${event.reason_code}` : "",
+      ].filter(Boolean);
+      detail.textContent = parts.join(" · ");
+
+      item.append(time, eventType, detail);
+      governanceTimeline.appendChild(item);
+    });
+  } catch (error) {
+    governanceTimeline.textContent = `Failed to load governance events: ${error.message}`;
+  }
+};
+
+window.resumeApprovedTask = async ({
+  task_id,
+  workflow_id,
+  resume_step,
+  user_id,
+}) => {
+  const tasksTab = document.querySelector('.tab[data-tab="tasks"]');
+  if (tasksTab) tasksTab.click();
+  selectedTaskId = task_id;
+  resumeTaskIdInput.value = task_id || "";
+  resumeWorkflowIdInput.value = workflow_id || "";
+  resumeStepInput.value = Number(resume_step) || 1;
+  resumeUserIdInput.value = user_id || "test";
+  resumePanel.style.display = "";
+  resumePanel.scrollIntoView({ behavior: "smooth", block: "start" });
+  await resumeTask();
+  if (window.SecurityModule?.loadSecurityApprovals) {
+    window.SecurityModule.loadSecurityApprovals();
+  }
+};
+
 refreshTasksBtn.addEventListener("click", fetchTasks);
 
 const deleteTaskById = async (taskId) => {
   try {
     const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}`, {
       method: "DELETE",
+      headers: window.getTaskCleanupHeaders(false),
     });
     if (!res.ok) {
       const err = await res.json();
@@ -5279,6 +5773,7 @@ const deleteTaskById = async (taskId) => {
     // Clear panels if deleted task was selected
     if (selectedTaskId === taskId) {
       checkpointPanel.style.display = "none";
+      governancePanel.style.display = "none";
       logPanel.style.display = "none";
       resumePanel.style.display = "none";
       selectedTaskId = null;
@@ -5360,8 +5855,9 @@ function renderPermissionSummary(precheck) {
   card.style.display = "";
   const profile = precheck.profile || {};
   const tools = precheck.tool_access || {};
-  const blocked = Object.entries(tools).filter(([, info]) => !info.can_access);
-  const accessible = Object.entries(tools).filter(([, info]) => info.can_access);
+  const review = Object.entries(tools).filter(([, info]) => info.decision === "REVIEW_REQUIRED");
+  const blocked = Object.entries(tools).filter(([, info]) => info.decision === "DENY");
+  const accessible = Object.entries(tools).filter(([, info]) => info.decision === "ALLOW");
 
   summary.innerHTML = `
     <div class="perm-summary-row">
@@ -5374,6 +5870,10 @@ function renderPermissionSummary(precheck) {
       <div class="perm-stat green">
         <span class="perm-stat-num">${accessible.length}</span>
         <span class="perm-stat-label">Directly accessible</span>
+      </div>
+      <div class="perm-stat">
+        <span class="perm-stat-num">${review.length}</span>
+        <span class="perm-stat-label">Approval required</span>
       </div>
       <div class="perm-stat red">
         <span class="perm-stat-num">${blocked.length}</span>
@@ -5457,7 +5957,19 @@ const _origCreateAgentCard = function(card, agent) {
         const toolName = card.dataset.toolName;
         const info = toolAccess[toolName];
         if (!info) return;
-        if (!info.can_access) {
+        if (info.decision === "REVIEW_REQUIRED") {
+          card.style.opacity = "0.8";
+          card.title = "This tool requires governance approval at execution time.";
+          let badge = card.querySelector(".tool-perm-badge");
+          if (!badge) {
+            badge = document.createElement("span");
+            badge.className = "tag warn tool-perm-badge";
+            badge.style.cssText = "position:absolute;top:4px;right:4px;font-size:10px;";
+            card.style.position = "relative";
+            card.appendChild(badge);
+          }
+          badge.textContent = "[approval]";
+        } else if (info.decision === "DENY" || !info.can_access) {
           card.style.opacity = "0.45";
           card.title = info.blocked_reason || "Insufficient permission";
           let badge = card.querySelector(".tool-perm-badge");
@@ -5469,6 +5981,7 @@ const _origCreateAgentCard = function(card, agent) {
             card.style.position = "relative";
             card.appendChild(badge);
           }
+          badge.textContent = "[blocked]";
         } else {
           card.style.opacity = "1";
           const badge = card.querySelector(".tool-perm-badge");

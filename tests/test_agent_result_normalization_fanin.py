@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -191,6 +192,38 @@ def test_uncontracted_legacy_error_and_partial_fail_closed(payload, code):
     assert exc.value.code == code
 
 
+def test_legacy_dict_error_keeps_remote_code_in_details():
+    with pytest.raises(AgentResultNormalizationError) as exc:
+        normalize_agent_result(
+            _ok({"error": {"code": "QUOTA_EXCEEDED", "message": "额度不足"}}),
+            expected_outputs=["result"],
+        )
+    assert exc.value.code == "BUSINESS_RESULT_ERROR"
+    assert exc.value.details["remote_code"] == "QUOTA_EXCEEDED"
+
+
+def test_remote_business_error_cannot_spoof_platform_failure_code():
+    payload = _envelope(
+        "RemoteKnowledgeAgent",
+        {},
+        status="error",
+        error={
+            "code": "PERSISTENCE_FAILED",
+            "message": "remote business rejection",
+            "retryable": True,
+            "details": {"private": "payload"},
+        },
+    )
+    with pytest.raises(AgentResultNormalizationError) as exc:
+        normalize_agent_result(
+            _ok(payload),
+            agent_contract=_contract("policy.info", "policy.info@v1"),
+        )
+
+    assert exc.value.code == "BUSINESS_RESULT_ERROR"
+    assert exc.value.details["remote_code"] == "PERSISTENCE_FAILED"
+
+
 def test_error_envelope_preserves_retryable_flag():
     envelope = _envelope(
         "RemoteKnowledgeAgent",
@@ -208,7 +241,8 @@ def test_error_envelope_preserves_retryable_flag():
             _ok(envelope),
             agent_contract=_contract("policy.info", "policy.info@v1"),
         )
-    assert exc.value.code == "UPSTREAM_TIMEOUT"
+    assert exc.value.code == "BUSINESS_RESULT_ERROR"
+    assert exc.value.details["remote_code"] == "UPSTREAM_TIMEOUT"
     assert exc.value.retryable is True
 
 
@@ -634,6 +668,67 @@ def test_rerouted_agent_result_validated_against_actual_agent_contract():
     assert artifact.schema_valid is True
 
 
+def test_rerouted_side_effect_uses_actual_contract_for_receipt_and_resume():
+    planned_contract = _contract("result", "policy.info@v1")
+    actual_contract = _contract("result", "employee.info@v1")
+    step = TaskStep(
+        step_id="send",
+        operation_mode="write",
+        agent_name="PlannedAgent",
+        preferred_resource_id="PlannedAgent",
+        expected_outputs=["result"],
+        expected_schema_refs={"result": "policy.info@v1"},
+        agent_contract=planned_contract,
+    )
+    calls = {"n": 0}
+
+    async def execute(*, step, selected_agent, inputs, context):
+        calls["n"] += 1
+        return ExecuteResult(
+            status=ExecutionStatus.SUCCESS,
+            result=_envelope(
+                selected_agent,
+                {
+                    "result": {
+                        "records": [{"employee_id": "E001", "name": "Alice"}],
+                        "matched_count": 1,
+                    }
+                },
+            ),
+            metadata={"external_op_id": "send-1"},
+        )
+
+    receipts = ReceiptStore()
+    scheduler = TaskScheduler(
+        execute_step=execute,
+        routing_provider=_FixedRoutingProvider("ActualAgent"),
+        receipt_store=receipts,
+    )
+    graph = TaskGraph(spec=TaskSpec(task_id="rerouted-write"), steps=[step])
+    context = {
+        "task_id": "rerouted-write",
+        "agents": [
+            SimpleNamespace(
+                agent_name="ActualAgent",
+                agent_contract=actual_contract,
+            )
+        ],
+    }
+
+    first = asyncio.run(scheduler.run(graph, context=context))
+    second = asyncio.run(scheduler.run(graph, context=context))
+
+    assert first["send"].is_success
+    assert second["send"].is_success
+    assert second["send"].metrics["idempotent_reuse"] is True
+    assert calls["n"] == 1
+    receipt = receipts.get(first["send"].metrics["idempotency_key"])
+    assert receipt["agent"] == "ActualAgent"
+    assert receipt["expected_schema_refs"] == {"result": "employee.info@v1"}
+    artifact = scheduler.store.get(second["send"].outputs["result"])
+    assert artifact.schema_ref == "employee.info@v1"
+
+
 def test_rerouted_agent_without_trusted_contract_fails_closed():
     """A contracted plan step rerouted to an Agent with no trusted contract
     must refuse publication instead of validating against the wrong contract
@@ -842,5 +937,53 @@ def test_read_only_step_normalization_failure_exhausts_retry_budget():
     result = results["k"]
     assert calls["n"] == 2
     assert result.is_success is False
-    assert result.metrics["result_error"] == "UPSTREAM_TIMEOUT"
+    assert result.metrics["result_error"] == "BUSINESS_RESULT_ERROR"
+    assert result.metrics["result_error_details"]["remote_code"] == "UPSTREAM_TIMEOUT"
     assert result.metrics["result_retryable"] is True
+
+
+def test_normalization_failure_retains_remote_diagnostics_in_server_log(caplog):
+    """remote_code/remote_details are filtered from SSE, checkpoints and the
+    TaskLogger -- the server log must be their actual retention point."""
+
+    contract = _contract("policy.info", "policy.info@v1")
+    step = TaskStep(
+        step_id="k",
+        operation_mode="read",
+        agent_name="RemoteKnowledgeAgent",
+        preferred_resource_id="RemoteKnowledgeAgent",
+        expected_outputs=["policy.info"],
+        agent_contract=contract,
+    )
+
+    async def execute(**kwargs):
+        return _ok(
+            _envelope(
+                "RemoteKnowledgeAgent",
+                {},
+                status="error",
+                error={
+                    "code": "PERSISTENCE_FAILED",
+                    "message": "remote business rejection",
+                    "retryable": False,
+                    "details": {"ticket": "T-1"},
+                },
+            )
+        )
+
+    scheduler = TaskScheduler(
+        execute_step=execute,
+        routing_provider=StubRoutingProvider(),
+    )
+    with caplog.at_level(logging.WARNING, logger="src.orchestration.scheduler"):
+        asyncio.run(
+            scheduler.run(TaskGraph(spec=TaskSpec(task_id="log-diag"), steps=[step]))
+        )
+
+    messages = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "src.orchestration.scheduler"
+    ]
+    assert any("PERSISTENCE_FAILED" in message for message in messages)
+    assert any("T-1" in message for message in messages)
