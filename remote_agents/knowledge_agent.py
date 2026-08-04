@@ -24,7 +24,7 @@ class RemoteKnowledgeAgent(BaseRemoteAgent):
                 produces=[
                     DataContractRef(
                         name="policy.info",
-                        schema_ref="policy.info@v1",
+                        schema_ref="policy.info@v2",
                     )
                 ],
             ),
@@ -65,35 +65,24 @@ class RemoteKnowledgeAgent(BaseRemoteAgent):
                 arguments=arguments,
                 timeout=60  # Knowledge queries may take longer
             )
-            policy_scope = str(result.get("policy_scope") or "statutory")
-            if policy_scope not in {"company", "statutory", "mixed", "unknown"}:
-                policy_scope = "unknown"
             payload = {
-                "query": str(result.get("query") or arguments.get("query") or ""),
-                "answer": str(result.get("answer") or ""),
-                "knowledge_items_count": int(
-                    result.get("knowledge_items_count") or 0
+                # Keep the remote tool's types intact. Contract validation must
+                # see malformed metadata and fail closed instead of accepting a
+                # sanitized approximation of the result.
+                "query": (
+                    result["query"] if "query" in result else arguments.get("query")
                 ),
-                "policy_scope": policy_scope,
+                "answer": result.get("answer"),
+                "knowledge_items_count": result.get("knowledge_items_count"),
+                "policy_scope": (
+                    result["policy_scope"]
+                    if "policy_scope" in result
+                    else "statutory"
+                ),
             }
-            sources = result.get("sources")
-            if isinstance(sources, list):
-                payload["sources"] = [
-                    source for source in sources if isinstance(source, dict)
-                ]
-            matched_items = result.get("matched_items")
-            if isinstance(matched_items, list):
-                payload["matched_items"] = [
-                    str(item) for item in matched_items if item is not None
-                ]
-            if "not_found" in result:
-                not_found = result.get("not_found")
-                if not isinstance(not_found, bool):
-                    raise TypeError(
-                        "knowledge_search_tool returned contract-invalid "
-                        f"not_found: expected bool, got {type(not_found).__name__}"
-                    )
-                payload["not_found"] = not_found
+            for field in ("sources", "matched_items", "not_found"):
+                if field in result:
+                    payload[field] = result[field]
             return self.result_envelope(outputs={"policy.info": payload})
         except Exception as exc:
             return self.result_envelope(

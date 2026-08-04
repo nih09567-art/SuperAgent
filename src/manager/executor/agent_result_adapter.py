@@ -75,13 +75,26 @@ def _looks_like_envelope(value: Any) -> bool:
 
 
 def _register_missing_agent_schemas(registry: SchemaRegistry) -> SchemaRegistry:
-    """Install built-in Agent schemas without replacing existing definitions."""
+    """Install built-ins and attach their validators without replacing schemas."""
 
-    from src.contracts.agent_schema_catalog import AGENT_SCHEMA_CATALOG
+    from src.contracts.agent_schema_catalog import (
+        AGENT_SCHEMA_CATALOG,
+        AGENT_SCHEMA_VALIDATORS,
+    )
 
     for schema_ref, schema in AGENT_SCHEMA_CATALOG.items():
+        semantic_validator = AGENT_SCHEMA_VALIDATORS.get(schema_ref)
         if not registry.has(schema_ref):
-            registry.register(schema_ref, schema)
+            registry.register(
+                schema_ref,
+                schema,
+                semantic_validator=semantic_validator,
+            )
+        elif semantic_validator is not None:
+            # A caller may provide a stricter structural schema in a custom
+            # registry. Keep that schema, but never let it remove the built-in
+            # cross-field invariants for a versioned Agent contract.
+            registry.set_semantic_validator(schema_ref, semantic_validator)
     return registry
 
 
@@ -195,14 +208,15 @@ def normalize_agent_result(
         if isinstance(agent_contract, AgentContract)
         else AgentContract.model_validate(agent_contract)
     )
-    if schema_registry is None:
-        # The contract catalog is part of the platform protocol and must be
-        # available on the production path, not only in contract unit tests.
-        # Only fill missing entries: callers may have registered a stricter
-        # schema under the same versioned reference.
-        registry = _register_missing_agent_schemas(get_schema_registry())
-    else:
-        registry = schema_registry
+    # The contract catalog is part of the platform protocol and must be
+    # available on every validation path, including callers that provide a
+    # custom registry. Existing structural schemas are preserved, while the
+    # built-in semantic validators are always attached for their refs.
+    registry = _register_missing_agent_schemas(
+        schema_registry
+        if schema_registry is not None
+        else get_schema_registry()
+    )
 
     if _looks_like_envelope(payload):
         try:

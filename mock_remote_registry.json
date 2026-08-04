@@ -459,7 +459,7 @@
         "produces": ["policy.info"],
         "input_schema_refs": {},
         "output_schema_refs": {
-          "policy.info": "policy.info@v1"
+          "policy.info": "policy.info@v2"
         },
         "selected_tools": [
           {
