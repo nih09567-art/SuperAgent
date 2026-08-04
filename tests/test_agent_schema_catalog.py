@@ -381,6 +381,54 @@ def test_policy_v2_accepts_consistent_match_provenance() -> None:
     assert valid, errors
 
 
+def test_policy_v2_accepts_iso_timestamp_for_source_snapshot() -> None:
+    registry = register_agent_schemas(SchemaRegistry())
+    payload = _policy_v2_payload(
+        sources=[
+            {
+                **_policy_v2_payload()["sources"][0],
+                "effective_date": "2026-01-01T12:30:00Z",
+            }
+        ]
+    )
+
+    valid, errors = registry.validate(payload, "policy.info@v2")
+
+    assert valid, errors
+
+
+@pytest.mark.parametrize(
+    ("date_overrides", "error_fragment"),
+    [
+        (
+            {"effective_date": " "},
+            "must be a non-empty ISO date or timestamp",
+        ),
+        (
+            {"source_updated_at": "not-a-date"},
+            "must be an ISO date or timestamp",
+        ),
+    ],
+)
+def test_policy_v2_rejects_blank_or_invalid_provenance_dates(
+    date_overrides: dict[str, str],
+    error_fragment: str,
+) -> None:
+    registry = register_agent_schemas(SchemaRegistry())
+    source = {
+        key: value
+        for key, value in _policy_v2_payload()["sources"][0].items()
+        if key not in {"effective_date", "source_updated_at"}
+    }
+    source.update(date_overrides)
+    payload = _policy_v2_payload(sources=[source])
+
+    valid, errors = registry.validate(payload, "policy.info@v2")
+
+    assert not valid
+    assert any(error_fragment in error for error in errors), errors
+
+
 def test_policy_v2_allows_source_ids_in_a_different_display_order() -> None:
     registry = register_agent_schemas(SchemaRegistry())
     payload = _policy_v2_payload()

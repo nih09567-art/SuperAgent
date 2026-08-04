@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date, datetime
 from typing import Any
 
 from src.orchestration.schema_registry import (
@@ -9,6 +10,24 @@ from src.orchestration.schema_registry import (
 )
 
 _POLICY_SCOPES = {"company", "statutory", "mixed", "unknown"}
+
+
+def _is_iso_date_or_timestamp(value: str) -> bool:
+    """Return whether a provenance date is an ISO date or timestamp."""
+
+    normalized = value.strip()
+    if not normalized:
+        return False
+    try:
+        date.fromisoformat(normalized)
+        return True
+    except ValueError:
+        pass
+    try:
+        datetime.fromisoformat(normalized.replace("Z", "+00:00"))
+        return True
+    except ValueError:
+        return False
 
 
 def _policy_scope_from_sources(sources: list[dict[str, Any]]) -> str | None:
@@ -368,13 +387,31 @@ def _validate_policy_info_v2(payload: dict[str, Any]) -> list[str]:
                     f"{source_path}.policy_scope: expected one of "
                     f"{sorted(_POLICY_SCOPES)!r}, got {source_scope!r}"
                 )
-        for date_field in ("effective_date", "source_updated_at"):
-            if date_field in source and not isinstance(source[date_field], str):
+        valid_date_present = False
+        date_fields = ("effective_date", "source_updated_at")
+        for date_field in date_fields:
+            if date_field not in source:
+                continue
+            value = source[date_field]
+            if not isinstance(value, str):
                 errors.append(
                     f"{source_path}.{date_field}: expected string, "
-                    f"got {type(source[date_field]).__name__}"
+                    f"got {type(value).__name__}"
                 )
-        if not (source.get("effective_date") or source.get("source_updated_at")):
+            elif not value.strip():
+                errors.append(
+                    f"{source_path}.{date_field}: must be a non-empty "
+                    "ISO date or timestamp"
+                )
+            elif not _is_iso_date_or_timestamp(value):
+                errors.append(
+                    f"{source_path}.{date_field}: must be an ISO date or timestamp"
+                )
+            else:
+                valid_date_present = True
+        if not valid_date_present and not any(
+            date_field in source for date_field in date_fields
+        ):
             errors.append(
                 f"{source_path}: requires effective_date or source_updated_at"
             )

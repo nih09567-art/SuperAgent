@@ -114,7 +114,8 @@ Contract v1 registers these schemas in the existing `SchemaRegistry`:
 - `policy.info@v2`: keeps the v1 fields and requires provenance metadata. A
   successful match must provide aligned, non-empty `sources` and `matched_items`;
   each source must identify its category, source, demo status, and effective or
-  snapshot date; the top-level `policy_scope` must summarize the source scopes;
+  snapshot date in ISO 8601 date or timestamp format; the top-level
+  `policy_scope` must summarize the source scopes;
   a `not_found` result must report `policy_scope=unknown`, a zero count, and
   empty lists. Source and matched-item IDs must form the same unique set; their
   display order is not part of the contract. The v1 schema remains registered
@@ -144,9 +145,9 @@ small keyword match, removes candidates scoring below half of the best match,
 and sends at most three entries to the LLM. Results default to
 `policy_scope=statutory` unless the tool supplies explicit provenance. Demo
 fixtures use `is_demo=true`; `effective_date` is reserved for an actual policy
-effective date, while `source_updated_at` records the date of a demonstration
-source snapshot. When no item matches, the tool returns `not_found=true`, an
-empty `sources` list, and does not call the LLM.
+effective date, while `source_updated_at` records the ISO 8601 date or timestamp
+of a demonstration source snapshot. When no item matches, the tool returns
+`not_found=true`, an empty `sources` list, and does not call the LLM.
 
 `RemoteReportAgent` requires the generic `report.sources` input and produces
 `report.markdown`. Its contract is not tied to HR-specific source names.
