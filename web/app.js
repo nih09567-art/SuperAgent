@@ -6,6 +6,23 @@ const readinessHint = document.getElementById("readinessHint");
 const tabs = document.querySelectorAll(".tab");
 const panels = document.querySelectorAll(".panel");
 
+const TASK_OWNER_TOKEN_KEY = "superagentTaskOwnerCapability";
+const getTaskOwnerToken = () => {
+  let token = window.localStorage.getItem(TASK_OWNER_TOKEN_KEY) || "";
+  if (!token) {
+    const bytes = new Uint8Array(32);
+    window.crypto.getRandomValues(bytes);
+    token = Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("");
+    window.localStorage.setItem(TASK_OWNER_TOKEN_KEY, token);
+  }
+  return token;
+};
+const getTaskCleanupHeaders = (includeJson = false) => ({
+  ...(includeJson ? { "Content-Type": "application/json" } : {}),
+  "X-Task-Owner-Token": getTaskOwnerToken(),
+});
+window.getTaskCleanupHeaders = getTaskCleanupHeaders;
+
 const userIdInput = document.getElementById("userId");
 const deepThinkingInput = document.getElementById("deepThinking");
 const searchBeforeInput = document.getElementById("searchBefore");
@@ -85,6 +102,9 @@ const routingExcludedView = document.getElementById("routingExcludedView");
 const decisionTopAgentSummary = document.getElementById("decisionTopAgentSummary");
 const decisionDetailTabs = document.getElementById("decisionDetailTabs");
 const decisionDetailPanel = document.getElementById("decisionDetailPanel");
+const decisionConversationSelect = document.getElementById("decisionConversationSelect");
+const decisionRoundSelect = document.getElementById("decisionRoundSelect");
+const decisionHistoryMeta = document.getElementById("decisionHistoryMeta");
 
 let chatMirrorController = null;
 
@@ -357,11 +377,15 @@ let viewedConversationId = null;
 let runningConversationNodes = null;
 let activeConversationRuntime = null;
 let conversationRuntimeSequence = 0;
+let activeConversationTaskIds = new Set();
+let activeConversationDecisions = [];
 let coordinatorBuffer = "";
 let clarificationPending = false;
 let pendingClarificationContext = null;
 let coordinatorResponseHandled = false;
 let latestRoutingDecision = null;
+let selectedDecisionConversationId = null;
+let selectedDecisionId = null;
 let latestPlanningFailureMessage = "";
 let conversationContextEntities = {};
 let conversationContextArtifacts = [];
@@ -381,6 +405,7 @@ const LEGACY_CHAT_HISTORY_KEY_PREFIX = "cooragent.chatHistory.v1";
 const ACTIVE_CONVERSATION_LIMIT = 12;
 const CONVERSATION_TRANSCRIPT_LIMIT = 100;
 const CONVERSATION_MESSAGE_CHAR_LIMIT = 12000;
+const DECISION_HISTORY_LIMIT = 5;
 
 mermaid.initialize({ startOnLoad: false, theme: "default" });
 
@@ -923,6 +948,7 @@ const normalizePendingPlan = (pendingPlan) => {
     recoveryMessage: String(pendingPlan.recoveryMessage || "")
       .slice(0, CONVERSATION_MESSAGE_CHAR_LIMIT),
     serverStatus: String(pendingPlan.serverStatus || "").slice(0, 64),
+    retryExpiredReservation: Boolean(pendingPlan.retryExpiredReservation),
   };
 };
 
@@ -966,11 +992,6 @@ const persistRecoveredPendingPlan = (userId, conversationId, pendingPlan) => {
   persistChatHistory(userId, conversations);
 };
 
-const createExecutionAttemptId = () => {
-  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
-  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-};
-
 const computeExecutionPlanHash = async (workflowId, steps) => {
   const canonicalPlan = JSON.stringify({
     workflowId: String(workflowId || ""),
@@ -996,13 +1017,38 @@ const computeExecutionPlanHash = async (workflowId, steps) => {
     .join("");
 };
 
-const createExecutionIdentity = async (workflowId, steps) => {
+const createExecutionIdentity = async (userId, workflowId, steps, userQuery) => {
   const planHash = await computeExecutionPlanHash(workflowId, steps);
-  const attemptId = createExecutionAttemptId();
+  const response = await fetch("/api/workflows/execution-authorizations", {
+    method: "POST",
+    headers: window.getTaskCleanupHeaders(true),
+    body: JSON.stringify({
+      user_id: userId,
+      workflow_id: workflowId,
+      plan_hash: planHash,
+      user_query: String(userQuery || ""),
+      retry_expired: Boolean(activePendingPlan?.retryExpiredReservation),
+    }),
+  });
+  const responseBody = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const detail = responseBody.detail || responseBody;
+    const message = detail.message || detail.code || `HTTP ${response.status}`;
+    throw new Error(`Execution authorization failed: ${message}`);
+  }
+  const identity = {
+    taskId: String(responseBody.task_id || ""),
+    attemptId: String(responseBody.execution_attempt_id || ""),
+    idempotencyKey: String(responseBody.execution_idempotency_key || ""),
+    planHash: String(responseBody.execution_plan_hash || ""),
+    authorizationToken: String(responseBody.execution_authorization_token || ""),
+  };
+  if (!identity.taskId || !identity.attemptId || !identity.idempotencyKey
+    || identity.planHash !== planHash || !identity.authorizationToken) {
+    throw new Error("Execution authorization response is incomplete or does not match the confirmed plan");
+  }
   return {
-    attemptId,
-    idempotencyKey: `${activeConversationId || "conversation"}:${planHash}`,
-    planHash,
+    ...identity,
   };
 };
 
@@ -1057,6 +1103,18 @@ const resolvePendingExecution = async (pendingPlan = activePendingPlan) => {
     }
 
     const serverStatus = String(task.status || "unknown").toUpperCase();
+    if (
+      serverStatus === "FAILED"
+      && String(task.reservation_failure_code || "") === "RESERVATION_EXPIRED"
+    ) {
+      return applyPendingExecutionRecoveryState(conversationId, normalized, {
+        status: "awaiting_confirmation",
+        interruptedFrom: "",
+        serverStatus,
+        retryExpiredReservation: true,
+        recoveryMessage: "上次执行授权在工作流启动前已过期，未开始生产执行。请人工确认后重试。",
+      });
+    }
     if (["RUNNING", "RESERVED"].includes(serverStatus)) {
       return applyPendingExecutionRecoveryState(conversationId, normalized, {
         status: "recovery_pending",
@@ -1084,6 +1142,53 @@ const resolvePendingExecution = async (pendingPlan = activePendingPlan) => {
   }
 };
 
+const cloneDecisionEventData = (value) => {
+  if (!value || typeof value !== "object") return {};
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch (err) {
+    console.warn("Failed to clone routing decision:", err);
+    return {};
+  }
+};
+
+const normalizeStoredDecision = (decision, fallbackRound = 1) => {
+  if (!decision || typeof decision !== "object") return null;
+  const eventData = cloneDecisionEventData(decision.eventData || decision.event_data);
+  const workflowId = String(
+    decision.workflowId
+      || decision.workflow_id
+      || eventData.workflow_id
+      || ""
+  ).trim();
+  const taskIds = Array.isArray(decision.taskIds)
+    ? [...new Set(decision.taskIds.map(String).filter(Boolean))]
+    : [decision.taskId || eventData.task_id]
+      .map((value) => String(value || ""))
+      .filter(Boolean);
+  const round = Math.max(1, Number.parseInt(decision.round, 10) || fallbackRound);
+  const createdAt = decision.createdAt || decision.created_at || new Date().toISOString();
+  const query = String(
+    decision.query
+      || eventData.task_profile?.resolved_request
+      || eventData.task_profile?.business_goal
+      || ""
+  ).trim();
+  const id = String(
+    decision.id
+      || (workflowId ? `decision:${workflowId}` : `decision:${createdAt}:${round}`)
+  );
+  return {
+    id,
+    round,
+    workflowId,
+    taskIds,
+    query,
+    createdAt,
+    updatedAt: decision.updatedAt || decision.updated_at || createdAt,
+    eventData,
+  };
+};
 const normalizeStoredConversation = (conversation) => {
   if (!conversation || typeof conversation !== "object") return null;
   const messages = Array.isArray(conversation.messages)
@@ -1108,12 +1213,23 @@ const normalizeStoredConversation = (conversation) => {
     : [];
   if (!messages.length) return null;
   const firstUserMessage = messages.find((message) => message.role === "user")?.content || "新对话";
+  const decisions = (Array.isArray(conversation.decisions) ? conversation.decisions : [])
+    .map((decision, index) => normalizeStoredDecision(decision, index + 1))
+    .filter(Boolean)
+    .sort((left, right) => (
+      left.round - right.round
+      || String(left.createdAt).localeCompare(String(right.createdAt))
+    ))
+    .slice(-DECISION_HISTORY_LIMIT);
   return {
     id: String(conversation.id || `${Date.now()}-${Math.random().toString(16).slice(2)}`),
     title: String(conversation.title || firstUserMessage).trim().slice(0, 48),
     createdAt: conversation.createdAt || new Date().toISOString(),
     updatedAt: conversation.updatedAt || conversation.createdAt || new Date().toISOString(),
     workflowId: String(conversation.workflowId || ""),
+    taskIds: Array.isArray(conversation.taskIds)
+      ? [...new Set(conversation.taskIds.map(String).filter(Boolean))]
+      : [],
     contextEntities: conversation.contextEntities && typeof conversation.contextEntities === "object"
       ? { ...conversation.contextEntities }
       : {},
@@ -1131,6 +1247,8 @@ const normalizeStoredConversation = (conversation) => {
     contextReferences: Array.isArray(conversation.contextReferences)
       ? conversation.contextReferences.map((item) => ({ ...item }))
       : [],
+    pendingPlan: normalizePendingPlan(conversation.pendingPlan),
+    decisions,
     pendingPlan: normalizePendingPlan(conversation.pendingPlan),
     messages,
   };
@@ -1192,6 +1310,7 @@ const saveActiveConversation = () => {
     createdAt: activeConversationCreatedAt,
     updatedAt: now,
     workflowId: workflowIdInput?.value.trim() || "",
+    taskIds: Array.from(activeConversationTaskIds),
     contextEntities: { ...conversationContextEntities },
     contextArtifacts: conversationContextArtifacts.map((item) => ({ ...item })),
     pendingClarification: pendingClarificationContext
@@ -1201,6 +1320,12 @@ const saveActiveConversation = () => {
     currentResolvedRequest,
     currentRequestEntities: { ...currentRequestEntities },
     contextReferences: currentContextReferences.map((item) => ({ ...item })),
+    pendingPlan: normalizePendingPlan(activePendingPlan),
+    decisions: activeConversationDecisions.map((decision) => ({
+      ...decision,
+      taskIds: [...decision.taskIds],
+      eventData: cloneDecisionEventData(decision.eventData),
+    })),
     pendingPlan: normalizePendingPlan(activePendingPlan),
     messages: activeConversationTranscript.map((message) => ({ ...message })),
   });
@@ -1221,6 +1346,7 @@ const renderChatHistory = () => {
   if (!userId) {
     conversationHistoryMeta.textContent = "输入 User ID 后显示对应记录";
     clearChatHistoryBtn.disabled = true;
+    renderDecisionHistoryControls();
     scheduleChatMirror();
     return;
   }
@@ -1232,6 +1358,7 @@ const renderChatHistory = () => {
     empty.className = "conversation-history-empty";
     empty.textContent = "暂无对话";
     conversationHistoryList.appendChild(empty);
+    renderDecisionHistoryControls();
     scheduleChatMirror();
     return;
   }
@@ -1250,6 +1377,7 @@ const renderChatHistory = () => {
     item.addEventListener("click", () => loadConversation(conversation));
     conversationHistoryList.appendChild(item);
   });
+  renderDecisionHistoryControls();
   scheduleChatMirror();
 };
 
@@ -1333,7 +1461,7 @@ const renderPendingPlanForCurrentAnswer = (pendingPlan, interactive = true) => {
     recovery_blocked: "已禁止重复执行",
   };
   lifecycle.confirmPlanButton.textContent = confirmLabels[normalized.status] || "确认执行";
-  if (recoveryStatus || interruptedRevision) {
+  if (recoveryStatus || interruptedRevision || normalized.retryExpiredReservation) {
     lifecycle.recoveryNotice.textContent = normalized.recoveryMessage || (
       interruptedRevision
         ? "上次计划修改被中断，可继续修改或执行原计划。"
@@ -1463,6 +1591,14 @@ const loadConversation = (conversation) => {
   activeConversationId = normalized.id;
   viewedConversationId = normalized.id;
   activeConversationCreatedAt = normalized.createdAt;
+  activeConversationTaskIds = new Set(normalized.taskIds || []);
+  activeConversationDecisions = (normalized.decisions || []).map((decision) => ({
+    ...decision,
+    taskIds: [...decision.taskIds],
+    eventData: cloneDecisionEventData(decision.eventData),
+  }));
+  selectedDecisionConversationId = normalized.id;
+  selectedDecisionId = activeConversationDecisions.at(-1)?.id || null;
   activeConversationTranscript = normalized.messages.map((message) => ({ ...message }));
   activeConversationMessages = activeConversationTranscript
     .slice(-ACTIVE_CONVERSATION_LIMIT)
@@ -1516,14 +1652,61 @@ const loadConversation = (conversation) => {
   return true;
 };
 
-const clearChatHistory = () => {
+const clearChatHistory = async () => {
   const userId = userIdInput.value.trim();
-  if (!userId || !loadChatHistory(userId).length) return;
+  const conversations = userId ? loadChatHistory(userId) : [];
+  if (!userId || !conversations.length) return;
   if (!window.confirm(`确定清空用户 ${userId} 的最近对话吗？`)) return;
+  const workflowIds = [...new Set(conversations.flatMap((conversation) => [
+    conversation.workflowId,
+    ...(Array.isArray(conversation.decisions)
+      ? conversation.decisions.map((decision) => decision.workflowId)
+      : []),
+  ]).map((value) => String(value || "").trim()).filter(Boolean))];
+  const taskIds = [...new Set(conversations.flatMap((conversation) => [
+    ...(Array.isArray(conversation.taskIds) ? conversation.taskIds : []),
+    ...(Array.isArray(conversation.decisions)
+      ? conversation.decisions.flatMap((decision) => (
+        Array.isArray(decision.taskIds) ? decision.taskIds : []
+      ))
+      : []),
+  ]).map((value) => String(value || "").trim()).filter(Boolean))];
+  try {
+    await Promise.all(taskIds.map(async (taskId) => {
+      const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}`, {
+        method: "DELETE",
+        headers: window.getTaskCleanupHeaders(false),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok && response.status !== 404) {
+        throw new Error(data.detail || `清理任务 ${taskId} 失败（HTTP ${response.status}）`);
+      }
+    }));
+    await Promise.all(workflowIds.map(async (workflowId) => {
+      const query = new URLSearchParams({ workflow_id: workflowId });
+      const response = await fetch(`/api/conversation-history?${query}`, {
+        method: "DELETE",
+        headers: window.getTaskCleanupHeaders(false),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.detail || `清理 ${workflowId} 失败（HTTP ${response.status}）`);
+      }
+    }));
+  } catch (err) {
+    window.alert(`对话没有删除：后端关联记录清理失败。${err.message}`);
+    return;
+  }
   localStorage.removeItem(getChatHistoryKey(userId));
   localStorage.removeItem(getLegacyChatHistoryKey(userId));
   resetActiveConversation(userId);
   renderChatHistory();
+  if (window.SecurityModule?.loadSecurityReconciliations) {
+    await window.SecurityModule.loadSecurityReconciliations();
+  }
+  if (window.SecurityModule?.loadSecurityApprovals) {
+    await window.SecurityModule.loadSecurityApprovals();
+  }
 };
 
 const resetActiveConversation = (userId = userIdInput.value.trim()) => {
@@ -1535,6 +1718,7 @@ const resetActiveConversation = (userId = userIdInput.value.trim()) => {
   viewedConversationId = null;
   activeConversationCreatedAt = null;
   activePendingPlan = null;
+  activeConversationTaskIds = new Set();
   instructionHistory = [];
   originalUserQuery = "";
   coordinatorBuffer = "";
@@ -1542,6 +1726,9 @@ const resetActiveConversation = (userId = userIdInput.value.trim()) => {
   pendingClarificationContext = null;
   coordinatorResponseHandled = false;
   latestRoutingDecision = null;
+  activeConversationDecisions = [];
+  selectedDecisionConversationId = null;
+  selectedDecisionId = null;
   conversationContextEntities = {};
   conversationContextArtifacts = [];
   currentRequestQuery = "";
@@ -2103,7 +2290,7 @@ const runPlannerUpdate = async (instruction, appendHistory = true, runtime = nul
   try {
     const response = await fetch("/api/workflows/run", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: window.getTaskCleanupHeaders(true),
       body: JSON.stringify(payload),
       signal: plannerOnlyController.signal,
     });
@@ -2163,8 +2350,14 @@ const createStepCard = (displayName, subAgentName, eventKey = "", stepId = "") =
   const normalizedKey = String(eventKey || stepId || "");
   if (normalizedKey && executionStepCardsByKey.has(normalizedKey)) {
     const existing = executionStepCardsByKey.get(normalizedKey);
-    currentStepCard = existing;
-    return existing;
+    // Reuse duplicate events only while the same execution is active. Some
+    // legacy backends reused one agent_id for multiple sequential agents; a
+    // new start event after the previous card finished must create a new card.
+    if (existing.status === "running") {
+      currentStepCard = existing;
+      return existing;
+    }
+    executionStepCardsByKey.delete(normalizedKey);
   }
   const card = {
     id: ++executionStepCount,
@@ -2177,6 +2370,7 @@ const createStepCard = (displayName, subAgentName, eventKey = "", stepId = "") =
     startTime: Date.now(),
     endTime: null,
     summary: "",
+    governance: null,
   };
   executionStepCards.push(card);
   if (normalizedKey) executionStepCardsByKey.set(normalizedKey, card);
@@ -2210,8 +2404,26 @@ const formatStepResultContent = (data) => {
     : {};
   const outputNames = Object.keys(outputs);
   let value = outputs;
-  if (outputNames.length === 1) {
-    value = outputs[outputNames[0]];
+  if (outputNames.length > 0) {
+    // One Agent result may be published under several logical output aliases
+    // for downstream binding.  Those aliases are not separate business rows;
+    // rendering every identical value produced four duplicate tables for the
+    // HR query.  Collapse only byte-equivalent values and keep genuinely
+    // different outputs keyed by their logical names.
+    const uniqueOutputs = [];
+    const seen = new Set();
+    outputNames.forEach((name) => {
+      const candidate = outputs[name];
+      let fingerprint;
+      try { fingerprint = JSON.stringify(candidate); } catch (e) { fingerprint = `${candidate}`; }
+      if (!seen.has(fingerprint)) {
+        seen.add(fingerprint);
+        uniqueOutputs.push([name, candidate]);
+      }
+    });
+    value = uniqueOutputs.length === 1
+      ? uniqueOutputs[0][1]
+      : Object.fromEntries(uniqueOutputs);
   }
   if (outputNames.length > 0) {
     return typeof value === "string" ? value : JSON.stringify(value, null, 2);
@@ -2440,7 +2652,21 @@ const formatFinalResultContent = (data = {}) => {
     ? data.unavailable_artifacts
     : [];
   if (unavailable.length) {
-    return "最终结果已生成，但当前用户无权读取或结果未通过 Schema 校验。";
+    const reasons = [...new Set(
+      unavailable
+        .map((item) => String(item?.reason || "").trim())
+        .filter(Boolean)
+    )];
+    const reasonLabels = {
+      ArtifactAccessDenied: "当前用户没有结果读取权限",
+      ArtifactSchemaInvalid: "Agent 返回结果未通过 Schema 校验",
+      ArtifactSchemaMismatch: "结果 Schema 与任务契约不一致",
+      invalid_artifact_ref: "结果引用格式无效",
+    };
+    const details = reasons
+      .map((reason) => reasonLabels[reason] || reason)
+      .join("；");
+    return `最终结果已生成，但暂时无法展示：${details || "结果读取校验未通过"}。`;
   }
   return "工作流未产生可展示的最终结果。";
 };
@@ -2567,6 +2793,17 @@ const renderStepCardInto = (card, parent) => {
   const isError = ["error", "blocked"].includes(card.status);
   const body = document.createElement("div");
   body.className = `step-card-body${isError ? "" : " hidden"}`;
+  if (card.governance) {
+    const governance = document.createElement("div");
+    governance.className = "step-governance-strip";
+    governance.innerHTML = card.governance
+      .map(([label, value, tone]) =>
+        `<span class="step-governance-chip ${escapeHtml(tone || "")}">` +
+        `<small>${escapeHtml(label)}</small>${escapeHtml(String(value))}</span>`
+      )
+      .join("");
+    body.appendChild(governance);
+  }
   if (card.failure) {
     const div = document.createElement("div");
     div.className = "step-result";
@@ -2834,6 +3071,147 @@ const escapeHtml = (str) => {
   return div.innerHTML;
 };
 
+const getDecisionConsoleConversations = () => {
+  const userId = userIdInput.value.trim();
+  if (!userId) return [];
+  const conversations = loadChatHistory(userId);
+  if (activeConversationId && activeConversationDecisions.length) {
+    const activeIndex = conversations.findIndex((item) => item.id === activeConversationId);
+    const activeSnapshot = {
+      id: activeConversationId,
+      title: conversations[activeIndex]?.title
+        || activeConversationTranscript.find((message) => message.role === "user")?.content
+        || "当前对话",
+      updatedAt: new Date().toISOString(),
+      decisions: activeConversationDecisions,
+    };
+    if (activeIndex >= 0) {
+      conversations[activeIndex] = { ...conversations[activeIndex], ...activeSnapshot };
+    } else {
+      conversations.unshift(activeSnapshot);
+    }
+  }
+  return conversations.filter((conversation) => conversation.decisions?.length);
+};
+
+const decisionConversationLabel = (conversation) => {
+  const title = String(conversation.title || "未命名对话").trim();
+  const time = formatConversationTime(conversation.updatedAt);
+  return time ? `${title} · ${time}` : title;
+};
+
+const decisionRoundLabel = (decision) => {
+  const query = String(decision.query || "未保存原始问题").trim();
+  const shortQuery = query.length > 28 ? `${query.slice(0, 28)}…` : query;
+  const time = formatConversationTime(decision.createdAt);
+  return `第 ${decision.round} 轮 · ${shortQuery}${time ? ` · ${time}` : ""}`;
+};
+
+const rememberRoutingDecision = (eventData) => {
+  if (!activeConversationId || !eventData || typeof eventData !== "object") return null;
+  const now = new Date().toISOString();
+  const workflowId = String(eventData.workflow_id || workflowIdInput?.value.trim() || "").trim();
+  const taskId = String(eventData.task_id || "").trim();
+  const profile = eventData.task_profile || {};
+  const query = String(
+    profile.resolved_request
+      || profile.business_goal
+      || currentResolvedRequest
+      || currentRequestQuery
+      || originalUserQuery
+      || ""
+  ).trim();
+  const existingIndex = workflowId
+    ? activeConversationDecisions.findIndex((item) => item.workflowId === workflowId)
+    : -1;
+
+  if (existingIndex >= 0) {
+    const existing = activeConversationDecisions[existingIndex];
+    const updated = {
+      ...existing,
+      query: query || existing.query,
+      updatedAt: now,
+      taskIds: [...new Set([...existing.taskIds, taskId].filter(Boolean))],
+      eventData: cloneDecisionEventData(eventData),
+    };
+    activeConversationDecisions.splice(existingIndex, 1, updated);
+    selectedDecisionConversationId = activeConversationId;
+    selectedDecisionId = updated.id;
+    return updated;
+  }
+
+  const nextRound = activeConversationDecisions.reduce(
+    (maximum, item) => Math.max(maximum, Number(item.round) || 0),
+    0
+  ) + 1;
+  const decision = normalizeStoredDecision({
+    id: workflowId
+      ? `${activeConversationId}:decision:${workflowId}`
+      : `${activeConversationId}:decision:${now}:${nextRound}`,
+    round: nextRound,
+    workflowId,
+    taskIds: taskId ? [taskId] : [],
+    query,
+    createdAt: now,
+    updatedAt: now,
+    eventData,
+  }, nextRound);
+  if (!decision) return null;
+  activeConversationDecisions = [
+    ...activeConversationDecisions,
+    decision,
+  ].slice(-DECISION_HISTORY_LIMIT);
+  selectedDecisionConversationId = activeConversationId;
+  selectedDecisionId = decision.id;
+  return decision;
+};
+
+const renderDecisionHistoryControls = ({
+  conversationId = selectedDecisionConversationId,
+  decisionId = selectedDecisionId,
+  render = true,
+} = {}) => {
+  if (!decisionConversationSelect || !decisionRoundSelect) return null;
+  const conversations = getDecisionConsoleConversations();
+  if (!conversations.length) {
+    decisionConversationSelect.innerHTML = '<option value="">暂无历史决策</option>';
+    decisionRoundSelect.innerHTML = '<option value="">暂无决策轮次</option>';
+    decisionConversationSelect.disabled = true;
+    decisionRoundSelect.disabled = true;
+    if (decisionHistoryMeta) decisionHistoryMeta.textContent = "每个对话最多保存五轮决策。";
+    return null;
+  }
+
+  const selectedConversation = conversations.find((item) => item.id === conversationId)
+    || conversations.find((item) => item.id === activeConversationId)
+    || conversations[0];
+  selectedDecisionConversationId = selectedConversation.id;
+  decisionConversationSelect.disabled = false;
+  decisionConversationSelect.innerHTML = conversations.map((conversation) => (
+    `<option value="${escapeHtml(conversation.id)}">${escapeHtml(decisionConversationLabel(conversation))}</option>`
+  )).join("");
+  decisionConversationSelect.value = selectedConversation.id;
+
+  const decisions = [...selectedConversation.decisions]
+    .sort((left, right) => right.round - left.round);
+  const selectedDecision = decisions.find((item) => item.id === decisionId)
+    || decisions[0];
+  selectedDecisionId = selectedDecision.id;
+  decisionRoundSelect.disabled = false;
+  decisionRoundSelect.innerHTML = decisions.map((decision) => (
+    `<option value="${escapeHtml(decision.id)}">${escapeHtml(decisionRoundLabel(decision))}</option>`
+  )).join("");
+  decisionRoundSelect.value = selectedDecision.id;
+
+  if (render) {
+    renderRoutingDecision(selectedDecision.eventData, {
+      conversation: selectedConversation,
+      decision: selectedDecision,
+    });
+  }
+  return selectedDecision;
+};
+
 const renderDecisionDetailControls = (sections) => {
   if (!decisionDetailTabs || !decisionDetailPanel) return;
   const visibleSections = sections.filter((section) => section && !section.hidden);
@@ -2880,7 +3258,7 @@ const renderDecisionDetailControls = (sections) => {
     </div>`;
 };
 
-const renderRoutingDecision = (eventData) => {
+const renderRoutingDecision = (eventData, historyContext = null) => {
   if (!mainAgentDecisionCard) return;
   const profile = eventData?.task_profile || {};
   const route = eventData?.routing_decision || {};
@@ -2910,6 +3288,17 @@ const renderRoutingDecision = (eventData) => {
   mainAgentDecisionCard.style.display = "";
   routingDecisionBadge.textContent = `${decision} · ${Math.round((route.confidence || 0) * 100)}%`;
   routingDecisionBadge.className = `tag ${decision === "DISPATCH" ? "accent" : "warn"}`;
+  if (decisionHistoryMeta) {
+    const historyDecision = historyContext?.decision;
+    const historyConversation = historyContext?.conversation;
+    if (historyDecision) {
+      const timestamp = formatConversationTime(historyDecision.createdAt);
+      const query = historyDecision.query || "未保存原始问题";
+      decisionHistoryMeta.textContent = `${historyConversation?.title || "当前对话"} · 第 ${historyDecision.round} 轮${timestamp ? ` · ${timestamp}` : ""} · ${query}`;
+    } else {
+      decisionHistoryMeta.textContent = "当前决策";
+    }
+  }
 
   const profileItems = [
     ["主意图", profile.intent || "-"],
@@ -3391,6 +3780,10 @@ const handleEvent = (eventName, payload) => {
       saveActiveConversation();
     }
   }
+  const observedTaskId = payload?.data?.task_id || payload?.task_id;
+  if (observedTaskId) {
+    activeConversationTaskIds.add(String(observedTaskId));
+  }
   if (eventName === "messages") {
     const agentName = payload.agent_name || payload.data?.agent_name || payload.data?.tool || "assistant";
     const content = payload.data?.delta?.content || payload.data?.message || payload.raw || "";
@@ -3447,6 +3840,7 @@ const handleEvent = (eventName, payload) => {
   }
   if (eventName === "routing_decision") {
     latestRoutingDecision = payload.data || {};
+    const storedDecision = rememberRoutingDecision(latestRoutingDecision);
     const profile = latestRoutingDecision.task_profile || {};
     mergeConversationContextEntities(profile.entities || {});
     currentRequestEntities = profile.entities && typeof profile.entities === "object"
@@ -3467,8 +3861,15 @@ const handleEvent = (eventName, payload) => {
     } else {
       rememberPendingClarification(latestRoutingDecision);
     }
-    renderRoutingDecision(payload.data || {});
     saveActiveConversation();
+    if (storedDecision) {
+      renderDecisionHistoryControls({
+        conversationId: activeConversationId,
+        decisionId: storedDecision.id,
+      });
+    } else {
+      renderRoutingDecision(payload.data || {});
+    }
     return;
   }
   if (eventName === "start_of_agent") {
@@ -3511,6 +3912,22 @@ const handleEvent = (eventName, payload) => {
           data.step_id,
         );
       }
+      const metrics = data.metrics || {};
+      const attempts = Number(metrics.attempts || 1);
+      const maxAttempts = Number(metrics.max_attempts || attempts);
+      card.governance = [
+        ["操作", metrics.operation_mode || "-"],
+        ["风险", metrics.risk_level || "-",
+          ["HIGH", "CRITICAL"].includes(String(metrics.risk_level || "").toUpperCase()) ? "warn" : ""],
+        ["尝试", `${attempts}/${maxAttempts}`],
+        ["耗时", `${Number(metrics.duration_seconds || 0).toFixed(2)}s`],
+        ["权限", metrics.permission_decision || (metrics.permission_denied ? "DENY" : "ALLOW"),
+          metrics.permission_denied ? "danger" : "ok"],
+        ["Checkpoint", metrics.checkpoint_step ?? "-"],
+        ["回执", metrics.receipt_status || (metrics.receipt_released ? "RELEASED" : "-")],
+        ["异常", metrics.reason_code || metrics.failure_category || "-",
+          metrics.reason_code ? "warn" : ""],
+      ];
       const content = formatStepResultContent(data);
       if (data.failure || (status && status !== "SUCCEEDED")) {
         errorStepCard(content, card, data.failure);
@@ -3565,6 +3982,81 @@ const handleEvent = (eventName, payload) => {
       } else if (currentRunContext !== "executing") {
         appendOutput("system", `\n[end_of_agent] ${agentName}\n`);
       }
+    }
+    return;
+  }
+  if (eventName === "retry_scheduled") {
+    const data = payload.data || {};
+    const card = findStepCard(data);
+    const message =
+      `第 ${data.attempt || 1} 次执行失败（${data.reason_code || "READ_FAILURE"}），` +
+      `${Number(data.next_delay_seconds || 0).toFixed(2)} 秒后进行第 ${data.next_attempt || 2}/${data.max_attempts || "?"} 次尝试。`;
+    if (card) {
+      appendStepContent(`\n${message}\n`, card);
+    } else {
+      appendOutput("system", `\n[retry] ${message}\n`);
+    }
+    showPlanValidationHint(message, true);
+    return;
+  }
+  if (eventName === "recovery_plan") {
+    const data = payload.data || {};
+    const summary =
+      `恢复评估：保留步骤 ${Number(data.keep_steps?.length || 0)} 个，` +
+      `待恢复步骤 ${Number(data.retry_steps?.length || 0)} 个；` +
+      `${data.automatic && data.enabled ? "允许自动恢复" : "不执行自动恢复"}。`;
+    appendOutput("system", `\n[recovery plan] ${summary}\n`);
+    showPlanValidationHint(summary, !(data.automatic && data.enabled));
+    return;
+  }
+  if (eventName === "recovery_started") {
+    const data = payload.data || {};
+    const message =
+      `正在进行第 ${data.attempt || 1}/${data.max_attempts || 1} 次 DAG 局部恢复，` +
+      `仅重跑：${(data.retry_steps || []).join(", ") || "失败分支"}。`;
+    appendOutput("system", `\n[auto recovery] ${message}\n`);
+    showPlanValidationHint(message);
+    setStatus("Recovering", true);
+    return;
+  }
+  if (eventName === "approval_required") {
+    currentRunHasError = true;
+    const data = payload.data || {};
+    const reason = data.reason || "当前操作需要人工审批。";
+    if (currentRunContext === "executing") {
+      errorStepCard(
+        `<strong>等待人工审批</strong><br>` +
+        `<div style="margin-top:8px;font-size:13px;color:var(--muted)">` +
+        `<div><strong>审批编号：</strong>${escapeHtml(data.approval_id || "-")}</div>` +
+        `<div style="margin-top:4px"><strong>步骤：</strong>${escapeHtml(data.step_id || "-")}</div>` +
+        `<div style="margin-top:4px;color:var(--warning)"><strong>原因：</strong>${escapeHtml(reason)}</div>` +
+        `<div style="margin-top:6px">请在 Security → 人工审批队列中处理，批准后可恢复原任务。</div>` +
+        `</div>`
+      );
+    }
+    showSummaryHint("任务已暂停，等待人工审批。", true);
+    showPlanValidationHint("执行已暂停：请处理人工审批请求。", true);
+    setStatus("Approval Required", false);
+    if (window.SecurityModule?.loadSecurityApprovals) {
+      window.SecurityModule.loadSecurityApprovals();
+    }
+    return;
+  }
+  if (eventName === "reconciliation_required") {
+    const d = payload.data || {};
+    currentRunHasError = true;
+    appendOutput(
+      "system",
+      `\n[需要人工核对] ${d.step_id || "step"}: ${d.error || "外部副作用结果不确定"}\n`
+    );
+    showSummaryHint("任务需要人工核对。", true);
+    showPlanValidationHint(
+      "外部操作结果不确定，已停止自动重试。请前往 Security → 人工核对队列核对并处置。",
+      true
+    );
+    setStatus("Needs Reconciliation", false);
+    if (window.SecurityModule?.loadSecurityReconciliations) {
+      window.SecurityModule.loadSecurityReconciliations();
     }
     return;
   }
@@ -3740,6 +4232,16 @@ const handleEvent = (eventName, payload) => {
         setStatus("Clarification Required", false);
         break;
       }
+      case "APPROVAL_REQUIRED":
+        currentRunHasError = true;
+        showSummaryHint("Workflow paused for approval.", true);
+        showPlanValidationHint("执行已暂停，等待人工审批；批准后可从 Security 页面恢复。", true);
+        updateChatExecutionProgress("error", "任务等待人工审批。");
+        setStatus("Approval Required", false);
+        if (window.SecurityModule?.loadSecurityApprovals) {
+          window.SecurityModule.loadSecurityApprovals();
+        }
+        break;
       case "REJECTED":
         currentRunHasError = true;
         showSummaryHint("Request rejected.", true);
@@ -3749,10 +4251,13 @@ const handleEvent = (eventName, payload) => {
         break;
       case "NEEDS_RECONCILIATION":
         currentRunHasError = true;
-        showSummaryHint("Needs reconciliation.", true);
-        showPlanValidationHint("A side effect may have completed but could not be confirmed. Manual reconciliation required; automatic retry is disabled.", true);
-        updateChatExecutionProgress("error", "外部副作用状态不确定，需要人工核对。");
+        showSummaryHint("任务需要人工核对。", true);
+        showPlanValidationHint("外部副作用可能已发生但无法确认；自动重试已停止。请前往 Security → 人工核对队列核对并处置。", true);
+        updateChatExecutionProgress("error", "外部副作用状态不确定，请前往 Security 人工核对队列。");
         setStatus("Needs Reconciliation", false);
+        if (window.SecurityModule?.loadSecurityReconciliations) {
+          window.SecurityModule.loadSecurityReconciliations();
+        }
         break;
       default:
         currentRunHasError = false;
@@ -3910,7 +4415,7 @@ const runWorkflow = async () => {
   try {
     const response = await fetch("/api/workflows/run", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: window.getTaskCleanupHeaders(true),
       body: JSON.stringify(payload),
       signal: controller.signal,
     });
@@ -4012,9 +4517,19 @@ const runExecution = async () => {
 
   let executionIdentity;
   try {
-    executionIdentity = await createExecutionIdentity(workflowId, planSteps);
+    executionIdentity = await createExecutionIdentity(
+      userId,
+      workflowId,
+      planSteps,
+      currentResolvedRequest || currentRequestQuery || originalUserQuery
+    );
   } catch (error) {
     showPlanValidationHint(`Unable to create execution identity: ${error.message || error}`, true);
+    if (currentChatLifecycle) {
+      currentChatLifecycle.confirmPlanButton.textContent = "确认执行";
+    }
+    setChatPlanActionsDisabled(false);
+    setStatus("Plan ready", true);
     return;
   }
   activePendingPlan = {
@@ -4024,7 +4539,7 @@ const runExecution = async () => {
     revisionOpen: false,
     revisionText: "",
     interruptedFrom: "executing",
-    taskId: "",
+    taskId: executionIdentity.taskId,
     attemptId: executionIdentity.attemptId,
     idempotencyKey: executionIdentity.idempotencyKey,
     planHash: executionIdentity.planHash,
@@ -4081,6 +4596,8 @@ const runExecution = async () => {
     execution_attempt_id: executionIdentity.attemptId,
     execution_idempotency_key: executionIdentity.idempotencyKey,
     execution_plan_hash: executionIdentity.planHash,
+    execution_task_id: executionIdentity.taskId,
+    execution_authorization_token: executionIdentity.authorizationToken,
   };
 
   const controller = new AbortController();
@@ -4089,7 +4606,7 @@ const runExecution = async () => {
   try {
     const response = await fetch("/api/workflows/run", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: window.getTaskCleanupHeaders(true),
       body: JSON.stringify(payload),
       signal: controller.signal,
     });
@@ -5732,6 +6249,25 @@ const runSelectedHealthCheck = async () => {
 runBtn.addEventListener("click", runWorkflow);
 stopBtn.addEventListener("click", stopWorkflow);
 if (newConversationBtn) newConversationBtn.addEventListener("click", () => resetActiveConversation());
+if (decisionConversationSelect) {
+  decisionConversationSelect.addEventListener("change", () => {
+    selectedDecisionConversationId = decisionConversationSelect.value || null;
+    selectedDecisionId = null;
+    renderDecisionHistoryControls({
+      conversationId: selectedDecisionConversationId,
+      decisionId: null,
+    });
+  });
+}
+if (decisionRoundSelect) {
+  decisionRoundSelect.addEventListener("change", () => {
+    selectedDecisionId = decisionRoundSelect.value || null;
+    renderDecisionHistoryControls({
+      conversationId: selectedDecisionConversationId,
+      decisionId: selectedDecisionId,
+    });
+  });
+}
 messageInput.addEventListener("input", resizeMessageInput);
 messageInput.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && !event.shiftKey) {
@@ -5894,6 +6430,9 @@ const tasksList = document.getElementById("tasksList");
 const checkpointPanel = document.getElementById("checkpointPanel");
 const checkpointTaskIdBadge = document.getElementById("checkpointTaskId");
 const checkpointsList = document.getElementById("checkpointsList");
+const governancePanel = document.getElementById("governancePanel");
+const governanceTaskId = document.getElementById("governanceTaskId");
+const governanceTimeline = document.getElementById("governanceTimeline");
 const logPanel = document.getElementById("logPanel");
 const logMeta = document.getElementById("logMeta");
 const logHistory = document.getElementById("logHistory");
@@ -5928,6 +6467,7 @@ const statusBadgeClass = (status) => {
   if (["FAILED", "PARTIAL_FAILED", "REJECTED", "NEEDS_RECONCILIATION"].includes(normalized)) {
     return "badge-error";
   }
+  if (normalized === "APPROVAL_REQUIRED") return "badge-info";
   return "badge-muted";
 };
 
@@ -6043,6 +6583,7 @@ const selectTask = async (task) => {
 
   // Load checkpoints
   await loadTaskCheckpoints(task.task_id);
+  await loadTaskGovernance(task.task_id);
   // Load log
   await loadTaskLog(task.task_id);
 };
@@ -6256,7 +6797,7 @@ const copyTaskLog = async () => {
   }
 };
 
-const resumeTask = async () => {
+const resumeTask = async ({ inChat = false } = {}) => {
   const taskId = resumeTaskIdInput.value.trim();
   const workflowId = resumeWorkflowIdInput.value.trim();
   const resumeStep = parseInt(resumeStepInput.value, 10);
@@ -6267,7 +6808,19 @@ const resumeTask = async () => {
     return;
   }
 
-  resumeOutput.textContent = "";
+  if (inChat) {
+    switchTab("chat");
+    currentRunContext = "executing";
+    executionInProgress = true;
+    currentRunHasError = false;
+    setChatPlanActionsDisabled(true);
+    updateChatExecutionProgress("running", "正在从失败步骤继续原任务...");
+    setStatus("Resuming", true);
+    runBtn.disabled = true;
+    userIdInput.disabled = true;
+  } else {
+    resumeOutput.textContent = "";
+  }
   resumeBtn.disabled = true;
   resumeStopBtn.disabled = false;
 
@@ -6288,7 +6841,7 @@ const resumeTask = async () => {
   try {
     const response = await fetch("/api/tasks/resume", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: window.getTaskCleanupHeaders(true),
       body: JSON.stringify(payload),
       signal: resumeAbortController.signal,
     });
@@ -6299,11 +6852,16 @@ const resumeTask = async () => {
     let buffer = "";
 
     const appendResume = (text) => {
+      if (inChat) return;
       resumeOutput.textContent += text;
       resumeOutput.scrollTop = resumeOutput.scrollHeight;
     };
 
     const handleResumeEvent = (eventName, payload) => {
+      if (inChat) {
+        handleEvent(eventName, payload);
+        return;
+      }
       if (eventName === "messages") {
         const content = payload.data?.delta?.content || payload.data?.message || "";
         appendResume(content);
@@ -6344,8 +6902,25 @@ const resumeTask = async () => {
       buffer = parseSse(buffer, handleResumeEvent);
     }
   } catch (err) {
-    resumeOutput.textContent += `\n[error] ${err.message || err}\n`;
+    if (inChat) {
+      currentRunHasError = true;
+      errorStepCard(err.message || String(err));
+      updateChatExecutionProgress("error", `恢复失败：${err.message || err}`);
+      setStatus("Resume Failed", false);
+      throw err;
+    } else {
+      resumeOutput.textContent += `\n[error] ${err.message || err}\n`;
+    }
   } finally {
+    if (inChat) {
+      currentRunContext = null;
+      executionInProgress = false;
+      runBtn.disabled = false;
+      userIdInput.disabled = false;
+      if (newConversationBtn) newConversationBtn.disabled = false;
+      if (!currentRunHasError) captureAssistantConversationContext();
+      scrollChatToLatest();
+    }
     resumeBtn.disabled = false;
     resumeStopBtn.disabled = true;
     resumeAbortController = null;
@@ -6358,12 +6933,79 @@ const stopResume = () => {
   }
 };
 
+const loadTaskGovernance = async (taskId) => {
+  governancePanel.style.display = "";
+  governanceTaskId.textContent = taskId;
+  governanceTimeline.textContent = "Loading...";
+  try {
+    const response = await fetch(
+      `/api/tasks/${encodeURIComponent(taskId)}/governance`,
+      { headers: window.getGovernanceAuthHeaders(false) }
+    );
+    if (!response.ok) throw new Error("request failed");
+    const events = await response.json();
+    if (!events.length) {
+      governanceTimeline.textContent = "No governance events found.";
+      return;
+    }
+    governanceTimeline.replaceChildren();
+    events.forEach((event) => {
+      const item = document.createElement("div");
+      const type = String(event.event_type || "");
+      const isError = /FAILED|DENIED|REJECTED|RECONCILIATION/.test(type);
+      const isReview = /APPROVAL|RETRY|ROLLBACK|RECOVERY|RESUME/.test(type);
+      item.className = `governance-event${isError ? " is-error" : ""}${isReview ? " is-review" : ""}`;
+
+      const time = document.createElement("span");
+      time.className = "governance-event-time";
+      time.textContent = formatDateTime(event.timestamp);
+
+      const eventType = document.createElement("span");
+      eventType.className = "governance-event-type";
+      eventType.textContent = type;
+
+      const detail = document.createElement("span");
+      detail.className = "governance-event-detail";
+      const parts = [
+        event.step_id ? `step=${event.step_id}` : "",
+        event.agent ? `agent=${event.agent}` : "",
+        event.decision ? `decision=${event.decision}` : "",
+        event.reason_code ? `reason=${event.reason_code}` : "",
+      ].filter(Boolean);
+      detail.textContent = parts.join(" · ");
+
+      item.append(time, eventType, detail);
+      governanceTimeline.appendChild(item);
+    });
+  } catch (error) {
+    governanceTimeline.textContent = `Failed to load governance events: ${error.message}`;
+  }
+};
+
+window.resumeApprovedTask = async ({
+  task_id,
+  workflow_id,
+  resume_step,
+  user_id,
+}) => {
+  selectedTaskId = task_id;
+  resumeTaskIdInput.value = task_id || "";
+  resumeWorkflowIdInput.value = workflow_id || "";
+  resumeStepInput.value = Number(resume_step) || 1;
+  resumeUserIdInput.value = user_id || "test";
+  await resumeTask({ inChat: true });
+  if (window.SecurityModule?.loadSecurityApprovals) {
+    window.SecurityModule.loadSecurityApprovals();
+  }
+};
+
 refreshTasksBtn.addEventListener("click", fetchTasks);
 
 const deleteTaskById = async (taskId) => {
   try {
     const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}`, {
       method: "DELETE",
+      headers: window.getTaskCleanupHeaders(false),
     });
     if (!res.ok) {
       const err = await res.json();
@@ -6372,6 +7014,7 @@ const deleteTaskById = async (taskId) => {
     // Clear panels if deleted task was selected
     if (selectedTaskId === taskId) {
       checkpointPanel.style.display = "none";
+      governancePanel.style.display = "none";
       logPanel.style.display = "none";
       resumePanel.style.display = "none";
       selectedTaskId = null;
@@ -6407,11 +7050,18 @@ clearResumeOutputBtn.addEventListener("click", () => {
   const userIdInput = document.getElementById("userId");
   if (demoRole && userIdInput && demoRole.value && (!userIdInput.value || userIdInput.value === "test")) {
     userIdInput.value = demoRole.value;
+    activeConversationUserId = demoRole.value;
+    renderChatHistory();
   }
   if (demoRole) {
     demoRole.addEventListener("change", function() {
       if (userIdInput && demoRole.value) {
         userIdInput.value = demoRole.value;
+        if (activeConversationUserId !== demoRole.value) {
+          resetActiveConversation(demoRole.value);
+        } else {
+          renderChatHistory();
+        }
       }
       if (window.SecurityModule && window.SecurityModule.loadUserSecurityProfile && demoRole.value) {
         window.SecurityModule.loadUserSecurityProfile(demoRole.value);
@@ -6453,8 +7103,9 @@ function renderPermissionSummary(precheck) {
   card.style.display = "";
   const profile = precheck.profile || {};
   const tools = precheck.tool_access || {};
-  const blocked = Object.entries(tools).filter(([, info]) => !info.can_access);
-  const accessible = Object.entries(tools).filter(([, info]) => info.can_access);
+  const review = Object.entries(tools).filter(([, info]) => info.decision === "REVIEW_REQUIRED");
+  const blocked = Object.entries(tools).filter(([, info]) => info.decision === "DENY");
+  const accessible = Object.entries(tools).filter(([, info]) => info.decision === "ALLOW");
 
   summary.innerHTML = `
     <div class="perm-summary-row">
@@ -6467,6 +7118,10 @@ function renderPermissionSummary(precheck) {
       <div class="perm-stat green">
         <span class="perm-stat-num">${accessible.length}</span>
         <span class="perm-stat-label">Directly accessible</span>
+      </div>
+      <div class="perm-stat">
+        <span class="perm-stat-num">${review.length}</span>
+        <span class="perm-stat-label">Approval required</span>
       </div>
       <div class="perm-stat red">
         <span class="perm-stat-num">${blocked.length}</span>
@@ -6550,7 +7205,19 @@ const _origCreateAgentCard = function(card, agent) {
         const toolName = card.dataset.toolName;
         const info = toolAccess[toolName];
         if (!info) return;
-        if (!info.can_access) {
+        if (info.decision === "REVIEW_REQUIRED") {
+          card.style.opacity = "0.8";
+          card.title = "This tool requires governance approval at execution time.";
+          let badge = card.querySelector(".tool-perm-badge");
+          if (!badge) {
+            badge = document.createElement("span");
+            badge.className = "tag warn tool-perm-badge";
+            badge.style.cssText = "position:absolute;top:4px;right:4px;font-size:10px;";
+            card.style.position = "relative";
+            card.appendChild(badge);
+          }
+          badge.textContent = "[approval]";
+        } else if (info.decision === "DENY" || !info.can_access) {
           card.style.opacity = "0.45";
           card.title = info.blocked_reason || "Insufficient permission";
           let badge = card.querySelector(".tool-perm-badge");
@@ -6562,6 +7229,7 @@ const _origCreateAgentCard = function(card, agent) {
             card.style.position = "relative";
             card.appendChild(badge);
           }
+          badge.textContent = "[blocked]";
         } else {
           card.style.opacity = "1";
           const badge = card.querySelector(".tool-perm-badge");

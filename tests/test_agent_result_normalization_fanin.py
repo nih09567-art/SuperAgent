@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from src.contracts.agent_contract import AgentContract, DataContractRef
+from src.contracts.agent_schema_catalog import AGENT_SCHEMA_CATALOG
 from src.manager.executor.agent_result_adapter import (
     AgentResultNormalizationError,
     _register_missing_agent_schemas,
@@ -264,11 +265,154 @@ def test_builtin_schema_registration_does_not_replace_existing_schema():
         "properties": {"sentinel": {"type": "string"}},
     }
     registry.register("employee.info@v1", strict_schema)
+    raw_v2_schema = AGENT_SCHEMA_CATALOG["policy.info@v2"]
+    registry.register("policy.info@v2", raw_v2_schema)
 
     _register_missing_agent_schemas(registry)
 
     assert registry.get("employee.info@v1") == strict_schema
+    assert registry.get("policy.info@v2") is raw_v2_schema
     assert registry.has("policy.info@v1")
+
+    valid, errors = registry.validate(
+        {
+            "query": "报销",
+            "answer": "已检索到知识",
+            "knowledge_items_count": 1,
+            "policy_scope": "company",
+            "sources": [],
+            "matched_items": [],
+            "not_found": False,
+        },
+        "policy.info@v2",
+    )
+    assert not valid
+    assert any("must be non-empty" in error for error in errors)
+
+
+def test_direct_v2_registration_uses_builtin_semantic_validator():
+    registry = SchemaRegistry()
+    registry.register("policy.info@v2", AGENT_SCHEMA_CATALOG["policy.info@v2"])
+
+    valid, errors = registry.validate(
+        {
+            "query": "报销",
+            "answer": "已检索到知识",
+            "knowledge_items_count": 1,
+            "policy_scope": "company",
+            "sources": [],
+            "matched_items": [],
+            "not_found": False,
+        },
+        "policy.info@v2",
+    )
+
+    assert not valid
+    assert any("must be non-empty" in error for error in errors)
+
+
+def test_direct_v2_registration_resolves_validator_after_catalog_map_reset(monkeypatch):
+    from src.orchestration import schema_registry as registry_module
+
+    monkeypatch.delitem(
+        registry_module._DEFAULT_SEMANTIC_VALIDATORS,
+        "policy.info@v2",
+        raising=False,
+    )
+    registry = SchemaRegistry()
+    registry.register("policy.info@v2", AGENT_SCHEMA_CATALOG["policy.info@v2"])
+
+    valid, errors = registry.validate(
+        {
+            "query": "报销",
+            "answer": "已检索到知识",
+            "knowledge_items_count": 1,
+            "policy_scope": "company",
+            "sources": [],
+            "matched_items": [],
+            "not_found": False,
+        },
+        "policy.info@v2",
+    )
+
+    assert not valid
+    assert any("must be non-empty" in error for error in errors)
+
+
+def test_weak_custom_v2_schema_fails_closed_without_key_error():
+    registry = SchemaRegistry()
+    registry.register(
+        "policy.info@v2",
+        {
+            "required": ["sentinel"],
+            "properties": {"sentinel": {"type": "string"}},
+        },
+    )
+
+    valid, errors = registry.validate(
+        {"sentinel": "custom"},
+        "policy.info@v2",
+    )
+
+    assert not valid
+    assert any(
+        "missing required field: 'knowledge_items_count'" in error
+        for error in errors
+    )
+
+
+def test_custom_v2_validator_cannot_disable_builtin_invariants():
+    registry = SchemaRegistry()
+    registry.register(
+        "policy.info@v2",
+        AGENT_SCHEMA_CATALOG["policy.info@v2"],
+        semantic_validator=lambda _payload: [],
+    )
+
+    valid, errors = registry.validate(
+        {
+            "query": "报销",
+            "answer": "已检索到知识",
+            "knowledge_items_count": 1,
+            "policy_scope": "company",
+            "sources": [],
+            "matched_items": [],
+            "not_found": False,
+        },
+        "policy.info@v2",
+    )
+
+    assert not valid
+    assert any("must be non-empty" in error for error in errors)
+
+
+def test_normalization_attaches_builtin_validator_to_explicit_registry():
+    registry = SchemaRegistry()
+    registry.register("policy.info@v2", AGENT_SCHEMA_CATALOG["policy.info@v2"])
+
+    with pytest.raises(AgentResultNormalizationError) as exc:
+        normalize_agent_result(
+            _ok(
+                _envelope(
+                    "RemoteKnowledgeAgent",
+                    {
+                        "policy.info": {
+                            "query": "报销",
+                            "answer": "已检索到知识",
+                            "knowledge_items_count": 1,
+                            "policy_scope": "company",
+                            "sources": [],
+                            "matched_items": [],
+                            "not_found": False,
+                        }
+                    },
+                )
+            ),
+            agent_contract=_contract("policy.info", "policy.info@v2"),
+            schema_registry=registry,
+        )
+
+    assert exc.value.code == "SCHEMA_VALIDATION_FAILED"
 
 
 def test_fan_in_schema_backfill_does_not_replace_existing_schema(monkeypatch):
@@ -666,6 +810,67 @@ def test_rerouted_agent_result_validated_against_actual_agent_contract():
     assert artifact.metadata["producer_agent"] == "RemoteHRAssistantAgent"
     assert artifact.schema_ref == "employee.info@v1"
     assert artifact.schema_valid is True
+
+
+def test_rerouted_side_effect_uses_actual_contract_for_receipt_and_resume():
+    planned_contract = _contract("result", "policy.info@v1")
+    actual_contract = _contract("result", "employee.info@v1")
+    step = TaskStep(
+        step_id="send",
+        operation_mode="write",
+        agent_name="PlannedAgent",
+        preferred_resource_id="PlannedAgent",
+        expected_outputs=["result"],
+        expected_schema_refs={"result": "policy.info@v1"},
+        agent_contract=planned_contract,
+    )
+    calls = {"n": 0}
+
+    async def execute(*, step, selected_agent, inputs, context):
+        calls["n"] += 1
+        return ExecuteResult(
+            status=ExecutionStatus.SUCCESS,
+            result=_envelope(
+                selected_agent,
+                {
+                    "result": {
+                        "records": [{"employee_id": "E001", "name": "Alice"}],
+                        "matched_count": 1,
+                    }
+                },
+            ),
+            metadata={"external_op_id": "send-1"},
+        )
+
+    receipts = ReceiptStore()
+    scheduler = TaskScheduler(
+        execute_step=execute,
+        routing_provider=_FixedRoutingProvider("ActualAgent"),
+        receipt_store=receipts,
+    )
+    graph = TaskGraph(spec=TaskSpec(task_id="rerouted-write"), steps=[step])
+    context = {
+        "task_id": "rerouted-write",
+        "agents": [
+            SimpleNamespace(
+                agent_name="ActualAgent",
+                agent_contract=actual_contract,
+            )
+        ],
+    }
+
+    first = asyncio.run(scheduler.run(graph, context=context))
+    second = asyncio.run(scheduler.run(graph, context=context))
+
+    assert first["send"].is_success
+    assert second["send"].is_success
+    assert second["send"].metrics["idempotent_reuse"] is True
+    assert calls["n"] == 1
+    receipt = receipts.get(first["send"].metrics["idempotency_key"])
+    assert receipt["agent"] == "ActualAgent"
+    assert receipt["expected_schema_refs"] == {"result": "employee.info@v1"}
+    artifact = scheduler.store.get(second["send"].outputs["result"])
+    assert artifact.schema_ref == "employee.info@v1"
 
 
 def test_rerouted_agent_without_trusted_contract_fails_closed():

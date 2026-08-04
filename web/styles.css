@@ -203,6 +203,41 @@ body {
   border-left: 4px solid #2f7cff;
 }
 
+.decision-history-toolbar {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.4fr) minmax(150px, 1fr);
+  gap: 10px;
+  margin: 2px 0 8px;
+}
+
+.decision-history-toolbar label {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.decision-history-toolbar select {
+  width: 100%;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid rgba(20, 24, 40, 0.12);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.9);
+  color: var(--text);
+  font: inherit;
+}
+
+.decision-history-meta {
+  min-height: 18px;
+  margin-bottom: 10px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
 .decision-profile {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
@@ -408,6 +443,10 @@ body {
 }
 
 @media (max-width: 640px) {
+  .decision-history-toolbar {
+    grid-template-columns: 1fr;
+  }
+
   .decision-profile {
     grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
   }
@@ -1069,6 +1108,41 @@ button:disabled {
 
 .step-card-body.hidden {
   display: none;
+}
+
+.step-governance-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.step-governance-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid rgba(20, 24, 40, 0.08);
+  border-radius: 999px;
+  padding: 3px 7px;
+  background: var(--bg-soft);
+  color: var(--text);
+  font-size: 10px;
+}
+
+.step-governance-chip small {
+  color: var(--muted);
+}
+
+.step-governance-chip.ok {
+  border-color: rgba(75, 227, 172, 0.45);
+}
+
+.step-governance-chip.warn {
+  border-color: rgba(244, 163, 93, 0.5);
+}
+
+.step-governance-chip.danger {
+  border-color: rgba(217, 83, 79, 0.5);
 }
 
 /* ─── Result Content ─────────────────────────────────────────────────── */
@@ -3524,6 +3598,32 @@ button.small {
   border-color: rgba(217, 83, 79, 0.4);
 }
 
+.sec-approval-item.status-frozen,
+.sec-approval-item.status-terminated {
+  border-color: rgba(217, 83, 79, 0.4);
+}
+
+.sec-approval-item.status-retry_ready,
+.sec-approval-item.status-confirmed_succeeded {
+  border-color: rgba(75, 227, 172, 0.4);
+}
+
+.sec-reconciliation-help {
+  margin: 0 0 10px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.sec-reconciliation-actions {
+  flex-wrap: wrap;
+}
+
+.sec-reconciliation-actions .danger {
+  color: var(--danger);
+  border-color: rgba(217, 83, 79, 0.35);
+}
+
 .sec-approval-header {
   display: flex;
   align-items: center;
@@ -3558,6 +3658,76 @@ button.small {
 .sec-event-detail {
   font-size: 12px;
   line-height: 1.8;
+}
+
+.sec-governance-context {
+  padding: 9px 10px;
+  margin: 7px 0 9px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.56);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.sec-governance-query {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.sec-governance-technical {
+  margin: 6px 0 9px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.sec-governance-technical summary {
+  cursor: pointer;
+  user-select: none;
+}
+
+.sec-governance-technical div {
+  margin-top: 4px;
+  overflow-wrap: anywhere;
+  font-family: "Microsoft YaHei Mono", "Consolas", "Monaco", monospace;
+}
+
+.governance-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 420px;
+  overflow: auto;
+}
+
+.governance-event {
+  display: grid;
+  grid-template-columns: 150px minmax(120px, 180px) 1fr;
+  gap: 10px;
+  align-items: start;
+  padding: 10px 12px;
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  background: var(--bg-soft);
+  font-size: 12px;
+}
+
+.governance-event.is-error {
+  border-left-color: var(--danger);
+}
+
+.governance-event.is-review {
+  border-left-color: var(--warning);
+}
+
+.governance-event-time,
+.governance-event-detail {
+  color: var(--muted);
+}
+
+.governance-event-type {
+  font-weight: 700;
+  overflow-wrap: anywhere;
 }
 
 /* Permission Summary (Run tab) */

@@ -173,6 +173,7 @@ class AgentRequest(BaseModel):
     execution_idempotency_key: Optional[str] = Field(default=None, max_length=256)
     execution_plan_hash: Optional[str] = Field(default=None, max_length=128)
     execution_task_id: Optional[str] = Field(default=None, max_length=128)
+    execution_authorization_token: Optional[str] = Field(default=None, max_length=256)
 
 
 class listAgentRequest(BaseModel):

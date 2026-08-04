@@ -26,21 +26,28 @@ Log structure per task (stored as JSON):
 }
 """
 
+import hashlib
+import hmac
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from config.global_variables import checkpoints_dir
+from src.utils.file_lock import FileLock
 
 logger = logging.getLogger(__name__)
+
+RESERVATION_EXPIRED_CODE = "RESERVATION_EXPIRED"
+DEFAULT_RESERVATION_LEASE_SECONDS = 120
 
 SCHEDULER_TERMINAL_STATUSES = {
     "SUCCEEDED",
     "FAILED",
     "PARTIAL_FAILED",
     "CLARIFY_REQUIRED",
+    "APPROVAL_REQUIRED",
     "REJECTED",
     "NEEDS_RECONCILIATION",
 }
@@ -81,6 +88,11 @@ class TaskLogger:
         self.execution_attempt_id: str = ""
         self.execution_idempotency_key: str = ""
         self.execution_plan_hash: str = ""
+        self.execution_user_id: str = ""
+        self.execution_authorization_token_hash: str = ""
+        self.execution_authorization_claimed_at: str = ""
+        self.reservation_expires_at: str = ""
+        self.reservation_failure_code: str = ""
         self._step_counter: Dict[str, int] = {}  # track per-node step
 
         self._logs_dir = _get_task_logs_dir()
@@ -97,6 +109,9 @@ class TaskLogger:
         attempt_id: str,
         idempotency_key: str,
         plan_hash: str,
+        user_id: str = "",
+        authorization_token_hash: str = "",
+        lease_seconds: int = DEFAULT_RESERVATION_LEASE_SECONDS,
     ) -> tuple[bool, Optional["TaskLogger"]]:
         """Atomically reserve a production task before its SSE stream starts."""
 
@@ -106,6 +121,11 @@ class TaskLogger:
         task.execution_attempt_id = attempt_id
         task.execution_idempotency_key = idempotency_key
         task.execution_plan_hash = plan_hash
+        task.execution_user_id = user_id
+        task.execution_authorization_token_hash = authorization_token_hash
+        task.reservation_expires_at = (
+            datetime.now(timezone.utc) + timedelta(seconds=max(1, lease_seconds))
+        ).isoformat()
         try:
             with open(task._log_file, "x", encoding="utf-8") as stream:
                 json.dump(task.to_dict(), stream, indent=2, ensure_ascii=False, default=str)
@@ -113,12 +133,147 @@ class TaskLogger:
         except FileExistsError:
             return False, cls.load(task_id)
 
+    @staticmethod
+    def hash_execution_authorization_token(token: str) -> str:
+        return hashlib.sha256(str(token).encode("utf-8")).hexdigest()
+
+    def reservation_is_expired(self, now: Optional[datetime] = None) -> bool:
+        if self.status != "reserved" or not self.reservation_expires_at:
+            return False
+        try:
+            expires_at = datetime.fromisoformat(self.reservation_expires_at)
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
+        except ValueError:
+            return True
+        current = now or datetime.now(timezone.utc)
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=timezone.utc)
+        return current >= expires_at
+
+    def expire_reservation_if_stale(self, now: Optional[datetime] = None) -> bool:
+        if not self.reservation_is_expired(now):
+            return False
+        self.status = "FAILED"
+        self.finished_at = (now or datetime.now(timezone.utc)).isoformat()
+        self.error = "production execution reservation lease expired before startup"
+        self.reservation_failure_code = RESERVATION_EXPIRED_CODE
+        self.execution_authorization_token_hash = ""
+        self._flush()
+        return True
+
+    @classmethod
+    def expire_stale_reservation(
+        cls, task_id: str, now: Optional[datetime] = None
+    ) -> Optional["TaskLogger"]:
+        log_file = _get_task_logs_dir() / f"{task_id}.json"
+        with FileLock(log_file):
+            task = cls.load(task_id)
+            if task is not None:
+                task.expire_reservation_if_stale(now)
+            return task
+
+    @classmethod
+    def claim_execution_authorization(
+        cls,
+        *,
+        task_id: str,
+        authorization_token: str,
+        user_id: str,
+        workflow_id: str,
+        plan_hash: str,
+    ) -> tuple[bool, Optional["TaskLogger"], str]:
+        logs_dir = _get_task_logs_dir()
+        log_file = logs_dir / f"{task_id}.json"
+        with FileLock(log_file):
+            task = cls.load(task_id)
+            if task is None:
+                return False, None, "EXECUTION_AUTHORIZATION_NOT_FOUND"
+            if task.expire_reservation_if_stale():
+                return False, task, RESERVATION_EXPIRED_CODE
+            if task.status != "reserved":
+                return False, task, "EXECUTION_AUTHORIZATION_NOT_RESERVED"
+            supplied_hash = cls.hash_execution_authorization_token(authorization_token)
+            identity_matches = (
+                bool(task.execution_authorization_token_hash)
+                and hmac.compare_digest(
+                    supplied_hash, task.execution_authorization_token_hash
+                )
+                and hmac.compare_digest(task.execution_user_id, user_id)
+                and hmac.compare_digest(task.workflow_id, workflow_id)
+                and hmac.compare_digest(task.execution_plan_hash, plan_hash)
+            )
+            if not identity_matches:
+                return False, task, "EXECUTION_AUTHORIZATION_MISMATCH"
+            if task.execution_authorization_claimed_at:
+                return False, task, "EXECUTION_AUTHORIZATION_ALREADY_CLAIMED"
+            task.execution_authorization_claimed_at = datetime.now(timezone.utc).isoformat()
+            task._flush()
+            return True, task, ""
+
+    @classmethod
+    def renew_expired_execution_reservation(
+        cls,
+        *,
+        task_id: str,
+        user_query: str,
+        attempt_id: str,
+        idempotency_key: str,
+        plan_hash: str,
+        user_id: str,
+        authorization_token_hash: str,
+        lease_seconds: int = DEFAULT_RESERVATION_LEASE_SECONDS,
+    ) -> tuple[bool, Optional["TaskLogger"]]:
+        logs_dir = _get_task_logs_dir()
+        log_file = logs_dir / f"{task_id}.json"
+        with FileLock(log_file):
+            task = cls.load(task_id)
+            if (
+                task is None
+                or task.status != "FAILED"
+                or task.reservation_failure_code != RESERVATION_EXPIRED_CODE
+            ):
+                return False, task
+            task.user_query = user_query
+            task.status = "reserved"
+            task.finished_at = None
+            task.error = None
+            task.execution_attempt_id = attempt_id
+            task.execution_idempotency_key = idempotency_key
+            task.execution_plan_hash = plan_hash
+            task.execution_user_id = user_id
+            task.execution_authorization_token_hash = authorization_token_hash
+            task.execution_authorization_claimed_at = ""
+            task.reservation_expires_at = (
+                datetime.now(timezone.utc) + timedelta(seconds=max(1, lease_seconds))
+            ).isoformat()
+            task.reservation_failure_code = ""
+            task._flush()
+            return True, task
+
+    @classmethod
+    def expire_stale_reservations(cls) -> int:
+        expired = 0
+        logs_dir = _get_task_logs_dir()
+        for log_file in logs_dir.glob("*.json"):
+            with FileLock(log_file):
+                task = cls.load(log_file.stem)
+                if task is not None and task.expire_reservation_if_stale():
+                    expired += 1
+        return expired
+
     def activate_reserved_execution(self) -> None:
         if self.status != "reserved":
             raise RuntimeError(f"task {self.task_id} is not reserved")
+        if self.expire_reservation_if_stale():
+            raise RuntimeError(f"task {self.task_id} reservation lease expired")
+        if not self.execution_authorization_claimed_at:
+            raise RuntimeError(f"task {self.task_id} authorization was not claimed")
         self.status = "running"
         self.finished_at = None
         self.error = None
+        self.reservation_expires_at = ""
+        self.execution_authorization_token_hash = ""
         self._flush()
 
     def _next_step(self, node_name: str) -> int:
@@ -192,18 +347,51 @@ class TaskLogger:
         """Log an agent output message."""
         self.log_event(node_name=node_name, event="message", content=content, step=step)
 
-    def log_agent_start(self, node_name: str, step: Optional[int] = None, sub_agent_name: Optional[str] = None) -> None:
+    def log_agent_start(
+        self,
+        node_name: str,
+        step: Optional[int] = None,
+        sub_agent_name: Optional[str] = None,
+        *,
+        attempt: Optional[int] = None,
+        phase: Optional[str] = None,
+        planned_agent: Optional[str] = None,
+        executed_agent: Optional[str] = None,
+    ) -> None:
         """Log the start of an agent node."""
         display_name = f"{node_name}【{sub_agent_name}】" if sub_agent_name else node_name
+        extra: Dict[str, Any] = {}
+        if sub_agent_name:
+            extra["sub_agent_name"] = sub_agent_name
+        if attempt is not None:
+            extra["attempt"] = attempt
+        if phase:
+            extra["phase"] = phase
+        if planned_agent:
+            extra["planned_agent"] = planned_agent
+        if executed_agent:
+            extra["selected_agent"] = executed_agent
+            extra["executed_agent"] = executed_agent
         self.log_event(
             node_name=node_name,
             event="start_of_agent",
             content=f"Agent {display_name} started",
             step=step,
-            extra={"sub_agent_name": sub_agent_name} if sub_agent_name else None
+            extra=extra or None,
         )
 
-    def log_agent_end(self, node_name: str, next_node: Optional[str] = None, step: Optional[int] = None, sub_agent_name: Optional[str] = None) -> None:
+    def log_agent_end(
+        self,
+        node_name: str,
+        next_node: Optional[str] = None,
+        step: Optional[int] = None,
+        sub_agent_name: Optional[str] = None,
+        *,
+        attempt: Optional[int] = None,
+        phase: Optional[str] = None,
+        planned_agent: Optional[str] = None,
+        executed_agent: Optional[str] = None,
+    ) -> None:
         """Log the end of an agent node."""
         display_name = f"{node_name}【{sub_agent_name}】" if sub_agent_name else node_name
         content = f"Agent {display_name} finished"
@@ -212,6 +400,15 @@ class TaskLogger:
         extra = {"next_node": next_node}
         if sub_agent_name:
             extra["sub_agent_name"] = sub_agent_name
+        if attempt is not None:
+            extra["attempt"] = attempt
+        if phase:
+            extra["phase"] = phase
+        if planned_agent:
+            extra["planned_agent"] = planned_agent
+        if executed_agent:
+            extra["selected_agent"] = executed_agent
+            extra["executed_agent"] = executed_agent
         self.log_event(node_name=node_name, event="end_of_agent", content=content, step=step, extra=extra)
 
     def log_workflow_start(self, user_query: str = "") -> None:
@@ -369,6 +566,11 @@ class TaskLogger:
             "execution_attempt_id": self.execution_attempt_id,
             "execution_idempotency_key": self.execution_idempotency_key,
             "execution_plan_hash": self.execution_plan_hash,
+            "execution_user_id": self.execution_user_id,
+            "execution_authorization_token_hash": self.execution_authorization_token_hash,
+            "execution_authorization_claimed_at": self.execution_authorization_claimed_at,
+            "reservation_expires_at": self.reservation_expires_at,
+            "reservation_failure_code": self.reservation_failure_code,
             "created_at": self.created_at,
             "finished_at": self.finished_at,
             "status": self.status,
@@ -421,6 +623,15 @@ class TaskLogger:
             inst.execution_attempt_id = data.get("execution_attempt_id", "")
             inst.execution_idempotency_key = data.get("execution_idempotency_key", "")
             inst.execution_plan_hash = data.get("execution_plan_hash", "")
+            inst.execution_user_id = data.get("execution_user_id", "")
+            inst.execution_authorization_token_hash = data.get(
+                "execution_authorization_token_hash", ""
+            )
+            inst.execution_authorization_claimed_at = data.get(
+                "execution_authorization_claimed_at", ""
+            )
+            inst.reservation_expires_at = data.get("reservation_expires_at", "")
+            inst.reservation_failure_code = data.get("reservation_failure_code", "")
 
             inst._step_counter = {"__global__": len(inst.history)}
             inst._logs_dir = logs_dir
@@ -437,6 +648,7 @@ class TaskLogger:
         Optionally filter by workflow_id and execution_phase.
         Returns list sorted newest first.
         """
+        cls.expire_stale_reservations()
         logs_dir = _get_task_logs_dir()
         results = []
         if not logs_dir.exists():
@@ -466,6 +678,8 @@ class TaskLogger:
                     "failure_count": len(data.get("failures", [])),
                     "execution_attempt_id": data.get("execution_attempt_id", ""),
                     "execution_plan_hash": data.get("execution_plan_hash", ""),
+                    "reservation_expires_at": data.get("reservation_expires_at", ""),
+                    "reservation_failure_code": data.get("reservation_failure_code", ""),
                 })
             except Exception:
                 continue

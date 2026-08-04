@@ -226,7 +226,19 @@ def _parse_optional_amount(value: Any) -> Optional[float]:
     if isinstance(value, (int, float)):
         return float(value)
     text = str(value).strip()
-    if not text or text in {"-", "N/A", "n/a", "None", "null", "未提供", "暂无"}:
+    placeholders = {
+        "-",
+        "N/A",
+        "n/a",
+        "None",
+        "null",
+        "未提供",
+        "暂无",
+        "待补充",
+        "待确认",
+        "未知",
+    }
+    if not text or text in placeholders:
         return None
     text = text.replace(",", "").replace("元", "").replace("人民币", "").strip()
     if not text:
@@ -439,6 +451,114 @@ def _load_knowledge() -> Dict[str, Any]:
         raise FileNotFoundError(f"Knowledge base not found: {path}")
     _KNOWLEDGE_CACHE = _read_json(path)
     return _KNOWLEDGE_CACHE
+
+
+def _normalize_knowledge_text(value: Any) -> str:
+    """Normalize a query or indexed field for deterministic demo matching."""
+    return re.sub(r"\s+", "", str(value or "").strip().lower())
+
+
+def _knowledge_search_score(item: Dict[str, Any], query: str) -> Tuple[int, List[str]]:
+    """Score one knowledge item using its curated keywords and metadata.
+
+    The prototype intentionally uses a small deterministic matcher before the
+    LLM call.  This keeps unrelated entries out of the prompt and gives the
+    demo a reliable not-found path without adding a vector database.
+    """
+    query_text = _normalize_knowledge_text(query)
+    if not query_text:
+        return 0, []
+
+    matched_keywords: List[str] = []
+    score = 0
+    for keyword in item.get("keywords", []) or []:
+        keyword_text = _normalize_knowledge_text(keyword)
+        if len(keyword_text) >= 2 and keyword_text in query_text:
+            matched_keywords.append(str(keyword))
+            score += 4 + min(len(keyword_text), 4)
+
+    question = _normalize_knowledge_text(item.get("question"))
+    category = _normalize_knowledge_text(item.get("category"))
+    if question and question in query_text:
+        score += 8
+    if category and category in query_text:
+        score += 5
+
+    return score, matched_keywords
+
+
+def _rank_knowledge_items(
+    knowledge_items: List[Dict[str, Any]],
+    query: str,
+    limit: int = 3,
+) -> List[Tuple[Dict[str, Any], List[str]]]:
+    """Return relevant knowledge items without leaking weak matches into Top-K."""
+    ranked: List[Tuple[int, str, Dict[str, Any], List[str]]] = []
+    for item in knowledge_items:
+        score, matched_keywords = _knowledge_search_score(item, query)
+        if score > 0:
+            ranked.append(
+                (score, str(item.get("id") or ""), item, matched_keywords)
+            )
+
+    ranked.sort(key=lambda entry: (-entry[0], entry[1]))
+    if not ranked:
+        return []
+
+    best_score = ranked[0][0]
+    relevance_cutoff = max(6, best_score * 0.5)
+    relevant = [entry for entry in ranked if entry[0] >= relevance_cutoff]
+    return [
+        (item, matched_keywords)
+        for _, _, item, matched_keywords in relevant[:limit]
+    ]
+
+
+def _knowledge_sources(
+    ranked_items: List[Tuple[Dict[str, Any], List[str]]],
+) -> List[Dict[str, Any]]:
+    """Build compact, UI/report-friendly provenance records."""
+    sources: List[Dict[str, Any]] = []
+    for item, _ in ranked_items:
+        source_id = str(item.get("id") or "").strip()
+        if not source_id:
+            raise ValueError("Knowledge item id must be a non-empty string")
+        is_demo = item.get("is_demo", True)
+        if not isinstance(is_demo, bool):
+            raise TypeError(
+                f"Knowledge item {source_id!r} has contract-invalid is_demo: "
+                f"expected bool, got {type(is_demo).__name__}"
+            )
+        source: Dict[str, Any] = {
+            "id": source_id,
+            "category": str(item.get("category") or ""),
+            "source": str(item.get("source") or "演示知识库"),
+            "policy_scope": str(item.get("policy_scope") or "unknown"),
+            "is_demo": is_demo,
+        }
+        if item.get("effective_date"):
+            source["effective_date"] = str(item["effective_date"])
+        if item.get("source_updated_at"):
+            source["source_updated_at"] = str(item["source_updated_at"])
+        sources.append(source)
+    return sources
+
+
+def _knowledge_policy_scope(
+    ranked_items: List[Tuple[Dict[str, Any], List[str]]],
+) -> str:
+    scopes = {
+        str(item.get("policy_scope") or "unknown")
+        for item, _ in ranked_items
+    }
+    scopes.discard("")
+    if not scopes:
+        return "unknown"
+    if len(scopes) == 1:
+        scope = next(iter(scopes))
+        allowed_scopes = {"company", "statutory", "mixed", "unknown"}
+        return scope if scope in allowed_scopes else "unknown"
+    return "mixed"
 
 
 def _flatten_text(person: Dict[str, Any]) -> str:
@@ -793,8 +913,16 @@ async def health():
 async def tool(req: ToolRequest, authorization: Optional[str] = Header(default=None)):
     global _TODO_CACHE, _EMAIL_CACHE, _SCHEDULE_CACHE
     if req.tool == "remote_weather_tool":
-        location = req.arguments.get("location", "")
-        result = f"[remote-tool] {location} weather: sunny 20C"
+        location = req.arguments.get("location") or "未指定地点"
+        date = req.arguments.get("date") or req.arguments.get("time") or "明天"
+        result = {
+            "status": "success",
+            "location": location,
+            "date": date,
+            "weather": "晴",
+            "temperature": "20℃",
+            "message": f"{location}{date}天气晴，气温约20℃",
+        }
     elif req.tool == "remote_person_info_tool":
         try:
             sample = _load_sample()
@@ -1105,30 +1233,41 @@ async def tool(req: ToolRequest, authorization: Optional[str] = Header(default=N
         print(f"[TOOL] Arguments type: {type(req.arguments)}")
         print(f"[TOOL] Arguments keys: {list(req.arguments.keys()) if isinstance(req.arguments, dict) else 'N/A'}")
 
-        try:
-            data = _load_emails()
-            emails = data.get("emails", [])
-
-            # Extract parameters
-            to_value = req.arguments.get("to")
-            body_value = req.arguments.get("body", "")
-
-            if not str(to_value or "").strip():
-                raise ValueError("to is required")
-            if not str(body_value or "").strip():
-                raise ValueError("body is required")
-
-            print(f"[TOOL] Extracted 'to': {to_value}")
-            print(f"[TOOL] Extracted 'body' length: {len(str(body_value))}")
-
-            payload = {
-                "id": f"email-{len(emails)+1:04d}",
-                "from": req.arguments.get("from", "noreply@internal.local"),
-                "to": to_value,
-                "subject": req.arguments.get("subject", "邮件发送"),
-                "body": body_value,
-                "attachments": req.arguments.get("attachments", []),
+        arguments = req.arguments if isinstance(req.arguments, dict) else {}
+        to_value = str(arguments.get("to") or "").strip()
+        body_value = str(arguments.get("body") or "").strip()
+        if not to_value:
+            result = {
+                "status": "failed",
+                "error": "to is required",
+                "failure_phase": "validation",
+                "safe_to_retry": True,
             }
+            return {"status": "success", "tool": req.tool, "result": result}
+        if not body_value:
+            result = {
+                "status": "failed",
+                "error": "body is required",
+                "failure_phase": "validation",
+                "safe_to_retry": True,
+            }
+            return {"status": "success", "tool": req.tool, "result": result}
+        payload = {
+            "id": f"email-{int(time.time() * 1000)}",
+            "from": arguments.get("from") or "noreply@internal.local",
+            "to": to_value,
+            "subject": arguments.get("subject") or "",
+            "body": body_value,
+            "attachments": arguments.get("attachments") or [],
+        }
+        persisted = False
+        try:
+            try:
+                data = _load_emails()
+            except FileNotFoundError:
+                data = {"emails": []}
+            emails = data.get("emails", [])
+            payload["id"] = f"email-{len(emails)+1:04d}"
 
             print(f"[TOOL] Created payload:")
             print(f"[TOOL]   id: {payload['id']}")
@@ -1141,14 +1280,23 @@ async def tool(req: ToolRequest, authorization: Optional[str] = Header(default=N
             data["emails"] = emails
             _EMAIL_CACHE = data
             _email_path().write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-            result = {"status": "success", "sent": payload}
-
+            persisted = True
             print(f"[TOOL] Email saved successfully")
         except Exception as exc:
-            print(f"[TOOL] Error: {exc}")
-            import traceback
-            traceback.print_exc()
-            result = {"status": "error", "error": str(exc)}
+            logger.exception("Email persistence failed")
+            result = {
+                "status": "failed",
+                "error": str(exc),
+                "failure_phase": "external_operation",
+                "safe_to_retry": False,
+            }
+            return {"status": "success", "tool": req.tool, "result": result}
+        result = {
+            "status": "success",
+            "sent": payload,
+            "persisted": persisted,
+            "external_operation_id": payload["id"],
+        }
     elif req.tool == "remote_schedule_tool":
         try:
             data = _load_schedules()
@@ -1272,11 +1420,11 @@ async def tool(req: ToolRequest, authorization: Optional[str] = Header(default=N
                 # 提取会议信息
                 title = meeting_data.get("title", "视频会议")
                 date = meeting_data.get("date")
-                time = meeting_data.get("time")
+                meeting_time = meeting_data.get("time")
                 participants = meeting_data.get("participants", [])
                 agenda = meeting_data.get("agenda", "")
                 
-                if not date or not time:
+                if not date or not meeting_time:
                     raise ValueError("date and time are required")
                 
                 # 创建会议记录
@@ -1284,7 +1432,7 @@ async def tool(req: ToolRequest, authorization: Optional[str] = Header(default=N
                     "id": f"meeting-{len(meetings)+1:04d}",
                     "title": title,
                     "date": date,
-                    "time": time,
+                    "time": meeting_time,
                     "participants": participants,
                     "agenda": agenda,
                     "status": "scheduled",
@@ -1446,17 +1594,28 @@ async def tool(req: ToolRequest, authorization: Optional[str] = Header(default=N
             logger.error(traceback.format_exc())
             result = {"status": "error", "error": str(exc)}
     elif req.tool == "remote_docx_generator_tool":
+        arguments = req.arguments if isinstance(req.arguments, dict) else {}
+        template_name = str(arguments.get("template_name") or "").strip()
+        raw_data = arguments.get("data")
+        if isinstance(raw_data, dict):
+            data = dict(raw_data)
+        elif raw_data in (None, ""):
+            data = {}
+        else:
+            data = {"content": raw_data}
+        output_filename = (
+            str(arguments.get("output_filename") or "").strip()
+            or f"document_{int(time.time())}"
+        )
+        output_path = Path(__file__).resolve().parent / "output" / f"{output_filename}.docx"
+        file_write_started = False
         try:
             from docx import Document
             from docx.shared import Pt, Inches
             from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
 
-            template_name = req.arguments.get("template_name")
-            data = req.arguments.get("data", {})
-            output_filename = req.arguments.get("output_filename") or f"document_{int(time.time())}"
-
             document_type = str(
-                req.arguments.get("document_type")
+                arguments.get("document_type")
                 or data.get("document_type")
                 or ""
             ).strip()
@@ -1476,7 +1635,25 @@ async def tool(req: ToolRequest, authorization: Optional[str] = Header(default=N
             template_config = templates.get("templates", {}).get(template_name)
 
             if not template_config:
-                raise ValueError(f"Template '{template_name}' not found")
+                template_name = template_name or document_type or "generic"
+                generic_lines = [
+                    f"{key}：{value}"
+                    for key, value in data.items()
+                    if value not in (None, "", [], {})
+                ]
+                template_config = {
+                    "content": [
+                        {
+                            "type": "heading",
+                            "text": data.get("title") or output_filename,
+                            "level": 1,
+                        },
+                        {
+                            "type": "paragraph",
+                            "text": "\n".join(generic_lines),
+                        },
+                    ]
+                }
 
             # Prepare data with defaults
             current_date = datetime.datetime.now().strftime("%Y年%m月%d日")
@@ -1527,6 +1704,9 @@ async def tool(req: ToolRequest, authorization: Optional[str] = Header(default=N
                     placeholder = "{{" + key + "}}"
                     if placeholder in text:
                         text = text.replace(placeholder, str(value))
+                # Missing values are optional in this demo. Do not leak raw
+                # template placeholders into the generated document.
+                text = re.sub(r"\{\{[^{}]+\}\}", "", text)
 
                 if item_type == "heading":
                     level = item.get("level", 1)
@@ -1553,23 +1733,37 @@ async def tool(req: ToolRequest, authorization: Optional[str] = Header(default=N
             output_dir.mkdir(exist_ok=True)
             output_path = output_dir / f"{output_filename}.docx"
 
+            file_write_started = True
             doc.save(str(output_path))
+            if not output_path.is_file():
+                raise OSError("document save completed without creating a file")
 
             logger.info(f"Document generated successfully: {output_path}")
-
             result = {
                 "status": "success",
                 "file_path": str(output_path),
                 "file_name": f"{output_filename}.docx",
                 "template_used": template_name,
-                "message": f"文档已生成：{output_filename}.docx"
+                "message": f"文档已生成：{output_filename}.docx",
+                "external_operation_id": str(output_path),
             }
 
         except Exception as exc:
-            import traceback
-            logger.error(f"Document generation error: {exc}")
-            logger.error(traceback.format_exc())
-            result = {"status": "error", "error": str(exc), "traceback": traceback.format_exc()}
+            logger.exception("Document generation failed")
+            result = {
+                "status": "failed",
+                "error": str(exc),
+                "file_path": "",
+                "file_name": f"{output_filename}.docx",
+                "template_used": template_name or "generic",
+                "partial_result": {"content": data},
+                "failure_phase": (
+                    "external_operation"
+                    if file_write_started
+                    else "document_generation"
+                ),
+                "safe_to_retry": not file_write_started,
+            }
     elif req.tool == "get_calendar_events_tool":
         try:
             data = _load_calendar_events()
@@ -1635,61 +1829,95 @@ async def tool(req: ToolRequest, authorization: Optional[str] = Header(default=N
         try:
             data = _load_knowledge()
             knowledge_items = data.get("knowledge_items", [])
-            query = req.arguments.get("query", "")
+            query = str(req.arguments.get("query", "") or "").strip()
 
             if not query:
                 raise ValueError("query parameter is required")
 
-            # 使用LLM理解问题并从知识库中检索答案
-            llm = get_llm_by_type("basic")
+            ranked_items = _rank_knowledge_items(knowledge_items, query)
+            sources = _knowledge_sources(ranked_items)
+            policy_scope = _knowledge_policy_scope(ranked_items)
 
-            # 构建知识库内容字符串
-            knowledge_content = []
-            for idx, item in enumerate(knowledge_items, 1):
-                knowledge_content.append(f"[知识条目 {idx}]")
-                knowledge_content.append(f"类别: {item.get('category', '')}")
-                knowledge_content.append(f"问题: {item.get('question', '')}")
-                knowledge_content.append(f"内容:\n{item.get('content', '')}")
-                knowledge_content.append("")
+            if not ranked_items:
+                result = {
+                    "status": "success",
+                    "query": query,
+                    "answer": "知识库暂未收录与该问题直接相关的内容，请补充更具体的关键词或咨询人工服务。",
+                    "knowledge_items_count": 0,
+                    "policy_scope": "unknown",
+                    "sources": [],
+                    "matched_items": [],
+                    "not_found": True,
+                }
+                logger.info(
+                    "Knowledge search found no matching item for query: %s",
+                    query,
+                )
+            else:
+                # 使用LLM基于已命中的条目组织答案，而不是把整库内容放入提示词。
+                matched_items = []
+                for index, (item, matched_keywords) in enumerate(ranked_items, 1):
+                    matched_items.append(f"[知识条目 {index}]")
+                    matched_items.append(f"编号: {item.get('id', '')}")
+                    matched_items.append(f"类别: {item.get('category', '')}")
+                    matched_items.append(f"问题: {item.get('question', '')}")
+                    keyword_summary = ", ".join(matched_keywords) or "元数据匹配"
+                    matched_items.append(f"关键词命中: {keyword_summary}")
+                    matched_items.append(f"来源: {item.get('source', '演示知识库')}")
+                    if item.get("effective_date"):
+                        matched_items.append(f"生效日期: {item['effective_date']}")
+                    if item.get("source_updated_at"):
+                        matched_items.append(f"资料更新日期: {item['source_updated_at']}")
+                    matched_items.append(f"适用范围: {item.get('policy_scope', 'unknown')}")
+                    matched_items.append(
+                        f"演示数据: {'是' if item.get('is_demo', True) else '否'}"
+                    )
+                    matched_items.append(f"内容:\n{item.get('content', '')}")
+                    matched_items.append("")
 
-            knowledge_text = "\n".join(knowledge_content)
+                knowledge_text = "\n".join(matched_items)
+                llm = get_llm_by_type("basic")
 
-            # 构建prompt
-            prompt = f"""你是一位专业的知识库查询助手。用户提出了一个问题，请从以下知识库中找到相关信息，并生成详细的回答。
+                prompt = f"""你是一位专业的知识库查询助手。请仅根据下面已经命中的知识条目回答用户问题。
 
 # 用户问题
 {query}
 
-# 知识库内容
+# 命中的知识条目
 {knowledge_text}
 
 # 回答要求
-1. 仔细分析用户问题，理解其真实意图
-2. 从知识库中找到最相关的信息
-3. 基于知识库内容生成详细、准确的回答
-4. 如果知识库中有法律法规依据，请在回答中引用
-5. 回答应该完整、专业，包含必要的说明和注意事项
-6. 如果知识库中没有相关信息，请明确告知用户
+1. 只使用命中条目中的事实，不要补充知识库之外的具体规定
+2. 直接回答用户问题，必要时给出办理步骤或注意事项
+3. 在回答中注明相关来源；如果是公司模拟制度，明确说明“演示制度”
+4. 法规材料与公司制度必须区分，不要把法定规定表述为公司现行政策
+5. 这是原型演示知识库，涉及具体权益时提醒用户以正式制度和主管部门发布内容为准
 
-请直接输出回答内容，不要添加任何前缀或解释。"""
+请直接输出回答内容，不要添加“回答：”等前缀。"""
 
-            # 调用LLM
-            response = llm.invoke(prompt) if hasattr(llm, "invoke") else None
-            if hasattr(response, "content"):
-                answer = response.content
-            else:
-                answer = str(response) if response is not None else "无法生成回答"
+                response = llm.invoke(prompt) if hasattr(llm, "invoke") else None
+                if hasattr(response, "content"):
+                    answer = response.content
+                else:
+                    answer = str(response) if response is not None else "无法生成回答"
 
-            # 记录完整答案
-            logger.info(f"Knowledge search completed for query: {query}")
-            logger.info(f"Full answer:\n{answer}")
+                logger.info("Knowledge search completed for query: %s", query)
+                logger.info(
+                    "Knowledge matches: %s",
+                    [source["id"] for source in sources],
+                )
+                logger.info("Full answer:\n%s", answer)
 
-            result = {
-                "status": "success",
-                "query": query,
-                "answer": answer,
-                "knowledge_items_count": len(knowledge_items)
-            }
+                result = {
+                    "status": "success",
+                    "query": query,
+                    "answer": answer,
+                    "knowledge_items_count": len(ranked_items),
+                    "policy_scope": policy_scope,
+                    "sources": sources,
+                    "matched_items": [source["id"] for source in sources],
+                    "not_found": False,
+                }
         except Exception as exc:
             import traceback
             result = {
@@ -1750,14 +1978,16 @@ async def tool(req: ToolRequest, authorization: Optional[str] = Header(default=N
             employee_name = req.arguments.get("employee_name")
             filters = req.arguments.get("filters", {})
 
-            if not employee_id:
-                raise ValueError("employee_id is required")
+            if not employee_id and not employee_name:
+                raise ValueError("employee_id or employee_name is required")
 
             # Load all records
             all_records = _load_leave_applications()
 
-            # Filter by employee_id
-            records = [r for r in all_records if r.get("employee_id") == employee_id]
+            if employee_id:
+                records = [r for r in all_records if r.get("employee_id") == employee_id]
+            else:
+                records = [r for r in all_records if r.get("employee_name") == employee_name]
 
             # Apply additional filters
             if filters:
@@ -1838,14 +2068,16 @@ async def tool(req: ToolRequest, authorization: Optional[str] = Header(default=N
             employee_name = req.arguments.get("employee_name")
             filters = req.arguments.get("filters", {})
 
-            if not employee_id:
-                raise ValueError("employee_id is required")
+            if not employee_id and not employee_name:
+                raise ValueError("employee_id or employee_name is required")
 
             # Load all records
             all_records = _load_travel_applications()
 
-            # Filter by employee_id
-            records = [r for r in all_records if r.get("employee_id") == employee_id]
+            if employee_id:
+                records = [r for r in all_records if r.get("employee_id") == employee_id]
+            else:
+                records = [r for r in all_records if r.get("employee_name") == employee_name]
 
             # Apply additional filters
             if filters:
@@ -1874,7 +2106,12 @@ async def tool(req: ToolRequest, authorization: Optional[str] = Header(default=N
                 "traceback": traceback.format_exc()
             }
     else:
-        result = f"[remote-tool:{req.tool}] ok"
+        result = {
+            "status": "success",
+            "tool": req.tool,
+            "arguments": dict(req.arguments or {}),
+            "message": f"[remote-tool:{req.tool}] ok",
+        }
 
     return {
         "status": "success",
