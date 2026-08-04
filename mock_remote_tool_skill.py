@@ -524,6 +524,8 @@ def _knowledge_sources(
             "policy_scope": str(item.get("policy_scope") or "unknown"),
             "is_demo": is_demo,
         }
+        if item.get("source_note"):
+            source["source_note"] = str(item["source_note"])
         if item.get("effective_date"):
             source["effective_date"] = str(item["effective_date"])
         if item.get("source_updated_at"):
@@ -1778,6 +1780,8 @@ async def tool(req: ToolRequest, authorization: Optional[str] = Header(default=N
                     keyword_summary = ", ".join(matched_keywords) or "元数据匹配"
                     matched_items.append(f"关键词命中: {keyword_summary}")
                     matched_items.append(f"来源: {item.get('source', '演示知识库')}")
+                    if item.get("source_note"):
+                        matched_items.append(f"来源说明: {item['source_note']}")
                     if item.get("effective_date"):
                         matched_items.append(f"生效日期: {item['effective_date']}")
                     if item.get("source_updated_at"):
