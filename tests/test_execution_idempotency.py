@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -22,8 +23,14 @@ class ExecutionIdempotencyTests(unittest.TestCase):
             return_value="a" * 64,
         )
         self._server_plan_hash.start()
+        self._execution_credentials = patch(
+            "src.service.web_app.EXECUTION_USER_API_KEYS_JSON",
+            '{"u1":"execution-key-u1","u2":"execution-key-u2"}',
+        )
+        self._execution_credentials.start()
 
     def tearDown(self):
+        self._execution_credentials.stop()
         self._server_plan_hash.stop()
         task_logger_mod.checkpoints_dir = self._original_checkpoints_dir
         self._temp_dir.cleanup()
@@ -53,10 +60,30 @@ class ExecutionIdempotencyTests(unittest.TestCase):
         payload.update(updates)
         return payload
 
-    def _authorized_request(self, client, **authorization_updates):
+    @staticmethod
+    def _authorization_headers(
+        confirmation_request_id="confirmation-request-1",
+        credential="execution-key-u1",
+    ):
+        return {
+            "Authorization": f"Bearer {credential}",
+            "Idempotency-Key": confirmation_request_id,
+        }
+
+    def _authorized_request(
+        self,
+        client,
+        *,
+        confirmation_request_id="confirmation-request-1",
+        credential="execution-key-u1",
+        **authorization_updates,
+    ):
         authorization = client.post(
             "/api/workflows/execution-authorizations",
             json=self._authorization_payload(**authorization_updates),
+            headers=self._authorization_headers(
+                confirmation_request_id, credential
+            ),
         )
         self.assertEqual(authorization.status_code, 200, authorization.text)
         identity = authorization.json()
@@ -105,6 +132,30 @@ class ExecutionIdempotencyTests(unittest.TestCase):
         self.assertEqual(second.status, "reserved")
         self.assertEqual(second.execution_attempt_id, "attempt-1")
         self.assertEqual(second.execution_plan_hash, "a" * 64)
+
+    def test_concurrent_reservations_expose_one_complete_record(self):
+        identity = {
+            "task_id": "exec-concurrent",
+            "workflow_id": "u1:wf-1",
+            "user_query": "execute approved plan",
+            "attempt_id": "attempt-concurrent",
+            "idempotency_key": "production:concurrent",
+            "plan_hash": "a" * 64,
+            "user_id": "u1",
+            "confirmation_request_id": "confirmation-concurrent",
+        }
+
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            results = list(
+                executor.map(
+                    lambda _index: TaskLogger.reserve_execution(**identity),
+                    range(8),
+                )
+            )
+
+        self.assertEqual(sum(1 for reserved, _task in results if reserved), 1)
+        self.assertTrue(all(task is not None for _reserved, task in results))
+        self.assertTrue(all(task.status == "reserved" for _reserved, task in results))
 
     def test_reserved_task_can_be_finalized_before_workflow_activation(self):
         reserved, task = TaskLogger.reserve_execution(
@@ -195,10 +246,12 @@ class ExecutionIdempotencyTests(unittest.TestCase):
     def test_server_issues_internal_execution_task_id(self):
         captured_task_ids = []
         captured_tokens = []
+        captured_users = []
 
         async def fake_workflow(request):
             captured_task_ids.append(request.execution_task_id)
             captured_tokens.append(request.execution_authorization_token)
+            captured_users.append(request.user_id)
             yield {
                 "event": "start_of_workflow",
                 "data": {
@@ -211,6 +264,7 @@ class ExecutionIdempotencyTests(unittest.TestCase):
         with patch.object(Server, "_run_agent_workflow", side_effect=fake_workflow):
             with TestClient(app) as client:
                 payload, identity = self._authorized_request(client)
+                payload["user_id"] = "forged-client-user"
                 response = client.post("/api/workflows/run", json=payload)
 
         self.assertEqual(response.status_code, 200)
@@ -218,6 +272,7 @@ class ExecutionIdempotencyTests(unittest.TestCase):
         self.assertTrue(generated_task_id.startswith("exec-"))
         self.assertEqual(captured_task_ids, [generated_task_id])
         self.assertEqual(captured_tokens, [None])
+        self.assertEqual(captured_users, ["u1"])
         self.assertEqual(generated_task_id, identity["task_id"])
 
     def test_missing_server_authorization_cannot_execute_production(self):
@@ -292,6 +347,136 @@ class ExecutionIdempotencyTests(unittest.TestCase):
             "EXECUTION_TASK_ID_MISMATCH",
         )
 
+    def test_authorization_requires_a_server_configured_user_credential(self):
+        app = create_app()
+        with TestClient(app) as client:
+            missing = client.post(
+                "/api/workflows/execution-authorizations",
+                json=self._authorization_payload(),
+                headers={"Idempotency-Key": "confirmation-missing-auth"},
+            )
+            wrong = client.post(
+                "/api/workflows/execution-authorizations",
+                json=self._authorization_payload(),
+                headers=self._authorization_headers(
+                    "confirmation-wrong-auth", "wrong-key"
+                ),
+            )
+
+        self.assertEqual(missing.status_code, 401)
+        self.assertEqual(wrong.status_code, 401)
+
+    def test_authorization_fails_closed_when_credentials_are_not_configured(self):
+        app = create_app()
+        with patch("src.service.web_app.EXECUTION_USER_API_KEYS_JSON", ""):
+            with TestClient(app) as client:
+                response = client.post(
+                    "/api/workflows/execution-authorizations",
+                    json=self._authorization_payload(),
+                    headers=self._authorization_headers(
+                        "confirmation-no-server-config"
+                    ),
+                )
+
+        self.assertEqual(response.status_code, 503)
+
+    def test_request_body_user_id_cannot_impersonate_workflow_owner(self):
+        app = create_app()
+        with TestClient(app) as client:
+            own_workflow = client.post(
+                "/api/workflows/execution-authorizations",
+                json=self._authorization_payload(user_id="victim"),
+                headers=self._authorization_headers("confirmation-own-workflow"),
+            )
+            other_workflow = client.post(
+                "/api/workflows/execution-authorizations",
+                json=self._authorization_payload(
+                    user_id="u1", workflow_id="u2:wf-1"
+                ),
+                headers=self._authorization_headers("confirmation-other-workflow"),
+            )
+
+        self.assertEqual(own_workflow.status_code, 200, own_workflow.text)
+        task = TaskLogger.load(own_workflow.json()["task_id"])
+        self.assertEqual(task.execution_user_id, "u1")
+        self.assertEqual(other_workflow.status_code, 403)
+
+    def test_same_confirmation_request_reuses_server_execution_record(self):
+        app = create_app()
+        with TestClient(app) as client:
+            _, first = self._authorized_request(
+                client, confirmation_request_id="confirmation-network-retry"
+            )
+            _, replay = self._authorized_request(
+                client, confirmation_request_id="confirmation-network-retry"
+            )
+
+        self.assertEqual(replay["task_id"], first["task_id"])
+        self.assertEqual(
+            replay["execution_attempt_id"], first["execution_attempt_id"]
+        )
+        self.assertEqual(
+            replay["execution_idempotency_key"],
+            first["execution_idempotency_key"],
+        )
+        self.assertEqual(
+            replay["execution_authorization_token"],
+            first["execution_authorization_token"],
+        )
+
+    def test_used_confirmation_request_cannot_authorize_again(self):
+        async def fake_workflow(request):
+            yield {
+                "event": "start_of_workflow",
+                "data": {
+                    "task_id": request.execution_task_id,
+                    "workflow_id": request.workflow_id,
+                },
+            }
+
+        app = create_app()
+        with patch.object(Server, "_run_agent_workflow", side_effect=fake_workflow):
+            with TestClient(app) as client:
+                payload, _ = self._authorized_request(
+                    client, confirmation_request_id="confirmation-used-request"
+                )
+                executed = client.post("/api/workflows/run", json=payload)
+                replay = client.post(
+                    "/api/workflows/execution-authorizations",
+                    json=self._authorization_payload(),
+                    headers=self._authorization_headers(
+                        "confirmation-used-request"
+                    ),
+                )
+
+        self.assertEqual(executed.status_code, 200)
+        self.assertEqual(replay.status_code, 409)
+        self.assertEqual(
+            replay.json()["detail"]["code"],
+            "EXECUTION_CONFIRMATION_ALREADY_USED",
+        )
+
+    def test_new_confirmation_can_execute_the_same_plan_again(self):
+        app = create_app()
+        with TestClient(app) as client:
+            _, first = self._authorized_request(
+                client, confirmation_request_id="confirmation-first-run"
+            )
+            first_task = TaskLogger.load(first["task_id"])
+            first_task.log_workflow_terminal("FAILED", error="test failure")
+            _, second = self._authorized_request(
+                client, confirmation_request_id="confirmation-second-run"
+            )
+
+        self.assertNotEqual(second["task_id"], first["task_id"])
+        self.assertNotEqual(
+            second["execution_attempt_id"], first["execution_attempt_id"]
+        )
+        self.assertNotEqual(
+            second["execution_idempotency_key"],
+            first["execution_idempotency_key"],
+        )
+
     def test_confirmation_rejects_plan_that_changed_on_server(self):
         app = create_app()
         with patch(
@@ -302,6 +487,9 @@ class ExecutionIdempotencyTests(unittest.TestCase):
                 response = client.post(
                     "/api/workflows/execution-authorizations",
                     json=self._authorization_payload(),
+                    headers=self._authorization_headers(
+                        "confirmation-plan-changed"
+                    ),
                 )
 
         self.assertEqual(response.status_code, 409)
@@ -309,7 +497,7 @@ class ExecutionIdempotencyTests(unittest.TestCase):
             response.json()["detail"]["code"], "EXECUTION_PLAN_CHANGED"
         )
 
-    def test_expired_reservation_is_failed_and_can_be_explicitly_retried(self):
+    def test_expired_reservation_requires_a_new_confirmation(self):
         app = create_app()
         with TestClient(app) as client:
             _, first_identity = self._authorized_request(client)
@@ -336,16 +524,19 @@ class ExecutionIdempotencyTests(unittest.TestCase):
             blocked_retry = client.post(
                 "/api/workflows/execution-authorizations",
                 json=self._authorization_payload(),
+                headers=self._authorization_headers(),
             )
             self.assertEqual(blocked_retry.status_code, 409)
-            self.assertTrue(blocked_retry.json()["detail"]["retry_allowed"])
 
             retry = client.post(
                 "/api/workflows/execution-authorizations",
-                json=self._authorization_payload(retry_expired=True),
+                json=self._authorization_payload(),
+                headers=self._authorization_headers(
+                    "confirmation-after-expiration"
+                ),
             )
             self.assertEqual(retry.status_code, 200, retry.text)
-            self.assertEqual(retry.json()["task_id"], first_identity["task_id"])
+            self.assertNotEqual(retry.json()["task_id"], first_identity["task_id"])
             self.assertNotEqual(
                 retry.json()["execution_attempt_id"],
                 first_identity["execution_attempt_id"],

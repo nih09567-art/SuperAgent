@@ -1,8 +1,10 @@
 from concurrent.futures import ThreadPoolExecutor
 from fastapi.testclient import TestClient
+import json
 import pytest
 import threading
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import src.service.web_app as web_app
 import src.orchestration.reconciliation as reconciliation_module
@@ -966,16 +968,26 @@ def test_task_owner_capability_allows_cleanup_without_governance_admin_key(
 def _production_authorization_fields(
     client, *, user_id: str, workflow_id: str, owner_token: str
 ):
-    response = client.post(
-        "/api/workflows/execution-authorizations",
-        headers={"X-Task-Owner-Token": owner_token},
-        json={
-            "user_id": user_id,
-            "workflow_id": workflow_id,
-            "plan_hash": "a" * 64,
-            "user_query": "test",
-        },
-    )
+    credential = f"execution-key-{user_id}"
+    with patch.object(
+        web_app,
+        "EXECUTION_USER_API_KEYS_JSON",
+        json.dumps({user_id: credential}),
+    ):
+        response = client.post(
+            "/api/workflows/execution-authorizations",
+            headers={
+                "X-Task-Owner-Token": owner_token,
+                "Authorization": f"Bearer {credential}",
+                "Idempotency-Key": "confirmation-governance-request",
+            },
+            json={
+                "user_id": user_id,
+                "workflow_id": workflow_id,
+                "plan_hash": "a" * 64,
+                "user_query": "test",
+            },
+        )
     if response.status_code != 200:
         return response, {}
     data = response.json()

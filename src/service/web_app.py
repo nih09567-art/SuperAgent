@@ -60,6 +60,7 @@ from src.service.env import (
     WORKFLOW_SKILL_ADMIN_API_KEY,
     GOVERNANCE_ADMIN_API_KEY,
     GOVERNANCE_ADMIN_ACTOR_ID,
+    EXECUTION_USER_API_KEYS_JSON,
 )
 from src.memory import get_memory_manager
 from src.memory.store import SecretDetectedError
@@ -183,11 +184,12 @@ class ReconciliationDecisionRequest(BaseModel):
 
 
 class ExecutionAuthorizationRequest(BaseModel):
-    user_id: str = Field(min_length=1, max_length=128)
+    # Retained for older clients only. Authorization always uses the
+    # server-authenticated principal, never this caller-controlled value.
+    user_id: Optional[str] = Field(default=None, max_length=128)
     workflow_id: str = Field(min_length=1, max_length=256)
     plan_hash: str = Field(min_length=64, max_length=64)
     user_query: str = Field(default="", max_length=4000)
-    retry_expired: bool = False
 
 
 def _governance_actor_profile(actor_id: str) -> dict[str, Any]:
@@ -245,6 +247,75 @@ def _authenticate_governance_operator(
     actor_id = str(GOVERNANCE_ADMIN_ACTOR_ID or "").strip()
     _require_governance_reviewer(actor_id)
     return actor_id
+
+
+def _execution_user_credentials() -> dict[str, str]:
+    """Load the server-owned user-to-API-key map and reject unsafe config."""
+
+    raw_configuration = str(EXECUTION_USER_API_KEYS_JSON or "").strip()
+    if not raw_configuration:
+        raise HTTPException(
+            status_code=503,
+            detail="production execution credentials are not configured",
+        )
+    try:
+        configured = json.loads(raw_configuration)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="production execution credentials are invalid",
+        ) from exc
+    if not isinstance(configured, dict) or not configured:
+        raise HTTPException(
+            status_code=503,
+            detail="production execution credentials are not configured",
+        )
+
+    credentials: dict[str, str] = {}
+    seen_keys: set[str] = set()
+    for raw_user_id, raw_api_key in configured.items():
+        user_id = str(raw_user_id or "").strip()
+        api_key = raw_api_key if isinstance(raw_api_key, str) else ""
+        if (
+            not user_id
+            or len(user_id) > 128
+            or ":" in user_id
+            or len(api_key) < 16
+            or api_key in seen_keys
+        ):
+            raise HTTPException(
+                status_code=503,
+                detail="production execution credentials are invalid",
+            )
+        credentials[user_id] = api_key
+        seen_keys.add(api_key)
+    return credentials
+
+
+def _authenticate_execution_user(
+    authorization: Optional[str] = Header(default=None),
+) -> tuple[str, str]:
+    """Resolve a production execution principal from a server-owned API key."""
+
+    scheme, separator, supplied = (authorization or "").partition(" ")
+    if not separator or scheme.casefold() != "bearer" or not supplied:
+        raise HTTPException(
+            status_code=401,
+            detail="production execution authentication failed",
+        )
+    credentials = _execution_user_credentials()
+    matches = [
+        user_id
+        for user_id, api_key in credentials.items()
+        if hmac.compare_digest(supplied, api_key)
+    ]
+    if len(matches) != 1:
+        raise HTTPException(
+            status_code=401,
+            detail="production execution authentication failed",
+        )
+    principal = matches[0]
+    return principal, credentials[principal]
 
 
 def _authorize_runtime_cleanup(
@@ -500,23 +571,67 @@ def _finalize_disconnected_task(task_id: Optional[str], reason: str) -> None:
     task_log.log_workflow_terminal("FAILED", error=reason)
 
 
-def _production_execution_digest(user_id: str, workflow_id: str, plan_hash: str) -> str:
+def _production_execution_digest(
+    user_id: str,
+    workflow_id: str,
+    plan_hash: str,
+    confirmation_request_id: str,
+) -> str:
     identity = "\0".join((
         str(user_id),
         str(workflow_id),
         str(plan_hash),
+        str(confirmation_request_id),
     ))
     return hashlib.sha256(identity.encode("utf-8")).hexdigest()
 
 
-def _production_task_id(user_id: str, workflow_id: str, plan_hash: str) -> str:
-    return f"exec-{_production_execution_digest(user_id, workflow_id, plan_hash)[:32]}"
+def _production_task_id(
+    user_id: str,
+    workflow_id: str,
+    plan_hash: str,
+    confirmation_request_id: str,
+) -> str:
+    digest = _production_execution_digest(
+        user_id, workflow_id, plan_hash, confirmation_request_id
+    )
+    return f"exec-{digest[:32]}"
 
 
 def _production_idempotency_key(
-    user_id: str, workflow_id: str, plan_hash: str
+    user_id: str,
+    workflow_id: str,
+    plan_hash: str,
+    confirmation_request_id: str,
 ) -> str:
-    return f"production:{_production_execution_digest(user_id, workflow_id, plan_hash)}"
+    digest = _production_execution_digest(
+        user_id, workflow_id, plan_hash, confirmation_request_id
+    )
+    return f"production:{digest}"
+
+
+def _normalize_confirmation_request_id(value: str) -> str:
+    request_id = str(value or "").strip()
+    if not 8 <= len(request_id) <= 128 or any(
+        character not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
+        for character in request_id
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="Idempotency-Key must be 8-128 URL-safe characters",
+        )
+    return request_id
+
+
+def _production_authorization_token(
+    execution_api_key: str, task_id: str, attempt_id: str
+) -> str:
+    """Derive a stable short-lived capability for idempotent response replay."""
+
+    payload = "\0".join((task_id, attempt_id)).encode("utf-8")
+    return hmac.new(
+        execution_api_key.encode("utf-8"), payload, hashlib.sha256
+    ).hexdigest()
 
 
 def _canonical_execution_plan_hash(
@@ -886,24 +1001,30 @@ def create_app() -> FastAPI:
 
     @app.post("/api/workflows/execution-authorizations")
     async def create_execution_authorization(
-        request: Request, body: ExecutionAuthorizationRequest
+        request: Request,
+        body: ExecutionAuthorizationRequest,
+        authenticated_user: tuple[str, str] = Depends(_authenticate_execution_user),
+        idempotency_key: str = Header(alias="Idempotency-Key"),
     ):
+        principal, execution_api_key = authenticated_user
+        confirmation_request_id = _normalize_confirmation_request_id(idempotency_key)
         plan_hash = body.plan_hash.strip().lower()
         if any(character not in "0123456789abcdef" for character in plan_hash):
             raise HTTPException(status_code=422, detail="plan_hash must be a SHA-256 hex digest")
-        if not body.workflow_id.startswith(f"{body.user_id}:"):
+        workflow_owner, _ = _parse_workflow_id(body.workflow_id)
+        if not hmac.compare_digest(workflow_owner, principal):
             raise HTTPException(
-                status_code=422,
-                detail="workflow_id must belong to the confirming user",
+                status_code=403,
+                detail="workflow does not belong to the authenticated user",
             )
         cleanup_token = str(request.headers.get("X-Task-Owner-Token") or "")
         _bind_runtime_cleanup_capability(
             token=cleanup_token,
-            user_id=body.user_id,
+            user_id=principal,
             workflow_id=body.workflow_id,
         )
         server_plan_hash = _server_execution_plan_hash(
-            body.user_id, body.workflow_id
+            principal, body.workflow_id
         )
         if not server_plan_hash:
             raise HTTPException(
@@ -923,12 +1044,22 @@ def create_app() -> FastAPI:
                 },
             )
 
-        task_id = _production_task_id(body.user_id, body.workflow_id, plan_hash)
-        attempt_id = f"attempt-{secrets.token_hex(16)}"
-        idempotency_key = _production_idempotency_key(
-            body.user_id, body.workflow_id, plan_hash
+        task_id = _production_task_id(
+            principal,
+            body.workflow_id,
+            plan_hash,
+            confirmation_request_id,
         )
-        authorization_token = secrets.token_urlsafe(32)
+        attempt_id = f"attempt-{secrets.token_hex(16)}"
+        execution_idempotency_key = _production_idempotency_key(
+            principal,
+            body.workflow_id,
+            plan_hash,
+            confirmation_request_id,
+        )
+        authorization_token = _production_authorization_token(
+            execution_api_key, task_id, attempt_id
+        )
         token_hash = TaskLogger.hash_execution_authorization_token(
             authorization_token
         )
@@ -937,30 +1068,46 @@ def create_app() -> FastAPI:
             workflow_id=body.workflow_id,
             user_query=body.user_query,
             attempt_id=attempt_id,
-            idempotency_key=idempotency_key,
+            idempotency_key=execution_idempotency_key,
             plan_hash=plan_hash,
-            user_id=body.user_id,
+            user_id=principal,
+            confirmation_request_id=confirmation_request_id,
             authorization_token_hash=token_hash,
         )
         if not reserved and task is not None:
-            task = TaskLogger.expire_stale_reservation(task_id)
-            if body.retry_expired:
-                reserved, task = TaskLogger.renew_expired_execution_reservation(
+            attempt_id = task.execution_attempt_id
+            execution_idempotency_key = task.execution_idempotency_key
+            authorization_token = _production_authorization_token(
+                execution_api_key, task_id, attempt_id
+            )
+            token_hash = TaskLogger.hash_execution_authorization_token(
+                authorization_token
+            )
+            reserved, task, refresh_failure = (
+                TaskLogger.refresh_unclaimed_execution_authorization(
                     task_id=task_id,
-                    user_query=body.user_query,
-                    attempt_id=attempt_id,
-                    idempotency_key=idempotency_key,
+                    workflow_id=body.workflow_id,
                     plan_hash=plan_hash,
-                    user_id=body.user_id,
+                    user_id=principal,
+                    confirmation_request_id=confirmation_request_id,
                     authorization_token_hash=token_hash,
+                )
+            )
+            if not reserved and refresh_failure == "EXECUTION_CONFIRMATION_MISMATCH":
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": refresh_failure,
+                        "message": "The confirmation request does not match its server record.",
+                    },
                 )
         if not reserved:
             existing = _public_task_log(task) if task is not None else {}
             raise HTTPException(
                 status_code=409,
                 detail={
-                    "code": "EXECUTION_ALREADY_AUTHORIZED",
-                    "message": "This confirmed production plan already has a server execution identity.",
+                    "code": "EXECUTION_CONFIRMATION_ALREADY_USED",
+                    "message": "This confirmation attempt has expired, started, or completed. Confirm again to create a new attempt.",
                     "task_id": task_id,
                     "status": existing.get("status", "unknown"),
                     "workflow_id": existing.get("workflow_id", body.workflow_id),
@@ -969,15 +1116,14 @@ def create_app() -> FastAPI:
                     "reservation_failure_code": existing.get(
                         "reservation_failure_code", ""
                     ),
-                    "retry_allowed": existing.get("reservation_failure_code")
-                    == "RESERVATION_EXPIRED",
                 },
             )
         return {
             "task_id": task_id,
             "execution_attempt_id": attempt_id,
-            "execution_idempotency_key": idempotency_key,
+            "execution_idempotency_key": execution_idempotency_key,
             "execution_plan_hash": plan_hash,
+            "confirmation_request_id": confirmation_request_id,
             "execution_authorization_token": authorization_token,
             "reservation_expires_at": task.reservation_expires_at if task else "",
         }
@@ -990,6 +1136,8 @@ def create_app() -> FastAPI:
             required_identity = (
                 body.execution_task_id,
                 body.execution_authorization_token,
+                body.execution_attempt_id,
+                body.execution_idempotency_key,
                 body.execution_plan_hash,
                 body.workflow_id,
             )
@@ -998,16 +1146,20 @@ def create_app() -> FastAPI:
                     status_code=422,
                     detail=(
                         "production execution requires a server-issued task_id, "
-                        "authorization_token, workflow_id, and plan_hash"
+                        "authorization_token, attempt_id, idempotency_key, "
+                        "workflow_id, and plan_hash"
                     ),
                 )
             execution_task_id = str(body.execution_task_id)
-            expected_task_id = _production_task_id(
-                body.user_id,
-                str(body.workflow_id),
-                str(body.execution_plan_hash).lower(),
+            valid_task_id = (
+                len(execution_task_id) == 37
+                and execution_task_id.startswith("exec-")
+                and all(
+                    character in "0123456789abcdef"
+                    for character in execution_task_id[5:]
+                )
             )
-            if not hmac.compare_digest(execution_task_id, expected_task_id):
+            if not valid_task_id:
                 raise HTTPException(
                     status_code=403,
                     detail={
@@ -1016,18 +1168,43 @@ def create_app() -> FastAPI:
                     },
                 )
             reserved_task = TaskLogger.load(execution_task_id)
-            if reserved_task is not None and (
-                (
-                    body.execution_attempt_id
-                    and body.execution_attempt_id
-                    != reserved_task.execution_attempt_id
+            if reserved_task is None:
+                raise HTTPException(
+                    status_code=403,
+                    detail={
+                        "code": "EXECUTION_AUTHORIZATION_NOT_FOUND",
+                        "message": "The server execution identity does not exist.",
+                    },
                 )
-                or (
-                    body.execution_idempotency_key
-                    and body.execution_idempotency_key
-                    != reserved_task.execution_idempotency_key
+            expected_task_id = _production_task_id(
+                reserved_task.execution_user_id,
+                reserved_task.workflow_id,
+                reserved_task.execution_plan_hash,
+                reserved_task.execution_confirmation_request_id,
+            )
+            server_identity_matches = (
+                bool(reserved_task.execution_user_id)
+                and bool(reserved_task.execution_confirmation_request_id)
+                and hmac.compare_digest(execution_task_id, expected_task_id)
+            )
+            client_identity_matches = (
+                hmac.compare_digest(
+                    str(body.execution_attempt_id),
+                    reserved_task.execution_attempt_id,
                 )
-            ):
+                and hmac.compare_digest(
+                    str(body.execution_idempotency_key),
+                    reserved_task.execution_idempotency_key,
+                )
+                and hmac.compare_digest(
+                    str(body.workflow_id), reserved_task.workflow_id
+                )
+                and hmac.compare_digest(
+                    str(body.execution_plan_hash).lower(),
+                    reserved_task.execution_plan_hash,
+                )
+            )
+            if not server_identity_matches or not client_identity_matches:
                 raise HTTPException(
                     status_code=403,
                     detail={
@@ -1039,9 +1216,9 @@ def create_app() -> FastAPI:
             claimed, task, failure_code = TaskLogger.claim_execution_authorization(
                 task_id=execution_task_id,
                 authorization_token=str(body.execution_authorization_token),
-                user_id=body.user_id,
-                workflow_id=str(body.workflow_id),
-                plan_hash=str(body.execution_plan_hash).lower(),
+                user_id=reserved_task.execution_user_id,
+                workflow_id=reserved_task.workflow_id,
+                plan_hash=reserved_task.execution_plan_hash,
             )
             if not claimed:
                 existing_data = _public_task_log(task) if task is not None else {}
@@ -1065,6 +1242,8 @@ def create_app() -> FastAPI:
             body.execution_idempotency_key = task.execution_idempotency_key
             body.execution_plan_hash = task.execution_plan_hash
             body.execution_task_id = task.task_id
+            body.user_id = task.execution_user_id
+            body.workflow_id = task.workflow_id
             body.execution_authorization_token = None
             response_headers.update({
                 "X-Task-ID": task.task_id,

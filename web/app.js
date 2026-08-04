@@ -23,6 +23,37 @@ const getTaskCleanupHeaders = (includeJson = false) => ({
 });
 window.getTaskCleanupHeaders = getTaskCleanupHeaders;
 
+const EXECUTION_API_KEY_PREFIX = "superagentExecutionApiKey";
+const getExecutionApiKeyStorageKey = (userId) => (
+  `${EXECUTION_API_KEY_PREFIX}:${encodeURIComponent(String(userId || "").trim())}`
+);
+const clearExecutionApiKey = (userId) => {
+  window.sessionStorage.removeItem(getExecutionApiKeyStorageKey(userId));
+};
+const getExecutionAuthorizationHeaders = (userId, confirmationRequestId) => {
+  const storageKey = getExecutionApiKeyStorageKey(userId);
+  let credential = window.sessionStorage.getItem(storageKey) || "";
+  if (!credential) {
+    credential = window.prompt(
+      "\u8bf7\u8f93\u5165\u5f53\u524d\u7528\u6237\u7684\u751f\u4ea7\u6267\u884c\u51ed\u636e\uff1a",
+      ""
+    ) || "";
+    if (!credential) throw new Error("Production execution credential is required");
+    window.sessionStorage.setItem(storageKey, credential);
+  }
+  return {
+    ...window.getTaskCleanupHeaders(true),
+    "Authorization": `Bearer ${credential}`,
+    "Idempotency-Key": confirmationRequestId,
+  };
+};
+const createConfirmationRequestId = () => {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  const bytes = new Uint8Array(24);
+  globalThis.crypto.getRandomValues(bytes);
+  return `confirm-${Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("")}`;
+};
+
 const userIdInput = document.getElementById("userId");
 const deepThinkingInput = document.getElementById("deepThinking");
 const searchBeforeInput = document.getElementById("searchBefore");
@@ -944,11 +975,11 @@ const normalizePendingPlan = (pendingPlan) => {
     taskId: String(pendingPlan.taskId || "").slice(0, 128),
     attemptId: String(pendingPlan.attemptId || "").slice(0, 128),
     idempotencyKey: String(pendingPlan.idempotencyKey || "").slice(0, 256),
+    confirmationRequestId: String(pendingPlan.confirmationRequestId || "").slice(0, 128),
     planHash: String(pendingPlan.planHash || "").slice(0, 128),
     recoveryMessage: String(pendingPlan.recoveryMessage || "")
       .slice(0, CONVERSATION_MESSAGE_CHAR_LIMIT),
     serverStatus: String(pendingPlan.serverStatus || "").slice(0, 64),
-    retryExpiredReservation: Boolean(pendingPlan.retryExpiredReservation),
   };
 };
 
@@ -1017,24 +1048,33 @@ const computeExecutionPlanHash = async (workflowId, steps) => {
     .join("");
 };
 
-const createExecutionIdentity = async (userId, workflowId, steps, userQuery) => {
+const createExecutionIdentity = async (
+  userId,
+  workflowId,
+  steps,
+  userQuery,
+  confirmationRequestId
+) => {
   const planHash = await computeExecutionPlanHash(workflowId, steps);
   const response = await fetch("/api/workflows/execution-authorizations", {
     method: "POST",
-    headers: window.getTaskCleanupHeaders(true),
+    headers: getExecutionAuthorizationHeaders(userId, confirmationRequestId),
     body: JSON.stringify({
-      user_id: userId,
       workflow_id: workflowId,
       plan_hash: planHash,
       user_query: String(userQuery || ""),
-      retry_expired: Boolean(activePendingPlan?.retryExpiredReservation),
     }),
   });
   const responseBody = await response.json().catch(() => ({}));
   if (!response.ok) {
+    if (response.status === 401) clearExecutionApiKey(userId);
     const detail = responseBody.detail || responseBody;
     const message = detail.message || detail.code || `HTTP ${response.status}`;
-    throw new Error(`Execution authorization failed: ${message}`);
+    const error = new Error(`Execution authorization failed: ${message}`);
+    error.status = response.status;
+    error.code = detail.code || "";
+    error.detail = detail;
+    throw error;
   }
   const identity = {
     taskId: String(responseBody.task_id || ""),
@@ -1042,9 +1082,11 @@ const createExecutionIdentity = async (userId, workflowId, steps, userQuery) => 
     idempotencyKey: String(responseBody.execution_idempotency_key || ""),
     planHash: String(responseBody.execution_plan_hash || ""),
     authorizationToken: String(responseBody.execution_authorization_token || ""),
+    confirmationRequestId: String(responseBody.confirmation_request_id || ""),
   };
   if (!identity.taskId || !identity.attemptId || !identity.idempotencyKey
-    || identity.planHash !== planHash || !identity.authorizationToken) {
+    || identity.planHash !== planHash || !identity.authorizationToken
+    || identity.confirmationRequestId !== confirmationRequestId) {
     throw new Error("Execution authorization response is incomplete or does not match the confirmed plan");
   }
   return {
@@ -1111,7 +1153,10 @@ const resolvePendingExecution = async (pendingPlan = activePendingPlan) => {
         status: "awaiting_confirmation",
         interruptedFrom: "",
         serverStatus,
-        retryExpiredReservation: true,
+        taskId: "",
+        attemptId: "",
+        idempotencyKey: "",
+        confirmationRequestId: "",
         recoveryMessage: "上次执行授权在工作流启动前已过期，未开始生产执行。请人工确认后重试。",
       });
     }
@@ -1461,7 +1506,7 @@ const renderPendingPlanForCurrentAnswer = (pendingPlan, interactive = true) => {
     recovery_blocked: "已禁止重复执行",
   };
   lifecycle.confirmPlanButton.textContent = confirmLabels[normalized.status] || "确认执行";
-  if (recoveryStatus || interruptedRevision || normalized.retryExpiredReservation) {
+  if (recoveryStatus || interruptedRevision || normalized.recoveryMessage) {
     lifecycle.recoveryNotice.textContent = normalized.recoveryMessage || (
       interruptedRevision
         ? "上次计划修改被中断，可继续修改或执行原计划。"
@@ -4515,21 +4560,66 @@ const runExecution = async () => {
     return;
   }
 
+  const confirmationRequestId = activePendingPlan?.confirmationRequestId
+    || createConfirmationRequestId();
+  activePendingPlan = normalizePendingPlan({
+    ...(activePendingPlan || {}),
+    steps: planSteps.map((step) => normalizeStep(step)),
+    workflowId,
+    status: "awaiting_confirmation",
+    confirmationRequestId,
+  });
+  saveActiveConversation();
+
   let executionIdentity;
   try {
     executionIdentity = await createExecutionIdentity(
       userId,
       workflowId,
       planSteps,
-      currentResolvedRequest || currentRequestQuery || originalUserQuery
+      currentResolvedRequest || currentRequestQuery || originalUserQuery,
+      confirmationRequestId
     );
   } catch (error) {
+    const reservationExpired = error?.code === "RESERVATION_EXPIRED"
+      || error?.detail?.reservation_failure_code === "RESERVATION_EXPIRED";
+    const confirmationAlreadyUsed = (
+      error?.code === "EXECUTION_CONFIRMATION_ALREADY_USED"
+      && !reservationExpired
+    );
+    if (reservationExpired) {
+      activePendingPlan = normalizePendingPlan({
+        ...activePendingPlan,
+        confirmationRequestId: "",
+        taskId: "",
+        attemptId: "",
+        idempotencyKey: "",
+      });
+      saveActiveConversation();
+    } else if (confirmationAlreadyUsed) {
+      activePendingPlan = normalizePendingPlan({
+        ...activePendingPlan,
+        status: "recovery_checking",
+        interruptedFrom: "executing",
+        taskId: String(error.detail?.task_id || ""),
+        attemptId: String(error.detail?.execution_attempt_id || ""),
+        planHash: String(error.detail?.execution_plan_hash || ""),
+        recoveryMessage: "This confirmation has already started or finished. Checking the original task before allowing another execution.",
+      });
+      saveActiveConversation();
+    }
     showPlanValidationHint(`Unable to create execution identity: ${error.message || error}`, true);
-    if (currentChatLifecycle) {
+    if (currentChatLifecycle && !confirmationAlreadyUsed) {
       currentChatLifecycle.confirmPlanButton.textContent = "确认执行";
     }
-    setChatPlanActionsDisabled(false);
-    setStatus("Plan ready", true);
+    if (confirmationAlreadyUsed) {
+      renderPendingPlanForCurrentAnswer(activePendingPlan, true);
+      setStatus("Recovery required", false);
+      void resolvePendingExecution(activePendingPlan);
+    } else {
+      setChatPlanActionsDisabled(false);
+      setStatus("Plan ready", true);
+    }
     return;
   }
   activePendingPlan = {
@@ -4542,6 +4632,7 @@ const runExecution = async () => {
     taskId: executionIdentity.taskId,
     attemptId: executionIdentity.attemptId,
     idempotencyKey: executionIdentity.idempotencyKey,
+    confirmationRequestId: executionIdentity.confirmationRequestId,
     planHash: executionIdentity.planHash,
     recoveryMessage: "",
     serverStatus: "",
@@ -4675,6 +4766,7 @@ const runExecution = async () => {
       taskId: runtime.taskId || activePendingPlan?.taskId || "",
       attemptId: runtime.attemptId || activePendingPlan?.attemptId || executionIdentity.attemptId,
       idempotencyKey: executionIdentity.idempotencyKey,
+      confirmationRequestId: executionIdentity.confirmationRequestId,
       planHash: executionIdentity.planHash,
     };
     const terminalConfirmed = executionStreamCompleted && runtime.terminalReceived;

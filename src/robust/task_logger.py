@@ -89,6 +89,7 @@ class TaskLogger:
         self.execution_idempotency_key: str = ""
         self.execution_plan_hash: str = ""
         self.execution_user_id: str = ""
+        self.execution_confirmation_request_id: str = ""
         self.execution_authorization_token_hash: str = ""
         self.execution_authorization_claimed_at: str = ""
         self.reservation_expires_at: str = ""
@@ -110,6 +111,7 @@ class TaskLogger:
         idempotency_key: str,
         plan_hash: str,
         user_id: str = "",
+        confirmation_request_id: str = "",
         authorization_token_hash: str = "",
         lease_seconds: int = DEFAULT_RESERVATION_LEASE_SECONDS,
     ) -> tuple[bool, Optional["TaskLogger"]]:
@@ -122,16 +124,17 @@ class TaskLogger:
         task.execution_idempotency_key = idempotency_key
         task.execution_plan_hash = plan_hash
         task.execution_user_id = user_id
+        task.execution_confirmation_request_id = confirmation_request_id
         task.execution_authorization_token_hash = authorization_token_hash
         task.reservation_expires_at = (
             datetime.now(timezone.utc) + timedelta(seconds=max(1, lease_seconds))
         ).isoformat()
-        try:
+        with FileLock(task._log_file):
+            if task._log_file.exists():
+                return False, cls.load(task_id)
             with open(task._log_file, "x", encoding="utf-8") as stream:
                 json.dump(task.to_dict(), stream, indent=2, ensure_ascii=False, default=str)
             return True, task
-        except FileExistsError:
-            return False, cls.load(task_id)
 
     @staticmethod
     def hash_execution_authorization_token(token: str) -> str:
@@ -212,44 +215,49 @@ class TaskLogger:
             return True, task, ""
 
     @classmethod
-    def renew_expired_execution_reservation(
+    def refresh_unclaimed_execution_authorization(
         cls,
         *,
         task_id: str,
-        user_query: str,
-        attempt_id: str,
-        idempotency_key: str,
+        workflow_id: str,
         plan_hash: str,
         user_id: str,
+        confirmation_request_id: str,
         authorization_token_hash: str,
         lease_seconds: int = DEFAULT_RESERVATION_LEASE_SECONDS,
-    ) -> tuple[bool, Optional["TaskLogger"]]:
+    ) -> tuple[bool, Optional["TaskLogger"], str]:
+        """Rotate a lost response token for the same unclaimed confirmation."""
+
         logs_dir = _get_task_logs_dir()
         log_file = logs_dir / f"{task_id}.json"
         with FileLock(log_file):
             task = cls.load(task_id)
-            if (
-                task is None
-                or task.status != "FAILED"
-                or task.reservation_failure_code != RESERVATION_EXPIRED_CODE
-            ):
-                return False, task
-            task.user_query = user_query
-            task.status = "reserved"
-            task.finished_at = None
-            task.error = None
-            task.execution_attempt_id = attempt_id
-            task.execution_idempotency_key = idempotency_key
-            task.execution_plan_hash = plan_hash
-            task.execution_user_id = user_id
-            task.execution_authorization_token_hash = authorization_token_hash
-            task.execution_authorization_claimed_at = ""
+            if task is None:
+                return False, None, "EXECUTION_AUTHORIZATION_NOT_FOUND"
+            if task.expire_reservation_if_stale():
+                return False, task, RESERVATION_EXPIRED_CODE
+            if task.status != "reserved" or task.execution_authorization_claimed_at:
+                return False, task, "EXECUTION_CONFIRMATION_ALREADY_USED"
+            identity_matches = (
+                hmac.compare_digest(task.workflow_id, workflow_id)
+                and hmac.compare_digest(task.execution_plan_hash, plan_hash)
+                and hmac.compare_digest(task.execution_user_id, user_id)
+                and hmac.compare_digest(
+                    task.execution_confirmation_request_id,
+                    confirmation_request_id,
+                )
+                and hmac.compare_digest(
+                    task.execution_authorization_token_hash,
+                    authorization_token_hash,
+                )
+            )
+            if not identity_matches:
+                return False, task, "EXECUTION_CONFIRMATION_MISMATCH"
             task.reservation_expires_at = (
                 datetime.now(timezone.utc) + timedelta(seconds=max(1, lease_seconds))
             ).isoformat()
-            task.reservation_failure_code = ""
             task._flush()
-            return True, task
+            return True, task, ""
 
     @classmethod
     def expire_stale_reservations(cls) -> int:
@@ -567,6 +575,7 @@ class TaskLogger:
             "execution_idempotency_key": self.execution_idempotency_key,
             "execution_plan_hash": self.execution_plan_hash,
             "execution_user_id": self.execution_user_id,
+            "execution_confirmation_request_id": self.execution_confirmation_request_id,
             "execution_authorization_token_hash": self.execution_authorization_token_hash,
             "execution_authorization_claimed_at": self.execution_authorization_claimed_at,
             "reservation_expires_at": self.reservation_expires_at,
@@ -624,6 +633,9 @@ class TaskLogger:
             inst.execution_idempotency_key = data.get("execution_idempotency_key", "")
             inst.execution_plan_hash = data.get("execution_plan_hash", "")
             inst.execution_user_id = data.get("execution_user_id", "")
+            inst.execution_confirmation_request_id = data.get(
+                "execution_confirmation_request_id", ""
+            )
             inst.execution_authorization_token_hash = data.get(
                 "execution_authorization_token_hash", ""
             )
