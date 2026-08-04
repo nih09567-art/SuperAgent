@@ -1,15 +1,19 @@
 from fastapi import FastAPI, Header
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Any, Dict, List, Optional, Tuple
 from pathlib import Path
+import asyncio
 import concurrent.futures
 import datetime
 import json
 import logging
+import os
 import re
 import time
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 try:
     from src.llm.llm import get_llm_by_type
@@ -57,6 +61,16 @@ def _invoke_with_timeout(func, timeout_sec: float):
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(func)
         return future.result(timeout=timeout_sec)
+
+
+async def _invoke_llm_non_blocking(llm: Any, prompt: str) -> Any:
+    """Run a synchronous demo-model client off the FastAPI event loop."""
+
+    if hasattr(llm, "ainvoke"):
+        return await llm.ainvoke(prompt)
+    if hasattr(llm, "invoke"):
+        return await asyncio.to_thread(llm.invoke, prompt)
+    return None
 
 
 def _sample_path() -> Path:
@@ -902,6 +916,16 @@ async def health():
 @app.post("/tool")
 async def tool(req: ToolRequest, authorization: Optional[str] = Header(default=None)):
     global _TODO_CACHE, _EMAIL_CACHE, _SCHEDULE_CACHE
+    logger.info("Tool request: %s", req.tool)
+    # These switches are intentionally test-only fault injection for the
+    # annual-leave HTTP E2E.  They keep the service alive so the client proves
+    # remote HTTP error handling and schema rejection on the real path.
+    fault_mode = str(os.getenv("ANNUAL_LEAVE_E2E_FAULT") or "").strip().lower()
+    if req.tool == "knowledge_search_tool" and fault_mode == "knowledge_http_error":
+        return JSONResponse(
+            status_code=503,
+            content={"status": "error", "error": "test-only knowledge outage"},
+        )
     if req.tool == "remote_weather_tool":
         location = req.arguments.get("location", "")
         result = f"[remote-tool] {location} weather: sunny 20C"
@@ -1750,11 +1774,24 @@ async def tool(req: ToolRequest, authorization: Optional[str] = Header(default=N
             if not query:
                 raise ValueError("query parameter is required")
 
-            ranked_items = _rank_knowledge_items(knowledge_items, query)
+            if fault_mode == "knowledge_not_found":
+                result = {
+                    "status": "success",
+                    "query": query,
+                    "answer": "测试场景未检索到政策依据。",
+                    "knowledge_items_count": 0,
+                    "policy_scope": "unknown",
+                    "sources": [],
+                    "matched_items": [],
+                    "not_found": True,
+                }
+                ranked_items = []
+            else:
+                ranked_items = _rank_knowledge_items(knowledge_items, query)
             sources = _knowledge_sources(ranked_items)
             policy_scope = _knowledge_policy_scope(ranked_items)
 
-            if not ranked_items:
+            if not ranked_items and fault_mode != "knowledge_not_found":
                 result = {
                     "status": "success",
                     "query": query,
@@ -1769,6 +1806,10 @@ async def tool(req: ToolRequest, authorization: Optional[str] = Header(default=N
                     "Knowledge search found no matching item for query: %s",
                     query,
                 )
+            elif fault_mode == "knowledge_not_found":
+                # Keep the valid structured not-found response above; do not
+                # invoke an LLM for this fault-injection branch.
+                pass
             else:
                 # 使用LLM基于已命中的条目组织答案，而不是把整库内容放入提示词。
                 matched_items = []
@@ -1813,7 +1854,7 @@ async def tool(req: ToolRequest, authorization: Optional[str] = Header(default=N
 
 请直接输出回答内容，不要添加“回答：”等前缀。"""
 
-                response = llm.invoke(prompt) if hasattr(llm, "invoke") else None
+                response = await _invoke_llm_non_blocking(llm, prompt)
                 if hasattr(response, "content"):
                     answer = response.content
                 else:
@@ -1836,6 +1877,30 @@ async def tool(req: ToolRequest, authorization: Optional[str] = Header(default=N
                     "matched_items": [source["id"] for source in sources],
                     "not_found": False,
                 }
+            if fault_mode == "knowledge_invalid_date":
+                invalid_sources = result.get("sources") if isinstance(result, dict) else None
+                if not isinstance(invalid_sources, list) or not invalid_sources:
+                    invalid_sources = [{
+                        "id": "e2e-invalid-date",
+                        "category": "statutory",
+                        "source": "test-only fault injection",
+                        "source_updated_at": "not-a-date",
+                        "is_demo": True,
+                        "policy_scope": "statutory",
+                    }]
+                    result = {
+                        "status": "success",
+                        "query": query,
+                        "answer": "测试故障注入",
+                        "knowledge_items_count": 1,
+                        "policy_scope": "statutory",
+                        "sources": invalid_sources,
+                        "matched_items": [invalid_sources[0]["id"]],
+                        "not_found": False,
+                    }
+                else:
+                    invalid_sources[0]["source_updated_at"] = "not-a-date"
+                    invalid_sources[0].pop("effective_date", None)
         except Exception as exc:
             import traceback
             result = {

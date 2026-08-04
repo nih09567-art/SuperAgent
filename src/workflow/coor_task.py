@@ -1148,6 +1148,27 @@ async def _finalize_validated_plan(
     """
 
     if steps:
+        # The annual-leave defense workflow has a fixed evidence contract.  A
+        # real Planner may choose the right Agents and edges while emitting
+        # positional step IDs; normalize only that explicitly scoped shape so
+        # launch and production persist the same stable IDs.
+        try:
+            from src.orchestration.plan_to_task_graph import (
+                canonicalize_annual_leave_plan,
+            )
+
+            steps = canonicalize_annual_leave_plan(
+                steps,
+                user_query=state.get("original_user_query", "")
+                or state.get("USER_QUERY", ""),
+            )
+        except Exception as canonicalize_exc:  # noqa: BLE001 - planning remains fail-safe
+            logger.warning(
+                "annual-leave plan canonicalization skipped: %s",
+                canonicalize_exc,
+            )
+
+    if steps:
         # Recover data-flow ordering the Planner drops for autonomous remote
         # agents. Persisting the corrected steps keeps production snapshot
         # re-derivation byte-identical to the approved graph.
@@ -1257,6 +1278,7 @@ async def _finalize_validated_plan(
             or state.get("USER_QUERY", ""),
             agent_produces=produces,
             agent_contracts=contracts,
+            subtasks=(state.get("task_profile") or {}).get("subtasks"),
         )
         unknown = unknown_operation_modes(task_graph)
         if unknown:

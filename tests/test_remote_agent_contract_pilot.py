@@ -305,7 +305,7 @@ def test_report_returns_generic_markdown_output() -> None:
     agent = RemoteReportAgent()
 
     async def success(**_kwargs):
-        return {"markdown": "# 汇总"}
+        return {"status": "success", "markdown": "# 汇总"}
 
     agent.call_tool = success
     result = asyncio.run(
@@ -335,5 +335,8 @@ def test_report_returns_generic_markdown_output() -> None:
     )
 
     output = result["outputs"]["report.markdown"]
-    assert output == {"title": "汇总", "markdown": "# 汇总", "source_count": 2}
+    assert output["title"] == "汇总"
+    assert output["markdown"] == "# 汇总"
+    assert output["source_count"] == 2
+    assert output["external_op_id"].startswith("report-")
     _validate(result, agent)
