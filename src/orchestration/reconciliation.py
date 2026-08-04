@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import tempfile
 import threading
 import time
+import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -16,6 +18,9 @@ from src.utils.path_utils import get_project_root
 from src.utils.file_lock import FileLock
 from src.orchestration.completion import ReceiptClaimMismatch, missing_receipt_outputs
 from src.orchestration.schema_registry import get_schema_registry
+
+
+_DEFAULT_RESUME_LEASE_SECONDS = 300.0
 
 
 @dataclass
@@ -298,6 +303,238 @@ class ReconciliationStore:
                     raise
                 self._transaction_path.unlink(missing_ok=True)
                 return request
+
+    def claim_for_resume(
+        self,
+        *,
+        task_id: str,
+        resume_step: int,
+        operator: str,
+        lease_seconds: Optional[float] = None,
+    ) -> Optional[ReconciliationRequest]:
+        """Atomically lease a manually cleared reconciliation for one resume.
+
+        Persisting an owner-bound, expiring claim makes ``resuming`` recoverable
+        after a hard process exit. The cross-process file lock ensures that only
+        one worker can reclaim an expired lease.
+        """
+
+        with self._lock, FileLock(self._file_lock_path):
+            self._recover_transaction_unlocked()
+            now = time.time()
+            effective_lease_seconds = self._resume_lease_seconds(lease_seconds)
+            matches = [
+                ReconciliationRequest(**item)
+                for item in self.list(task_id=task_id)
+                if int(item.get("resume_step") or 0) == int(resume_step)
+                and item.get("status") in {
+                    "retry_ready",
+                    "confirmed_succeeded",
+                    "resuming",
+                }
+            ]
+            if not matches:
+                return None
+            request = sorted(
+                matches,
+                key=lambda item: item.updated_at,
+                reverse=True,
+            )[0]
+            if request.status == "resuming":
+                if not self._resume_lease_expired(
+                    request,
+                    now=now,
+                    fallback_lease_seconds=effective_lease_seconds,
+                ):
+                    raise ValueError("reconciliation resume is already in progress")
+                previous_status = str(
+                    request.resolution.get("resume_from_status") or "retry_ready"
+                )
+                reclaimed = {
+                    "resume_reclaimed_at": datetime.now().isoformat(),
+                    "resume_reclaimed_claim_id": str(
+                        request.resolution.get("resume_claim_id") or ""
+                    ),
+                    "resume_reclaimed_owner": str(
+                        request.resolution.get("resume_owner") or ""
+                    ),
+                    "resume_reclaim_reason": "lease_expired",
+                }
+            else:
+                previous_status = request.status
+                reclaimed = {}
+            resume_claim_id = uuid.uuid4().hex
+            request.status = "resuming"
+            request.updated_at = datetime.now().isoformat()
+            request.resolution = {
+                **dict(request.resolution or {}),
+                **reclaimed,
+                "resume_from_status": previous_status,
+                "resume_operator": operator,
+                "resume_claim_id": resume_claim_id,
+                "resume_owner": f"{socket.gethostname()}:{os.getpid()}",
+                "resume_started_at": request.updated_at,
+                "resume_lease_seconds": effective_lease_seconds,
+                "resume_lease_expires_at": now + effective_lease_seconds,
+            }
+            self._save(request)
+            return request
+
+    def renew_resume_claim(
+        self,
+        reconciliation_id: str,
+        *,
+        resume_claim_id: str,
+        lease_seconds: Optional[float] = None,
+    ) -> ReconciliationRequest:
+        """Extend an active resume lease owned by ``resume_claim_id``."""
+
+        with self._lock, FileLock(self._file_lock_path):
+            self._recover_transaction_unlocked()
+            request = self._require(reconciliation_id)
+            self._require_resume_claim(request, resume_claim_id)
+            now = time.time()
+            effective_lease_seconds = self._resume_lease_seconds(lease_seconds)
+            if self._resume_lease_expired(
+                request,
+                now=now,
+                fallback_lease_seconds=effective_lease_seconds,
+            ):
+                raise ValueError("reconciliation resume lease has expired")
+            request.updated_at = datetime.now().isoformat()
+            request.resolution = {
+                **dict(request.resolution or {}),
+                "resume_lease_seconds": effective_lease_seconds,
+                "resume_lease_expires_at": now + effective_lease_seconds,
+                "resume_renewed_at": request.updated_at,
+            }
+            self._save(request)
+            return request
+
+    def finish_resume(
+        self,
+        reconciliation_id: str,
+        *,
+        resume_claim_id: str,
+        succeeded: bool,
+    ) -> ReconciliationRequest:
+        """Consume a successful resume or restore its ready state on failure."""
+
+        with self._lock, FileLock(self._file_lock_path):
+            self._recover_transaction_unlocked()
+            request = self._require(reconciliation_id)
+            self._require_resume_claim(request, resume_claim_id)
+            if self._resume_lease_expired(
+                request,
+                now=time.time(),
+                fallback_lease_seconds=self._resume_lease_seconds(),
+            ):
+                raise ValueError("reconciliation resume lease has expired")
+            previous_status = str(
+                request.resolution.get("resume_from_status") or "retry_ready"
+            )
+            request.status = "consumed" if succeeded else previous_status
+            request.updated_at = datetime.now().isoformat()
+            request.resolution = {
+                **dict(request.resolution or {}),
+                "resume_finished_at": request.updated_at,
+                "resume_succeeded": bool(succeeded),
+            }
+            self._save(request)
+            return request
+
+    def reap_expired_resume_claims(self) -> list[ReconciliationRequest]:
+        """Restore expired ``resuming`` records to their actionable ready state."""
+
+        with self._lock, FileLock(self._file_lock_path):
+            self._recover_transaction_unlocked()
+            now = time.time()
+            fallback_lease_seconds = self._resume_lease_seconds()
+            restored: list[ReconciliationRequest] = []
+            for item in self.list(status="resuming"):
+                request = ReconciliationRequest(**item)
+                if not self._resume_lease_expired(
+                    request,
+                    now=now,
+                    fallback_lease_seconds=fallback_lease_seconds,
+                ):
+                    continue
+                request.status = str(
+                    request.resolution.get("resume_from_status") or "retry_ready"
+                )
+                request.updated_at = datetime.now().isoformat()
+                request.resolution = {
+                    **dict(request.resolution or {}),
+                    "resume_reaped_at": request.updated_at,
+                    "resume_reaped_claim_id": str(
+                        request.resolution.get("resume_claim_id") or ""
+                    ),
+                    "resume_reaped_owner": str(
+                        request.resolution.get("resume_owner") or ""
+                    ),
+                    "resume_reap_reason": "lease_expired",
+                }
+                self._save(request)
+                restored.append(request)
+            return restored
+
+    @staticmethod
+    def _resume_lease_seconds(value: Optional[float] = None) -> float:
+        raw_value: Any = value
+        if raw_value is None:
+            raw_value = os.getenv(
+                "RECONCILIATION_RESUME_LEASE_SECONDS",
+                str(_DEFAULT_RESUME_LEASE_SECONDS),
+            )
+        try:
+            seconds = float(raw_value)
+        except (TypeError, ValueError):
+            if value is not None:
+                raise ValueError("resume lease seconds must be a number")
+            seconds = _DEFAULT_RESUME_LEASE_SECONDS
+        if seconds <= 0:
+            if value is not None:
+                raise ValueError("resume lease seconds must be positive")
+            seconds = _DEFAULT_RESUME_LEASE_SECONDS
+        return seconds
+
+    @staticmethod
+    def _resume_lease_expired(
+        request: ReconciliationRequest,
+        *,
+        now: float,
+        fallback_lease_seconds: float,
+    ) -> bool:
+        expiry = request.resolution.get("resume_lease_expires_at")
+        try:
+            return float(expiry) <= now
+        except (TypeError, ValueError):
+            # Backward compatibility for pre-lease ``resuming`` records. A
+            # valid start timestamp receives one default lease window; an
+            # unreadable/missing timestamp is treated as abandoned.
+            started_at = str(
+                request.resolution.get("resume_started_at")
+                or request.updated_at
+                or ""
+            )
+            try:
+                started = datetime.fromisoformat(started_at).timestamp()
+            except (TypeError, ValueError):
+                return True
+            return started + fallback_lease_seconds <= now
+
+    @staticmethod
+    def _require_resume_claim(
+        request: ReconciliationRequest,
+        resume_claim_id: str,
+    ) -> None:
+        if request.status != "resuming":
+            raise ValueError(
+                f"reconciliation resume is not active in status={request.status}"
+            )
+        active_claim_id = str(request.resolution.get("resume_claim_id") or "")
+        if not resume_claim_id or active_claim_id != str(resume_claim_id):
+            raise ValueError("reconciliation resume claim id mismatch")
 
     def delete(
         self,
