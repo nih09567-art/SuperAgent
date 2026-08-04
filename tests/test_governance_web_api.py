@@ -5,6 +5,7 @@ import threading
 from types import SimpleNamespace
 
 import src.service.web_app as web_app
+import src.orchestration.reconciliation as reconciliation_module
 
 from src.orchestration.completion import (
     PersistentReceiptStore,
@@ -224,6 +225,7 @@ def test_reconciliation_resume_claim_is_single_use_and_consumed_on_success(
 
     completed = store.finish_resume(
         reconciliation.reconciliation_id,
+        resume_claim_id=claimed.resolution["resume_claim_id"],
         succeeded=True,
     )
     assert completed.status == "consumed"
@@ -288,7 +290,7 @@ def test_failed_reconciliation_resume_returns_to_ready_state(tmp_path, monkeypat
         status="retry_ready",
         operator="admin",
     )
-    store.claim_for_resume(
+    claimed = store.claim_for_resume(
         task_id=reconciliation.task_id,
         resume_step=reconciliation.resume_step,
         operator="admin",
@@ -296,11 +298,190 @@ def test_failed_reconciliation_resume_returns_to_ready_state(tmp_path, monkeypat
 
     restored = store.finish_resume(
         reconciliation.reconciliation_id,
+        resume_claim_id=claimed.resolution["resume_claim_id"],
         succeeded=False,
     )
 
     assert restored.status == "retry_ready"
     assert restored.resolution["resume_succeeded"] is False
+
+
+def test_expired_resume_claim_is_reclaimed_after_process_restart(
+    tmp_path, monkeypatch
+) -> None:
+    base_dir = tmp_path / "reconciliations"
+    clock = SimpleNamespace(now=1_800_000_000.0)
+    monkeypatch.setattr(
+        reconciliation_module,
+        "time",
+        SimpleNamespace(time=lambda: clock.now),
+    )
+    setup_store = ReconciliationStore(base_dir)
+    request = setup_store.create(
+        user_id="u1",
+        workflow_id="wf-recon",
+        task_id="task-restart",
+        step_id="write-1",
+        resume_step=2,
+        agent_name="DocumentAgent",
+        error="external result unknown",
+    )
+    setup_store.resolve(
+        request.reconciliation_id,
+        status="retry_ready",
+        operator="admin",
+    )
+    first_claim = setup_store.claim_for_resume(
+        task_id=request.task_id,
+        resume_step=request.resume_step,
+        operator="worker-a",
+        lease_seconds=30,
+    )
+
+    restarted_store = ReconciliationStore(base_dir)
+    with pytest.raises(ValueError, match="already in progress"):
+        restarted_store.claim_for_resume(
+            task_id=request.task_id,
+            resume_step=request.resume_step,
+            operator="worker-b",
+            lease_seconds=30,
+        )
+
+    clock.now += 31
+    second_claim = restarted_store.claim_for_resume(
+        task_id=request.task_id,
+        resume_step=request.resume_step,
+        operator="worker-b",
+        lease_seconds=30,
+    )
+
+    assert second_claim.status == "resuming"
+    assert (
+        second_claim.resolution["resume_claim_id"]
+        != first_claim.resolution["resume_claim_id"]
+    )
+    assert (
+        second_claim.resolution["resume_reclaimed_claim_id"]
+        == first_claim.resolution["resume_claim_id"]
+    )
+    with pytest.raises(ValueError, match="claim id mismatch"):
+        setup_store.finish_resume(
+            request.reconciliation_id,
+            resume_claim_id=first_claim.resolution["resume_claim_id"],
+            succeeded=True,
+        )
+
+    completed = restarted_store.finish_resume(
+        request.reconciliation_id,
+        resume_claim_id=second_claim.resolution["resume_claim_id"],
+        succeeded=True,
+    )
+    assert completed.status == "consumed"
+
+
+def test_governance_queue_reaps_expired_resume_claim_and_audits_it(
+    tmp_path, monkeypatch
+) -> None:
+    reconciliation, _ = _reconciliation(
+        tmp_path, monkeypatch, task_id="task-expired-resume"
+    )
+    clock = SimpleNamespace(now=1_800_000_000.0)
+    monkeypatch.setattr(
+        reconciliation_module,
+        "time",
+        SimpleNamespace(time=lambda: clock.now),
+    )
+    store = get_reconciliation_store()
+    store.resolve(
+        reconciliation.reconciliation_id,
+        status="retry_ready",
+        operator="admin",
+    )
+    claimed = store.claim_for_resume(
+        task_id=reconciliation.task_id,
+        resume_step=reconciliation.resume_step,
+        operator="worker-a",
+        lease_seconds=30,
+    )
+    clock.now += 31
+
+    response = _client().get(
+        "/api/security/reconciliations",
+        params={"task_id": reconciliation.task_id},
+    )
+
+    assert response.status_code == 200
+    assert response.json()[0]["status"] == "retry_ready"
+    restored = store.get(reconciliation.reconciliation_id)
+    assert restored.resolution["resume_reaped_claim_id"] == (
+        claimed.resolution["resume_claim_id"]
+    )
+    timeline = _client().get(
+        f"/api/tasks/{reconciliation.task_id}/governance"
+    ).json()
+    assert timeline[-1]["event_type"] == "RECONCILIATION_RESUME_LEASE_EXPIRED"
+    assert timeline[-1]["decision"] == "RESTORED_TO_READY"
+
+
+def test_resume_heartbeat_renews_lease_across_store_instances(
+    tmp_path, monkeypatch
+) -> None:
+    base_dir = tmp_path / "reconciliations"
+    clock = SimpleNamespace(now=1_800_000_000.0)
+    monkeypatch.setattr(
+        reconciliation_module,
+        "time",
+        SimpleNamespace(time=lambda: clock.now),
+    )
+    worker_store = ReconciliationStore(base_dir)
+    request = worker_store.create(
+        user_id="u1",
+        workflow_id="wf-recon",
+        task_id="task-heartbeat",
+        step_id="write-1",
+        resume_step=2,
+        agent_name="DocumentAgent",
+        error="external result unknown",
+    )
+    worker_store.resolve(
+        request.reconciliation_id,
+        status="retry_ready",
+        operator="admin",
+    )
+    claim = worker_store.claim_for_resume(
+        task_id=request.task_id,
+        resume_step=request.resume_step,
+        operator="worker-a",
+        lease_seconds=30,
+    )
+    claim_id = claim.resolution["resume_claim_id"]
+
+    clock.now += 20
+    renewed = worker_store.renew_resume_claim(
+        request.reconciliation_id,
+        resume_claim_id=claim_id,
+        lease_seconds=30,
+    )
+    assert renewed.resolution["resume_lease_expires_at"] == clock.now + 30
+
+    clock.now += 11
+    restarted_store = ReconciliationStore(base_dir)
+    with pytest.raises(ValueError, match="already in progress"):
+        restarted_store.claim_for_resume(
+            task_id=request.task_id,
+            resume_step=request.resume_step,
+            operator="worker-b",
+            lease_seconds=30,
+        )
+
+    clock.now += 20
+    reclaimed = restarted_store.claim_for_resume(
+        task_id=request.task_id,
+        resume_step=request.resume_step,
+        operator="worker-b",
+        lease_seconds=30,
+    )
+    assert reclaimed.resolution["resume_claim_id"] != claim_id
 
 
 def _patch_resume_dependencies(monkeypatch, events):

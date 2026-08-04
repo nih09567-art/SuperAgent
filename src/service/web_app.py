@@ -1394,10 +1394,48 @@ def create_app() -> FastAPI:
             active_task_id: Optional[str] = body.task_id
             disconnected = False
             resumed_workflow_succeeded = False
+            resume_heartbeat_failed = False
+            heartbeat_task: Optional[asyncio.Task[Any]] = None
+            resume_claim_id = ""
+            resume_lease_seconds = 0.0
+
+            async def renew_resume_lease() -> None:
+                nonlocal resume_heartbeat_failed
+                interval = max(0.1, min(resume_lease_seconds / 3.0, 30.0))
+                try:
+                    while True:
+                        await asyncio.sleep(interval)
+                        get_reconciliation_store().renew_resume_claim(
+                            resumed_reconciliation.reconciliation_id,
+                            resume_claim_id=resume_claim_id,
+                            lease_seconds=resume_lease_seconds,
+                        )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    resume_heartbeat_failed = True
+                    logging.exception(
+                        "failed to renew reconciliation resume lease %s",
+                        resumed_reconciliation.reconciliation_id,
+                    )
+
+            if resumed_reconciliation is not None:
+                resume_claim_id = str(
+                    resumed_reconciliation.resolution.get("resume_claim_id") or ""
+                )
+                resume_lease_seconds = float(
+                    resumed_reconciliation.resolution.get("resume_lease_seconds")
+                    or 300.0
+                )
+                heartbeat_task = asyncio.create_task(renew_resume_lease())
             try:
                 async for event in server._run_agent_workflow_with_resume(
                     agent_request, resume_step=body.resume_step, task_id=body.task_id
                 ):
+                    if resume_heartbeat_failed:
+                        raise RuntimeError(
+                            "reconciliation resume lease could not be renewed"
+                        )
                     event_data = event.get("data") or {}
                     active_task_id = event_data.get("task_id") or active_task_id
                     if (
@@ -1414,12 +1452,21 @@ def create_app() -> FastAPI:
             except asyncio.CancelledError:
                 disconnected = True
             finally:
+                if heartbeat_task is not None:
+                    heartbeat_task.cancel()
+                    try:
+                        await heartbeat_task
+                    except asyncio.CancelledError:
+                        pass
                 if resumed_reconciliation is not None:
                     try:
                         get_reconciliation_store().finish_resume(
                             resumed_reconciliation.reconciliation_id,
+                            resume_claim_id=resume_claim_id,
                             succeeded=(
-                                resumed_workflow_succeeded and not disconnected
+                                resumed_workflow_succeeded
+                                and not disconnected
+                                and not resume_heartbeat_failed
                             ),
                         )
                     except Exception:
@@ -1735,8 +1782,30 @@ def create_app() -> FastAPI:
         _operator: str = Depends(_authenticate_governance_operator),
     ):
         """List uncertain side effects that require an explicit human verdict."""
+        store = get_reconciliation_store()
+        for reconciliation in store.reap_expired_resume_claims():
+            record_governance_event(
+                "RECONCILIATION_RESUME_LEASE_EXPIRED",
+                task_id=reconciliation.task_id,
+                workflow_id=reconciliation.workflow_id,
+                step_id=reconciliation.step_id or None,
+                subject=_operator,
+                agent=reconciliation.agent_name,
+                decision="RESTORED_TO_READY",
+                reason_code="RESUME_LEASE_EXPIRED",
+                details={
+                    "reconciliation_id": reconciliation.reconciliation_id,
+                    "restored_status": reconciliation.status,
+                    "expired_claim_id": reconciliation.resolution.get(
+                        "resume_reaped_claim_id"
+                    ),
+                    "expired_owner": reconciliation.resolution.get(
+                        "resume_reaped_owner"
+                    ),
+                },
+            )
         return _enrich_governance_queue_items(
-            get_reconciliation_store().list(
+            store.list(
                 status=status,
                 task_id=task_id,
                 user_id=user_id,
