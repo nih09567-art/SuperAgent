@@ -16,6 +16,7 @@ from src.service import env
 from .compaction import (
     CompactionEngine,
     CompactionToolCallError,
+    CompactionValidationError,
     build_bounded_emergency_context,
     completed_turns,
     render_compaction_segments,
@@ -27,6 +28,7 @@ from .consolidation import (
     MemoryConsolidator,
     build_llm_extractor,
     candidate_from_user_message,
+    contains_prompt_injection,
 )
 from .models import (
     CompactionRecord,
@@ -39,6 +41,8 @@ from .retrieval import (
     MemoryRetriever,
     TaggedMemoryRetriever,
     format_untrusted_memories,
+    project_model_memories,
+    select_model_memories,
 )
 from .store import MemoryStore, MemoryStoreError, SecretDetectedError
 from .utils import (
@@ -211,6 +215,7 @@ class MemoryManager:
         attachments: RecoveryAttachments | Mapping[str, Any] | None = None,
         hook_results: Sequence[Mapping[str, Any]] | None = None,
         intent_tags: Sequence[str] | None = None,
+        memory_keys: Sequence[str] | None = None,
         compaction_model_type: str | None = None,
     ) -> PreparedMemoryContext:
         fallback_messages = tuple(self._sanitize_message(message) for message in incoming_messages)
@@ -325,12 +330,25 @@ class MemoryManager:
                 or self._latest_user_content(all_messages)
             )
             retrieved = []
+            selected_retrieved = []
+            retrieved_memories: tuple[dict[str, Any], ...] = ()
             if (
                 query
                 and self.settings.long_term_enabled
                 and not _SIMPLE_GREETING_PATTERN.fullmatch(query)
             ):
                 long_term = await asyncio.to_thread(self.store.list_long_term, user_id)
+                normalized_memory_keys = {
+                    str(key).strip() for key in memory_keys or () if str(key).strip()
+                }
+                if normalized_memory_keys:
+                    # Explicit preference questions select named keys before Top-K
+                    # ranking so unrelated preferences cannot crowd them out.
+                    long_term = [
+                        record
+                        for record in long_term
+                        if str(record.memory_key or record.kind) in normalized_memory_keys
+                    ]
                 try:
                     retrieved = self.retriever.retrieve(
                         query,
@@ -347,9 +365,12 @@ class MemoryManager:
                         user_id=user_id,
                         top_k=self.settings.long_term_top_k,
                     )
+                selected_retrieved = select_model_memories(
+                    retrieved, token_budget=self.settings.long_term_token_budget
+                )
+                retrieved_memories = project_model_memories(selected_retrieved)
                 reference = format_untrusted_memories(
-                    retrieved,
-                    token_budget=self.settings.long_term_token_budget,
+                    selected_retrieved,
                 )
                 if reference:
                     projection.insert(
@@ -383,7 +404,10 @@ class MemoryManager:
                 token_estimate=token_estimate,
                 compaction_id=latest.compaction_id if latest else None,
                 compaction_generation=len(compactions),
-                retrieved_memory_ids=tuple(item.memory.memory_id for item in retrieved),
+                retrieved_memory_ids=tuple(
+                    item.memory.memory_id for item in selected_retrieved
+                ),
+                retrieved_memories=retrieved_memories,
                 attachment_references=normalized_attachments.recent_files,
                 warning=warning,
                 retained_turn_count=(
@@ -395,6 +419,11 @@ class MemoryManager:
                 markdown_projection_path=(
                     str(self.store.markdown_path(user_id))
                     if self.settings.markdown_projection_enabled
+                    else None
+                ),
+                compaction_markdown_path=(
+                    str(self.store.compaction_markdown_path(user_id, resolved))
+                    if latest is not None
                     else None
                 ),
             )
@@ -428,10 +457,22 @@ class MemoryManager:
         workflow_id: str | None,
     ) -> list[MemoryMessage]:
         stored = []
-        for message in incoming_messages:
+        for index, message in enumerate(incoming_messages):
             metadata = dict(message.get("metadata") or {})
-            identifier = message.get("message_id") or uuid4().hex
             role = str(message.get("role", "user"))
+            content = redact_secrets(str(message.get("content", "")))
+            identifier = message.get("message_id")
+            if not identifier:
+                # Older Web clients resend the whole transcript without IDs.
+                # Derive the ID from its stable position and content so a retry
+                # is idempotent while two identical messages in one request stay
+                # distinct.
+                identifier = uuid5(
+                    NAMESPACE_URL,
+                    f"superagent-input:{user_id}:{session_id}:{index}:"
+                    f"{role}:{content}",
+                ).hex
+                metadata.setdefault("generated_message_id", True)
             if role == "user":
                 metadata.setdefault("turn_id", str(identifier))
                 metadata.setdefault("main_visible", True)
@@ -442,7 +483,7 @@ class MemoryManager:
                     user_id=user_id,
                     session_id=session_id,
                     role=role,
-                    content=str(message.get("content", "")),
+                    content=content,
                     message_id=str(identifier),
                     workflow_id=workflow_id,
                     metadata=metadata,
@@ -460,6 +501,9 @@ class MemoryManager:
                 continue
             candidate = self._extract_explicit_memory(message.content)
             if candidate is None:
+                continue
+            if contains_prompt_injection(candidate):
+                logger.warning("Rejected instruction-like explicit memory request")
                 continue
             structured = candidate_from_user_message(message)
             try:
@@ -540,6 +584,16 @@ class MemoryManager:
             return latest
         if _is_synthetic_summary(source[-1]):
             return latest
+        if latest is None:
+            source_context_messages = self._project(None, source)
+        else:
+            retained_tail = [
+                message
+                for message in tail
+                if current_request is None
+                or message.message_id != current_request.message_id
+            ]
+            source_context_messages = self._project(latest, retained_tail)
 
         turns = completed_turns(
             [message for message in source if not _is_synthetic_summary(message)]
@@ -586,6 +640,10 @@ class MemoryManager:
                     for message in turn
                     if isinstance(message, MemoryMessage)
                 ),
+                retained_messages=tuple(
+                    message for turn in retained_turns for message in turn
+                ),
+                source_context_messages=source_context_messages,
                 retained_turn_count=len(retained_turns),
                 covered_user_message_ids=covered_user_ids,
                 summarizer_override=(
@@ -596,6 +654,9 @@ class MemoryManager:
             )
         except CompactionToolCallError:
             logger.warning("Memory compaction discarded because summarizer called a tool")
+            return latest
+        except CompactionValidationError as exc:
+            logger.info("Memory compaction candidate discarded: %s", exc)
             return latest
         watermark = max((message.sequence for message in all_messages), default=0)
         record = replace(
@@ -626,7 +687,14 @@ class MemoryManager:
             sequence=latest.boundary.last_sequence,
             role="assistant",
             content=latest.summary,
-            metadata={"memory_type": "prior_summary"},
+            metadata={
+                "memory_type": "prior_summary",
+                "covered_message_ids": list(
+                    latest.metadata.get("covered_message_ids")
+                    or latest.metadata.get("covered_user_message_ids")
+                    or ()
+                ),
+            },
         )
         return [synthetic, *tail]
 
@@ -807,6 +875,12 @@ class MemoryManager:
             retained_message_ids=tuple(
                 message.message_id for turn in retained_turns for message in turn
             ),
+            retained_messages=tuple(
+                message for turn in retained_turns for message in turn
+            ),
+            source_context_messages=self._project(
+                latest, tail if latest is not None else all_messages
+            ),
             retained_turn_count=len(retained_turns),
             covered_user_message_ids=tuple(
                 dict.fromkeys(
@@ -863,7 +937,7 @@ class MemoryManager:
         source = self._compaction_source(latest, all_messages, tail)
         if not source or not self.compactor.should_compact(source):
             return None
-        return await self._compact_for_request(
+        candidate = await self._compact_for_request(
             user_id=user_id,
             session_id=resolved,
             latest=latest,
@@ -881,6 +955,11 @@ class MemoryManager:
             active_plan=None,
             compaction_model_type=compaction_model_type,
         )
+        if candidate is None or (
+            latest is not None and candidate.compaction_id == latest.compaction_id
+        ):
+            return None
+        return candidate
 
     async def remember(self, **kwargs: Any):
         if not self.settings.enabled or not self.settings.long_term_enabled:
@@ -924,10 +1003,40 @@ class MemoryManager:
         intent_tags: Sequence[str] = (),
         scopes: Sequence[str] | None = None,
         project_id: str | None = None,
+        memory_keys: Sequence[str] | None = None,
     ) -> tuple[str, tuple[str, ...]]:
+        reference, memory_ids, _entries = await self.recall_context(
+            user_id=user_id,
+            query=query,
+            intent_tags=intent_tags,
+            scopes=scopes,
+            project_id=project_id,
+            memory_keys=memory_keys,
+        )
+        return reference, memory_ids
+
+    async def recall_context(
+        self,
+        *,
+        user_id: str,
+        query: str,
+        intent_tags: Sequence[str] = (),
+        scopes: Sequence[str] | None = None,
+        project_id: str | None = None,
+        memory_keys: Sequence[str] | None = None,
+    ) -> tuple[str, tuple[str, ...], tuple[dict[str, Any], ...]]:
         if not self.settings.enabled or not self.settings.long_term_enabled:
-            return "", ()
+            return "", (), ()
         records = await asyncio.to_thread(self.store.list_long_term, user_id)
+        normalized_memory_keys = {
+            str(key).strip() for key in memory_keys or () if str(key).strip()
+        }
+        if normalized_memory_keys:
+            records = [
+                record
+                for record in records
+                if str(record.memory_key or record.kind) in normalized_memory_keys
+            ]
         try:
             retrieved = self.retriever.retrieve(
                 query,
@@ -946,11 +1055,13 @@ class MemoryManager:
                 top_k=self.settings.long_term_top_k,
                 scopes=scopes,
             )
+        selected = select_model_memories(
+            retrieved, token_budget=self.settings.long_term_token_budget
+        )
         return (
-            format_untrusted_memories(
-                retrieved, token_budget=self.settings.long_term_token_budget
-            ),
-            tuple(item.memory.memory_id for item in retrieved),
+            format_untrusted_memories(selected),
+            tuple(item.memory.memory_id for item in selected),
+            project_model_memories(selected),
         )
 
     async def forget(self, user_id: str, memory_id: str) -> bool:

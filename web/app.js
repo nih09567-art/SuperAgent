@@ -23,6 +23,17 @@ const getTaskCleanupHeaders = (includeJson = false) => ({
 });
 window.getTaskCleanupHeaders = getTaskCleanupHeaders;
 
+const responseError = async (response, fallback) => {
+  let detail = "";
+  try {
+    const data = await response.json();
+    detail = String(data?.detail || data?.error || "").trim();
+  } catch (_err) {
+    // The fallback still includes the HTTP status for non-JSON responses.
+  }
+  return new Error(detail || fallback || `HTTP ${response.status}`);
+};
+
 const userIdInput = document.getElementById("userId");
 const deepThinkingInput = document.getElementById("deepThinking");
 const searchBeforeInput = document.getElementById("searchBefore");
@@ -786,10 +797,24 @@ const rememberPendingClarification = (eventData, question = "") => {
   };
 };
 
+const createConversationMessageId = (role = "message") => {
+  const randomId = globalThis.crypto?.randomUUID
+    ? globalThis.crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return `${activeConversationId || "conversation"}:${role}:${randomId}`;
+};
+
 const appendActiveConversationMessage = (role, content, metadata = {}) => {
   const normalized = String(content || "").trim();
   if (!normalized) return;
-  const message = { role, content: normalized.slice(0, CONVERSATION_MESSAGE_CHAR_LIMIT) };
+  const message = {
+    role,
+    content: normalized.slice(0, CONVERSATION_MESSAGE_CHAR_LIMIT),
+    message_id: metadata.message_id || createConversationMessageId(role),
+  };
+  if (activeConversationMessages.some((item) => item.message_id === message.message_id)) {
+    return;
+  }
   activeConversationMessages.push(message);
   activeConversationMessages = activeConversationMessages.slice(-ACTIVE_CONVERSATION_LIMIT);
   const transcriptMessage = { ...message };
@@ -855,13 +880,19 @@ const getLegacyChatHistoryKey = (userId) => `${LEGACY_CHAT_HISTORY_KEY_PREFIX}:$
 
 const normalizeStoredConversation = (conversation) => {
   if (!conversation || typeof conversation !== "object") return null;
+  const conversationId = String(
+    conversation.id || `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+  );
   const messages = Array.isArray(conversation.messages)
     ? conversation.messages
       .filter((message) => message && ["user", "assistant"].includes(message.role) && String(message.content || "").trim())
-      .map((message) => {
+      .map((message, index) => {
         const normalizedMessage = {
           role: message.role,
           content: String(message.content).slice(0, CONVERSATION_MESSAGE_CHAR_LIMIT),
+          message_id: message.message_id
+            ? String(message.message_id)
+            : `${conversationId}:message:${index + 1}`,
         };
         if (Array.isArray(message.results)) {
           normalizedMessage.results = message.results
@@ -878,7 +909,7 @@ const normalizeStoredConversation = (conversation) => {
   if (!messages.length) return null;
   const firstUserMessage = messages.find((message) => message.role === "user")?.content || "新对话";
   return {
-    id: String(conversation.id || `${Date.now()}-${Math.random().toString(16).slice(2)}`),
+    id: conversationId,
     title: String(conversation.title || firstUserMessage).trim().slice(0, 48),
     createdAt: conversation.createdAt || new Date().toISOString(),
     updatedAt: conversation.updatedAt || conversation.createdAt || new Date().toISOString(),
@@ -1753,8 +1784,11 @@ const runPlannerUpdate = async (instruction, appendHistory = true) => {
       signal: plannerOnlyController.signal,
     });
 
-    if (!response.ok || !response.body) {
-      throw new Error(`HTTP ${response.status}`);
+    if (!response.ok) {
+      throw await responseError(response, `HTTP ${response.status}`);
+    }
+    if (!response.body) {
+      throw new Error("Planner response body is unavailable");
     }
 
     const reader = response.body.getReader();
@@ -3141,6 +3175,31 @@ const handleEvent = (eventName, payload) => {
     saveActiveConversation();
     return;
   }
+  if (eventName.startsWith("agent_skill_")) {
+    const data = payload.data || {};
+    if (eventName === "agent_skill_matched") {
+      const count = Number(data.matched_step_count || 0);
+      showPlanHint(`Applied ${count} validated Agent Skill binding(s).`);
+    } else if (eventName === "agent_skill_promoted") {
+      appendOutput(
+        "skill",
+        `\n[Agent Skill active] ${data.agent_name || "Agent"} / ${data.step_id || "step"}\n`,
+      );
+    } else if (eventName === "agent_skill_candidate") {
+      appendOutput(
+        "skill",
+        `\n[Agent Skill candidate] ${data.agent_name || "Agent"} / ${data.step_id || "step"}\n`,
+      );
+    } else if (eventName === "agent_skill_disabled") {
+      appendOutput(
+        "skill",
+        `\n[Agent Skill disabled] ${data.step_id || data.skill_id || "step"}\n`,
+      );
+    } else if (eventName === "agent_skill_rejected") {
+      appendOutput("skill", "\n[Agent Skill] Binding rejected; original plan retained.\n");
+    }
+    return;
+  }
   if (eventName === "start_of_agent") {
     const data = payload.data || {};
     const agentName = data.agent_name || payload.agent_name || "agent";
@@ -3238,6 +3297,8 @@ const handleEvent = (eventName, payload) => {
         appendActiveConversationMessage("assistant", question);
         setStatus("Waiting for reply", true);
       } else if (response && !response.includes("handover_to_planner")) {
+        clarificationPending = false;
+        pendingClarificationContext = null;
         coordinatorResponseHandled = true;
         showAssistantText(response);
         appendActiveConversationMessage("assistant", response);
@@ -3383,6 +3444,11 @@ const handleEvent = (eventName, payload) => {
     const friendlyReason = d.reason || d.error || "Workflow could not continue.";
     const detail = d.error || friendlyReason;
     const reasonCode = String(d.reason_code || "");
+    if (currentRunContext !== "executing") {
+      latestPlanningFailureMessage = `规划失败：${friendlyReason}${
+        detail && detail !== friendlyReason ? `（${detail}）` : ""
+      }`;
+    }
     const errorPresentation = {
       PLAN_STEPS_UNAVAILABLE: {
         hint: "The confirmed plan could not be loaded by the execution service.",
@@ -3427,6 +3493,19 @@ const handleEvent = (eventName, payload) => {
     } else {
       showPlanNlHint(`Workflow paused: ${detail}`, true);
     }
+    return;
+  }
+  if (eventName === "memory_compacted") {
+    const data = payload.data || {};
+    const generation = Number(data.generation || 0);
+    const covered = Number(data.covered_message_count || 0);
+    const retained = Number(data.retained_turn_count || 0);
+    const before = Number(data.token_count_before || 0);
+    const after = Number(data.token_count_after || 0);
+    const summaryMode = data.summary_mode === "llm" ? "LLM" : "确定性兜底";
+    const statusText = `上下文已压缩（第 ${generation} 代）：覆盖 ${covered} 条消息，保留 ${retained} 轮，Token ${before} -> ${after}，摘要模式 ${summaryMode}`;
+    appendOutput("memory", `\n[memory] ${statusText}\n`);
+    showSummaryHint(statusText);
     return;
   }
   if (eventName === "end_of_workflow") {
@@ -3671,8 +3750,11 @@ const runWorkflow = async () => {
       signal: currentAbortController.signal,
     });
 
-    if (!response.ok || !response.body) {
-      throw new Error(`HTTP ${response.status}`);
+    if (!response.ok) {
+      throw await responseError(response, `HTTP ${response.status}`);
+    }
+    if (!response.body) {
+      throw new Error("Workflow response body is unavailable");
     }
 
     const reader = response.body.getReader();
@@ -3779,7 +3861,11 @@ const runExecution = async () => {
     context_artifacts: conversationContextArtifacts.map((item) => ({ ...item })),
     messages: [
       ...activeConversationMessages.map((item) => ({ ...item })),
-      { role: "user", content: "Execute the confirmed plan." },
+      {
+        role: "user",
+        content: "Execute the confirmed plan.",
+        message_id: `${activeConversationId || "conversation"}:execute-confirmed-plan:${workflowId}`,
+      },
     ],
     debug: debugInput.checked,
     deep_thinking_mode: deepThinkingInput.checked,
@@ -5654,6 +5740,19 @@ const resumeTask = async () => {
       }
       if (eventName === "final_result") {
         appendResume(`\n[final result]\n${formatFinalResultContent(payload.data || {})}\n`);
+        return;
+      }
+      if (eventName === "memory_compacted") {
+        const data = payload.data || {};
+        const generation = Number(data.generation || 0);
+        const covered = Number(data.covered_message_count || 0);
+        const retained = Number(data.retained_turn_count || 0);
+        const before = Number(data.token_count_before || 0);
+        const after = Number(data.token_count_after || 0);
+        const summaryMode = data.summary_mode === "llm" ? "LLM" : "确定性兜底";
+        appendResume(
+          `\n[上下文已压缩 第 ${generation} 代：覆盖 ${covered} 条消息，保留 ${retained} 轮，Token ${before} -> ${after}，摘要模式 ${summaryMode}]\n`,
+        );
         return;
       }
       if (eventName === "end_of_workflow") {

@@ -88,6 +88,28 @@ def test_generic_report_asks_only_for_missing_source() -> None:
     ]
 
 
+def test_memory_preference_lookup_is_not_blocked_as_report_generation() -> None:
+    profile = _profile(
+        "我之前偏好的回复语言和报告风格是什么？",
+        {
+            "primary_intent": "report_generation",
+            "intents": [_intent("report_generation", 0.93, "报告风格")],
+            "entities": {},
+            "ambiguities": [],
+            "needs_clarification": True,
+            "clarification_questions": [
+                "请说明要基于哪些内容生成报告，或提供报告的主题。"
+            ],
+        },
+    )
+
+    assert profile.primary_goal_intent == "information_consultation"
+    assert profile.sub_intents == ["information_consultation"]
+    assert profile.needs_clarification is False
+    assert profile.missing_fields == []
+    assert profile.clarification_questions == []
+
+
 def test_schedule_dependency_satisfies_meeting_time_requirement() -> None:
     query = "查询王经理下周的日程，安排一次和李娜的会议，并通知参会人"
     profile = _profile(

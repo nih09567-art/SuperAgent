@@ -812,6 +812,38 @@ def _make_real_execute_step(state: dict) -> ExecuteStep:
                 "original user query. Do not inspect unrelated local files."
             ),
         }
+        binding = getattr(step, "agent_skill_binding", None)
+        if (
+            state.get("skill_reuse_enabled", True)
+            and isinstance(binding, dict)
+            and binding
+        ):
+            from src.skills.agent_skill import get_agent_skill_manager
+
+            resolved_agent_skill = get_agent_skill_manager().resolve_binding(
+                user_id=str(state.get("user_id") or ""),
+                binding=binding,
+                agent_name=selected_agent,
+                contract_fingerprint=str(
+                    (state.get("agent_contract_fingerprints") or {}).get(
+                        selected_agent
+                    )
+                    or ""
+                ),
+                operation_mode=step.operation_mode,
+                step=step.model_dump(mode="json"),
+                task_profile=state.get("task_profile") or {},
+                agent_capabilities=state.get("agent_capability_bindings") or {},
+            )
+            if resolved_agent_skill is not None:
+                applied_steps = state.setdefault("agent_skill_applied_steps", {})
+                if isinstance(applied_steps, dict):
+                    applied_steps[step.step_id] = resolved_agent_skill.skill_id
+                brief["agent_skill"] = {
+                    "skill_id": resolved_agent_skill.skill_id,
+                    "version": resolved_agent_skill.version,
+                    "execution_guidance": resolved_agent_skill.execution_guidance,
+                }
         messages = list(state.get("messages", [])) + [
             {
                 "role": "user",

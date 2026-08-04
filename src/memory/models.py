@@ -256,6 +256,7 @@ class MemoryContextMetadata:
     compaction_id: str | None = None
     compaction_generation: int = 0
     retrieved_memory_ids: tuple[str, ...] = ()
+    retrieved_memories: tuple[dict[str, Any], ...] = ()
     attachment_references: tuple[str, ...] = ()
     warning: str | None = None
     retained_turn_count: int = 0
@@ -263,6 +264,7 @@ class MemoryContextMetadata:
     plan_hash: str | None = None
     consolidation_watermark: int = 0
     markdown_projection_path: str | None = None
+    compaction_markdown_path: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         from .utils import to_json_safe

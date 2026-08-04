@@ -6,6 +6,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, AsyncGenerator, Optional
+from uuid import uuid4
 
 import math
 
@@ -63,6 +64,7 @@ from src.service.env import (
 from src.memory import get_memory_manager
 from src.memory.store import SecretDetectedError
 from src.skills.workflow_skill import get_workflow_skill_manager
+from src.skills.agent_skill import get_agent_skill_manager
 from src.skills.execution_evidence import (
     evaluate_distillation_evidence,
     load_execution_evidence,
@@ -749,12 +751,13 @@ def create_app() -> FastAPI:
     async def run_workflow(request: Request, body: AgentRequest):
         server = Server()
         cleanup_token = str(request.headers.get("X-Task-Owner-Token") or "")
-        if body.workflow_id:
-            _bind_runtime_cleanup_capability(
-                token=cleanup_token,
-                user_id=body.user_id,
-                workflow_id=body.workflow_id,
-            )
+        if not body.workflow_id:
+            body.workflow_id = f"{body.user_id}:{uuid4().hex}"
+        _bind_runtime_cleanup_capability(
+            token=cleanup_token,
+            user_id=body.user_id,
+            workflow_id=body.workflow_id,
+        )
 
         async def event_stream() -> AsyncGenerator[str, None]:
             active_task_id: Optional[str] = None
@@ -774,13 +777,32 @@ def create_app() -> FastAPI:
                         and (body.workflow_id or active_task_id)
                         and binding not in bound_records
                     ):
-                        _bind_runtime_cleanup_capability(
-                            token=cleanup_token,
-                            user_id=body.user_id,
-                            workflow_id=active_workflow_id,
-                            task_id=str(active_task_id or ""),
-                            trusted_new_task_id=str(active_task_id or ""),
-                        )
+                        try:
+                            _bind_runtime_cleanup_capability(
+                                token=cleanup_token,
+                                user_id=body.user_id,
+                                workflow_id=active_workflow_id,
+                                task_id=str(active_task_id or ""),
+                                trusted_new_task_id=str(active_task_id or ""),
+                            )
+                        except HTTPException as exc:
+                            reason = str(exc.detail or "cleanup capability binding failed")
+                            _finalize_disconnected_task(
+                                active_task_id,
+                                f"cleanup capability binding failed: {reason}",
+                            )
+                            failure_event = {
+                                "event": "workflow_error",
+                                "data": {
+                                    "workflow_id": active_workflow_id,
+                                    "task_id": active_task_id,
+                                    "reason_code": "CLEANUP_CAPABILITY_BINDING_FAILED",
+                                    "reason": "Workflow ownership validation failed",
+                                    "error": reason,
+                                },
+                            }
+                            yield _sse_format("workflow_error", failure_event)
+                            return
                         bound_records.add(binding)
                     if await request.is_disconnected():
                         disconnected = True
@@ -1530,6 +1552,65 @@ def create_app() -> FastAPI:
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return {"event": "skill_disabled", "skill": card.model_dump(mode="json")}
+
+    # ---- Step/Agent skill administration API ----
+
+    @app.get("/api/agent-skills")
+    def list_agent_skills(
+        user_id: str,
+        _authorized: None = Depends(_authorize_workflow_skill_api),
+    ):
+        cards = get_agent_skill_manager().store.list(user_id)
+        return [card.model_dump(mode="json") for card in cards]
+
+    @app.get("/api/agent-skills/evidence")
+    def list_agent_skill_evidence(
+        user_id: str,
+        family_signature: Optional[str] = None,
+        implementation_signature: Optional[str] = None,
+        _authorized: None = Depends(_authorize_workflow_skill_api),
+    ):
+        evidence = get_agent_skill_manager().store.list_evidence(
+            user_id,
+            family_signature=family_signature,
+            implementation_signature=implementation_signature,
+        )
+        return [item.model_dump(mode="json") for item in evidence]
+
+    @app.get("/api/agent-skills/{skill_id}")
+    def get_agent_skill(
+        skill_id: str,
+        user_id: str,
+        _authorized: None = Depends(_authorize_workflow_skill_api),
+    ):
+        card = get_agent_skill_manager().store.get(user_id, skill_id)
+        if card is None:
+            raise HTTPException(status_code=404, detail="Agent Skill not found")
+        return card.model_dump(mode="json")
+
+    @app.post("/api/agent-skills/{skill_id}/activate")
+    def activate_agent_skill(
+        skill_id: str,
+        body: WorkflowSkillUserRequest,
+        _authorized: None = Depends(_authorize_workflow_skill_api),
+    ):
+        try:
+            card = get_agent_skill_manager().store.activate(body.user_id, skill_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {"event": "agent_skill_activated", "skill": card.model_dump(mode="json")}
+
+    @app.post("/api/agent-skills/{skill_id}/disable")
+    def disable_agent_skill(
+        skill_id: str,
+        body: WorkflowSkillUserRequest,
+        _authorized: None = Depends(_authorize_workflow_skill_api),
+    ):
+        try:
+            card = get_agent_skill_manager().store.disable(body.user_id, skill_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {"event": "agent_skill_disabled", "skill": card.model_dump(mode="json")}
 
     # ---- S-ABAC Security & Demo API ----
 

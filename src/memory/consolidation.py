@@ -20,6 +20,19 @@ LLM_EXTRACTOR_VERSION = "llm-json-v1"
 ALLOWED_KINDS = {"fact", "preference", "constraint", "decision", "lesson"}
 ALLOWED_SCOPES = {"user", "project", "task"}
 
+_PROMPT_INJECTION_PATTERNS = (
+    re.compile(
+        r"(?:ignore|disregard|bypass|override).{0,40}"
+        r"(?:instruction|system prompt|security|approval|permission|policy)",
+        re.I,
+    ),
+    re.compile(
+        r"(?:忽略|无视|绕过|覆盖|修改).{0,24}"
+        r"(?:指令|系统提示|安全限制|安全策略|审批|权限|策略)"
+    ),
+    re.compile(r"(?:授予|提升|获取).{0,12}(?:权限|授权)"),
+)
+
 Extractor = Callable[
     [Sequence[MemoryMessage]],
     Sequence[Mapping[str, Any]] | Awaitable[Sequence[Mapping[str, Any]]],
@@ -175,6 +188,16 @@ def normalize_memory_key(value: str) -> str:
     return ".".join(pieces)
 
 
+def contains_prompt_injection(value: Any) -> bool:
+    """Detect narrow, security-relevant instructions that must not persist."""
+    if isinstance(value, str):
+        text = value
+    else:
+        text = json.dumps(value, ensure_ascii=False, default=str)
+    normalized = " ".join(text.split())
+    return any(pattern.search(normalized) for pattern in _PROMPT_INJECTION_PATTERNS)
+
+
 def candidate_from_user_message(message: MemoryMessage) -> MemoryCandidate | None:
     text = " ".join(message.content.strip().split())
     if not text or contains_secret(text):
@@ -196,7 +219,7 @@ def candidate_from_user_message(message: MemoryMessage) -> MemoryCandidate | Non
         return None
 
     value = match.group("value").strip()
-    if not value or contains_secret(value):
+    if not value or contains_secret(value) or contains_prompt_injection(value):
         return None
     normalized_value = value.casefold()
     preference_evidence = not explicit or any(
@@ -293,6 +316,11 @@ class MemoryConsolidator:
             return False
         if candidate.sensitivity not in {"normal", "low"}:
             return False
+        if any(
+            contains_prompt_injection(value)
+            for value in (candidate.value, candidate.label, candidate.source_text)
+        ):
+            return False
         return not contains_secret(candidate.source_text) and not contains_secret(
             candidate.label
         )
@@ -381,5 +409,6 @@ __all__ = [
     "MemoryConsolidator",
     "build_llm_extractor",
     "candidate_from_user_message",
+    "contains_prompt_injection",
     "normalize_memory_key",
 ]

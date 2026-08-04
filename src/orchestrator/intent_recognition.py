@@ -537,6 +537,58 @@ def _is_consultation(text: str) -> bool:
     )
 
 
+def is_memory_lookup_query(text: str) -> bool:
+    """识别查询既有用户偏好/记忆，而不是执行报告生成。"""
+    normalized = str(text or "").strip().casefold()
+    if not normalized:
+        return False
+    if re.search(
+        r"(?:生成|写|撰写|起草|整理成|制作|输出|创建|generate|write|draft|create)",
+        normalized,
+    ):
+        return False
+    has_history_reference = bool(
+        re.search(
+            r"(?:之前|以前|先前|刚才|历史|长期记忆|记得|告诉过|偏好过|before|previous|history|remember|told you)",
+            normalized,
+        )
+    )
+    has_preference_target = bool(
+        re.search(
+            r"(?:偏好|喜欢|习惯|风格|语言|回复|报告风格|preference|prefer|style|language|response)",
+            normalized,
+        )
+    )
+    has_question = bool(
+        re.search(
+            r"(?:什么|哪些|怎么|是否|吗|么|是什么|[?？]|(?:what|which|how|did|do)\b)",
+            normalized,
+        )
+    )
+    return has_history_reference and has_preference_target and has_question
+
+
+def memory_lookup_keys(text: str) -> tuple[str, ...]:
+    """Map an explicit preference query to allow-listed stable memory keys."""
+    normalized = str(text or "").strip().casefold()
+    if not normalized or not is_memory_lookup_query(normalized):
+        return ()
+    keys: list[str] = []
+    if re.search(
+        r"(?:回复.{0,4}语言|回答.{0,4}语言|语言偏好|中文.{0,4}回复|英文.{0,4}回复|"
+        r"response.{0,4}language|language.{0,4}preference|preferred.{0,4}language)",
+        normalized,
+    ):
+        keys.append("preference.language")
+    if re.search(
+        r"(?:报告.{0,4}风格|汇报.{0,4}风格|报告偏好|report.{0,4}style|"
+        r"style.{0,4}(?:report|summary))",
+        normalized,
+    ):
+        keys.append("preference.report_style")
+    return tuple(keys)
+
+
 def _explicit_document_span(text: str) -> tuple[int, str] | None:
     """识别“生成一份说明文档”这类动词和文档名之间存在修饰语的表达。"""
     match = re.search(
@@ -564,7 +616,10 @@ class RuleIntentRecognizer:
         text = str(user_query or "").strip()
         candidates: list[tuple[int, IntentCandidate]] = []
         consultation = _is_consultation(text)
+        memory_lookup = is_memory_lookup_query(text)
         for name, definition in INTENT_CATALOG.items():
+            if memory_lookup and name in {"document_generation", "report_generation"}:
+                continue
             if consultation and name in {"knowledge_lookup", "salary_query"}:
                 # information_consultation 已表达“只咨询不执行”，避免重复生成同义读取任务。
                 continue
@@ -627,7 +682,7 @@ class RuleIntentRecognizer:
         has_document_candidate = any(
             item.name == "document_generation" for _, item in candidates
         )
-        if document_span and not has_document_candidate and not consultation:
+        if document_span and not has_document_candidate and not consultation and not memory_lookup:
             position, span = document_span
             candidates.append(
                 (
@@ -643,7 +698,7 @@ class RuleIntentRecognizer:
                     ),
                 )
             )
-        if consultation:
+        if consultation or memory_lookup:
             candidates.append(
                 (
                     0,
@@ -653,7 +708,7 @@ class RuleIntentRecognizer:
                         source="rule",
                         provenance="explicit",
                         text_span=text,
-                        evidence=["咨询/权限表达"],
+                        evidence=["历史偏好查询" if memory_lookup else "咨询/权限表达"],
                     ),
                 )
             )
@@ -761,6 +816,8 @@ class IntentFusion:
         self,
         rule: IntentRecognitionResult,
         semantic: IntentRecognitionResult,
+        *,
+        user_query: str = "",
     ) -> IntentRecognitionResult:
         semantic_by_name = {item.name: item for item in semantic.intents}
         combined: list[IntentCandidate] = []
@@ -848,6 +905,35 @@ class IntentFusion:
                     f"语义候选 {semantic_item.name} 置信度 {semantic_item.confidence:.2f} 低于阈值 {threshold:.2f}"
                 )
                 needs_clarification = True
+
+        # “我之前偏好的语言和报告风格是什么”是只读记忆查询。
+        # 语义模型可能因“报告”一词误报 report_generation，不能让该误报
+        # 触发 document.source 澄清，也不能把查询改造成生成任务。
+        memory_lookup = is_memory_lookup_query(user_query)
+        if memory_lookup:
+            combined = [
+                item
+                for item in combined
+                if item.name not in {"document_generation", "report_generation"}
+            ]
+            if not any(
+                item.name == "information_consultation" and not item.negated
+                for item in combined
+            ):
+                combined.insert(
+                    0,
+                    IntentCandidate(
+                        name="information_consultation",
+                        confidence=0.97,
+                        source="rule",
+                        provenance="explicit",
+                        text_span=None,
+                        evidence=["历史偏好查询"],
+                    ),
+                )
+            needs_clarification = False
+            questions = []
+            ambiguities = []
 
         # information_consultation 表示“只咨询、不执行”。如果同一输入已经明确要求
         # 生成报告、文档或发送结果，它就不能作为额外可执行意图加入任务链。
@@ -985,8 +1071,14 @@ class HybridIntentRecognizer:
 
         if self.mode == "semantic":
             semantic_only = self.fusion.fuse(
-                IntentRecognitionResult(mode="rule"), semantic_result
+                IntentRecognitionResult(mode="rule"),
+                semantic_result,
+                user_query=user_query,
             )
             semantic_only.mode = "semantic"
             return semantic_only
-        return self.fusion.fuse(rule_result, semantic_result)
+        return self.fusion.fuse(
+            rule_result,
+            semantic_result,
+            user_query=user_query,
+        )

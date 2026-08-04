@@ -69,7 +69,11 @@ def test_compaction_and_restart_preserve_exact_plan_version_and_current_step(tmp
             user_id="alice",
             session_id="thread",
             incoming_messages=[
-                {"role": "user", "content": "run the approved plan", "message_id": "u1"}
+                    {
+                        "role": "user",
+                        "content": "run the approved plan " * 80,
+                        "message_id": "u1",
+                    }
             ],
             attachments={"current_plan": steps, "extra": {"plan_status": "active"}},
         )
@@ -78,7 +82,13 @@ def test_compaction_and_restart_preserve_exact_plan_version_and_current_step(tmp
         manager.record_assistant_outputs(
             user_id="alice",
             session_id="thread",
-            outputs=[{"agent_name": "assistant", "content": "execution started", "message_id": "a1"}],
+                outputs=[
+                    {
+                        "agent_name": "assistant",
+                        "content": "execution started " * 100,
+                        "message_id": "a1",
+                    }
+                ],
         )
     )
     asyncio.run(manager.compact_session(user_id="alice", session_id="thread"))

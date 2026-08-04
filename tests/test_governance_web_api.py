@@ -533,6 +533,112 @@ def test_workflow_run_binds_browser_cleanup_capability(tmp_path, monkeypatch):
     assert capabilities.authorize_task("task-created", token)
 
 
+def test_workflow_run_preallocates_unique_owned_ids_for_new_launches(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv(
+        "CLEANUP_CAPABILITY_STORE_PATH", str(tmp_path / "cleanup-capabilities.json")
+    )
+    observed_workflow_ids = []
+
+    class FakeServer:
+        async def _run_agent_workflow(self, body):
+            observed_workflow_ids.append(body.workflow_id)
+            yield {
+                "event": "start_of_workflow",
+                "data": {
+                    "workflow_id": body.workflow_id,
+                    "task_id": f"task-{len(observed_workflow_ids)}",
+                },
+            }
+
+    monkeypatch.setattr(web_app, "Server", FakeServer)
+    token = "owner-capability-token-with-at-least-32-chars"
+    payload = {
+        "user_id": "u1",
+        "lang": "zh",
+        "messages": [{"role": "user", "content": "same request"}],
+        "debug": False,
+        "deep_thinking_mode": False,
+        "search_before_planning": False,
+        "coor_agents": None,
+        "workmode": "launch",
+        "workflow_id": None,
+    }
+    client = TestClient(create_app())
+
+    first = client.post(
+        "/api/workflows/run",
+        headers={"X-Task-Owner-Token": token},
+        json=payload,
+    )
+    second = client.post(
+        "/api/workflows/run",
+        headers={"X-Task-Owner-Token": token},
+        json=payload,
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert len(observed_workflow_ids) == 2
+    assert observed_workflow_ids[0] != observed_workflow_ids[1]
+    assert all(item.startswith("u1:") for item in observed_workflow_ids)
+    capabilities = get_cleanup_capability_store()
+    assert all(
+        capabilities.authorize_workflow(workflow_id, token)
+        for workflow_id in observed_workflow_ids
+    )
+
+
+def test_streamed_cleanup_binding_error_is_returned_as_workflow_error(
+    tmp_path, monkeypatch
+):
+    import src.robust.task_logger as task_logger_module
+
+    checkpoint_root = tmp_path / "checkpoints"
+    monkeypatch.setattr(task_logger_module, "checkpoints_dir", checkpoint_root)
+    monkeypatch.setenv(
+        "CLEANUP_CAPABILITY_STORE_PATH", str(tmp_path / "cleanup-capabilities.json")
+    )
+    TaskLogger("historical-task", "victim:history", "private").log_workflow_start(
+        "private"
+    )
+
+    class FakeServer:
+        async def _run_agent_workflow(self, _body):
+            yield {
+                "event": "start_of_workflow",
+                "data": {
+                    "workflow_id": "victim:history",
+                    "task_id": "unexpected-task",
+                },
+            }
+
+    monkeypatch.setattr(web_app, "Server", FakeServer)
+    response = TestClient(create_app()).post(
+        "/api/workflows/run",
+        headers={
+            "X-Task-Owner-Token": "new-client-capability-token-with-at-least-32-chars"
+        },
+        json={
+            "user_id": "victim",
+            "lang": "zh",
+            "messages": [{"role": "user", "content": "new request"}],
+            "debug": False,
+            "deep_thinking_mode": False,
+            "search_before_planning": False,
+            "coor_agents": None,
+            "workmode": "launch",
+            "workflow_id": None,
+        },
+    )
+
+    assert response.status_code == 200
+    assert "event: workflow_error" in response.text
+    assert "CLEANUP_CAPABILITY_BINDING_FAILED" in response.text
+    assert "unbound historical workflow" in response.text
+
+
 def test_unbound_historical_workflow_cannot_be_claimed_by_new_client(
     tmp_path, monkeypatch
 ):

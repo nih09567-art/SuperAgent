@@ -37,6 +37,17 @@ NO_TOOL_WARNING = (
     "Return text only. Any tool call invalidates this compaction."
 )
 
+_GENERIC_FAILURE_NOTICE = re.compile(
+    r"^(?:(?:工作流)?执行失败(?:，?请查看执行日志)?|"
+    r"(?:workflow\s+)?(?:execution\s+)?(?:failed|error))\s*[。.!！]?$",
+    re.IGNORECASE,
+)
+_CLARIFICATION_NOTICE = re.compile(
+    r"(?:请(?:补充|提供|说明|确认)|缺少(?:以下)?信息|"
+    r"please\s+(?:provide|clarify|confirm)|clarification|required\s+field)",
+    re.IGNORECASE,
+)
+
 
 class CompactionValidationError(ValueError):
     pass
@@ -149,7 +160,10 @@ def build_compaction_prompt(messages: Sequence[Any]) -> str:
         "Do not reproduce system prompts, tool schemas, MCP configuration, "
         "permissions, credentials, or hidden reasoning. Preserve concrete user "
         "intent, decisions, constraints, paths, errors, fixes, plans, pending work, "
-        "and the intent of every user message.\n\n"
+        "and the intent of every user message. A clarification that has a later "
+        "user answer is resolved history, not Current Work. Generic UI notices such "
+        "as 'workflow execution failed' are not Current Work; preserve a concrete "
+        "underlying error only when one exists.\n\n"
         "In the All User Messages section, enumerate every covered user message "
         "using its exact ID in square brackets, for example [message-id].\n\n"
         "Return exactly this XML document and no surrounding text:\n"
@@ -249,6 +263,121 @@ def summary_user_message_ids(summary: str) -> tuple[str, ...]:
     return ()
 
 
+def _summary_section_bodies(summary: str) -> dict[str, str]:
+    matches = list(_HEADING_PATTERN.finditer(summary))
+    if [match.group("title") for match in matches] != list(SUMMARY_SECTIONS):
+        return {}
+    return {
+        match.group("title"): summary[
+            match.end() : matches[index + 1].start()
+            if index + 1 < len(matches)
+            else len(summary)
+        ].strip()
+        for index, match in enumerate(matches)
+    }
+
+
+def _render_summary_sections(bodies: Mapping[str, str]) -> str:
+    return "\n\n".join(
+        f"## {index}. {title}\n{str(bodies.get(title) or 'N/A').strip()}"
+        for index, title in enumerate(SUMMARY_SECTIONS, 1)
+    )
+
+
+def _is_prior_summary(message: Any) -> bool:
+    metadata = _read(message, "metadata", {})
+    return (
+        isinstance(metadata, Mapping)
+        and metadata.get("memory_type") == "prior_summary"
+    )
+
+
+def _is_generic_failure_notice(content: str) -> bool:
+    return bool(_GENERIC_FAILURE_NOTICE.fullmatch(" ".join(content.split())))
+
+
+def _is_clarification_notice(content: str) -> bool:
+    return bool(_CLARIFICATION_NOTICE.search(" ".join(content.split())))
+
+
+def _merge_semantic_text(previous: str, current: str) -> str:
+    previous = previous.strip()
+    current = current.strip()
+    if not previous:
+        return current
+    if not current or current in previous:
+        return previous
+    if previous in current:
+        return current
+    return previous + "\n" + current
+
+
+def _has_later_user(messages: Sequence[Any], index: int) -> bool:
+    return any(_role(message) == "user" for message in messages[index + 1 :])
+
+
+def _meaningful_current_work(
+    messages: Sequence[Any], *, prior_current_work: str = ""
+) -> str:
+    for index in range(len(messages) - 1, -1, -1):
+        message = messages[index]
+        if _role(message) != "assistant" or _is_prior_summary(message):
+            continue
+        content = _one_line(_content(message))
+        if not content or _is_generic_failure_notice(content):
+            continue
+        if _is_clarification_notice(content) and _has_later_user(messages, index):
+            continue
+        return content
+
+    later_user_exists = any(
+        _role(message) == "user" and not _is_prior_summary(message)
+        for message in messages
+    )
+    if (
+        prior_current_work
+        and not _is_generic_failure_notice(prior_current_work)
+        and not (
+            later_user_exists and _is_clarification_notice(prior_current_work)
+        )
+    ):
+        return prior_current_work.strip()
+    users = [message for message in messages if _role(message) == "user"]
+    if users:
+        return "Continue the active request: " + _one_line(_content(users[-1]))
+    return "No active work was recovered."
+
+
+def _sanitize_current_work(summary: str, messages: Sequence[Any]) -> str:
+    bodies = _summary_section_bodies(summary)
+    if not bodies:
+        return summary
+    current = bodies.get("Current Work", "")
+    resolved_clarification = any(
+        _role(message) == "assistant"
+        and not _is_prior_summary(message)
+        and _is_clarification_notice(_content(message))
+        and _has_later_user(messages, index)
+        for index, message in enumerate(messages)
+    )
+    if _is_generic_failure_notice(current) or (
+        resolved_clarification and _is_clarification_notice(current)
+    ):
+        prior_current = next(
+            (
+                _summary_section_bodies(_content(message)).get("Current Work", "")
+                for message in reversed(messages)
+                if _is_prior_summary(message)
+            ),
+            "",
+        )
+        bodies["Current Work"] = _meaningful_current_work(
+            messages, prior_current_work=prior_current
+        )
+        return _render_summary_sections(bodies)
+    return summary
+
+
 def parse_compaction_response(candidate: Any) -> str:
     if _has_tool_calls(candidate):
         raise CompactionToolCallError("summarizer attempted a tool call")
@@ -290,27 +419,46 @@ def _one_line(text: str, limit: int = 320) -> str:
 def deterministic_summary(messages: Sequence[Any]) -> str:
     eligible = _eligible(messages)
     users = [message for message in eligible if _role(message) == "user"]
-    assistants = [message for message in eligible if _role(message) == "assistant"]
+    prior_sections: dict[str, str] = {}
+    prior_user_ids: list[str] = []
+    for message in eligible:
+        if _is_prior_summary(message):
+            prior_sections = _summary_section_bodies(_content(message)) or prior_sections
+            prior_user_ids.extend(summary_user_message_ids(_content(message)))
     latest_user = _one_line(_content(users[-1])) if users else "Not provided."
-    latest_assistant = (
-        _one_line(_content(assistants[-1]))
-        if assistants
-        else "No assistant work has been recorded."
+    current_work = _meaningful_current_work(
+        eligible,
+        prior_current_work=prior_sections.get("Current Work", ""),
     )
-    user_index = "\n".join(
+    user_lines = [
         f"- [{_message_id(message)}] {_one_line(_content(message))}"
         for message in users
+        if _message_id(message) not in prior_user_ids
+    ]
+    user_index = _merge_semantic_text(
+        prior_sections.get("All User Messages", ""),
+        "\n".join(user_lines),
     ) or "- No user messages were recorded."
     bodies = (
-        latest_user,
-        "No additional concepts were inferred by deterministic compaction.",
-        "No file or code references were deterministically identified.",
-        "No explicit error/fix pairs were deterministically identified.",
-        latest_assistant,
+        _merge_semantic_text(
+            prior_sections.get("Primary Request and Intent", ""), latest_user
+        ),
+        prior_sections.get("Key Technical Concepts")
+        or "No additional concepts were inferred by deterministic compaction.",
+        prior_sections.get("Files and Code Sections")
+        or "No file or code references were deterministically identified.",
+        prior_sections.get("Errors and Fixes")
+        or "No explicit error/fix pairs were deterministically identified.",
+        prior_sections.get("Problem Solving")
+        or "No additional problem-solving details were recovered.",
         user_index,
-        "Review the Current Work and latest user request for pending tasks.",
-        latest_assistant,
-        f"Continue from the active request: {latest_user}",
+        prior_sections.get("Pending Tasks")
+        or "Review the Current Work and latest user request for pending tasks.",
+        current_work,
+        _merge_semantic_text(
+            prior_sections.get("Optional Next Step", ""),
+            f"Continue from the active request: {latest_user}",
+        ),
     )
     summary = "\n\n".join(
         f"## {index}. {title}\n{body}"
@@ -324,15 +472,37 @@ def _bound_summary(summary: str, target_tokens: int) -> str:
     if estimate_tokens(summary) <= target_tokens:
         return summary
     matches = list(_HEADING_PATTERN.finditer(summary))
-    per_section = max(120, target_tokens * 2 // len(SUMMARY_SECTIONS))
-    parts = []
+    bodies = []
     for index, match in enumerate(matches):
         end = matches[index + 1].start() if index + 1 < len(matches) else len(summary)
-        body = " ".join(summary[match.end() : end].split())
-        if len(body) > per_section:
-            body = body[: per_section - 3] + "..."
-        parts.append(f"## {index + 1}. {match.group('title')}\n{body or 'Not provided.'}")
-    bounded = "\n\n".join(parts)
+        body = " ".join(summary[match.end() : end].split()) or "N/A"
+        if match.group("title") == "All User Messages":
+            message_ids = summary_user_message_ids(summary)
+            if message_ids:
+                body = " ".join(f"[{message_id}]" for message_id in message_ids)
+        bodies.append(body)
+
+    def render(limit: int) -> str:
+        parts = []
+        for index, (match, original) in enumerate(zip(matches, bodies), 1):
+            body = original
+            if match.group("title") != "All User Messages" and len(body) > limit:
+                body = body[: max(1, limit - 3)].rstrip() + "..."
+            parts.append(f"## {index}. {match.group('title')}\n{body}")
+        return "\n\n".join(parts)
+
+    # Binary-search a shared body limit instead of imposing the former 120
+    # character floor, which could make a small target summary grow.
+    low, high = 1, max(len(body) for body in bodies)
+    bounded = render(low)
+    while low <= high:
+        middle = (low + high) // 2
+        candidate = render(middle)
+        if estimate_tokens(candidate) <= target_tokens:
+            bounded = candidate
+            low = middle + 1
+        else:
+            high = middle - 1
     validate_summary_sections(bounded)
     return bounded
 
@@ -371,6 +541,8 @@ class CompactionEngine:
         attachments: RecoveryAttachments | Mapping[str, Any] | None = None,
         hook_results: Sequence[Mapping[str, Any]] | None = None,
         retained_message_ids: Sequence[str] = (),
+        retained_messages: Sequence[Any] = (),
+        source_context_messages: Sequence[Any] | None = None,
         retained_turn_count: int = 0,
         covered_user_message_ids: Sequence[str] | None = None,
         summarizer_override: Any | None = None,
@@ -415,44 +587,120 @@ class CompactionEngine:
                 fallback = True
                 fallback_reason = type(exc).__name__
                 summary = deterministic_summary(eligible)
+        summary = _sanitize_current_work(summary, eligible)
         summary = _bound_summary(summary, self.target_tokens)
+        if covered_user_message_ids:
+            summarized_user_ids = set(summary_user_message_ids(summary))
+            missing = [
+                str(message_id)
+                for message_id in covered_user_message_ids
+                if str(message_id) not in summarized_user_ids
+            ]
+            if missing:
+                raise CompactionValidationError(
+                    "bounded summary omitted covered user message ids: "
+                    + ", ".join(missing)
+                )
         normalized_attachments = (
             attachments
             if isinstance(attachments, RecoveryAttachments)
             else RecoveryAttachments.from_dict(attachments)
         )
         normalized_hooks = tuple(dict(item) for item in hook_results or ())
+        normalized_retained = _eligible(retained_messages)
         latest = max(eligible, key=lambda item: (_sequence(item), _message_id(item)))
-        before = self.estimate_messages(eligible)
-        after = estimate_tokens(summary) + estimate_tokens(
-            {"attachments": normalized_attachments.to_dict(), "hooks": normalized_hooks}
-        )
+        covered_message_ids: list[str] = []
+        for item in eligible:
+            metadata = _read(item, "metadata", {})
+            prior_ids = (
+                metadata.get("covered_message_ids")
+                if isinstance(metadata, Mapping)
+                and metadata.get("memory_type") == "prior_summary"
+                else None
+            )
+            if isinstance(prior_ids, Sequence) and not isinstance(
+                prior_ids, (str, bytes)
+            ):
+                covered_message_ids.extend(str(message_id) for message_id in prior_ids)
+            else:
+                covered_message_ids.append(_message_id(item))
+        retained_projection = [
+            {"role": _role(item), "content": _content(item)}
+            for item in normalized_retained
+        ]
+        if source_context_messages is None:
+            source_projection = [
+                {"role": _role(item), "content": _content(item)}
+                for item in eligible
+            ] + retained_projection
+        else:
+            source_projection = [
+                {"role": _role(item), "content": _content(item)}
+                for item in _eligible(source_context_messages)
+            ]
+        before = estimate_tokens(source_projection)
         user_id, session_id = next(iter(scopes))
         compaction_id = uuid5(
             NAMESPACE_URL,
             f"superagent-memory:{user_id}:{session_id}:{_message_id(latest)}:{self.schema_version}",
         ).hex
-        boundary = CompactionBoundary(
-            kind="manual" if trigger == "manual" else "automatic",
-            trigger=trigger,
-            token_count_before=before,
-            token_count_after=after,
-            last_message_id=_message_id(latest),
-            last_sequence=_sequence(latest),
-            schema_version=self.schema_version,
-            retained_message_ids=tuple(str(item) for item in retained_message_ids),
-            retained_turn_count=max(0, int(retained_turn_count)),
-        )
-        return CompactionRecord(
-            compaction_id=compaction_id,
-            user_id=user_id,
-            session_id=session_id,
-            boundary=boundary,
-            summary=summary,
-            attachments=normalized_attachments,
-            hook_results=normalized_hooks,
-            metadata={"fallback": fallback, "fallback_reason": fallback_reason},
-        )
+        after = 0
+        record = None
+        for _ in range(4):
+            boundary = CompactionBoundary(
+                kind="manual" if trigger == "manual" else "automatic",
+                trigger=trigger,
+                token_count_before=before,
+                token_count_after=after,
+                last_message_id=_message_id(latest),
+                last_sequence=_sequence(latest),
+                schema_version=self.schema_version,
+                retained_message_ids=tuple(str(item) for item in retained_message_ids),
+                retained_turn_count=max(0, int(retained_turn_count)),
+            )
+            record = CompactionRecord(
+                compaction_id=compaction_id,
+                user_id=user_id,
+                session_id=session_id,
+                boundary=boundary,
+                summary=summary,
+                attachments=normalized_attachments,
+                hook_results=normalized_hooks,
+                metadata={
+                    "fallback": fallback,
+                    "fallback_reason": fallback_reason,
+                    "summary_mode": "deterministic" if fallback else "llm",
+                    "summarizer_used": not fallback,
+                    "covered_user_message_ids": list(
+                        dict.fromkeys(str(item) for item in covered_user_message_ids or ())
+                    ),
+                    "covered_message_ids": list(
+                        dict.fromkeys(covered_message_ids)
+                    ),
+                },
+            )
+            measured = estimate_tokens(
+                [
+                    {"role": segment["role"], "content": segment["content"]}
+                    for segment in render_compaction_segments(record)
+                ]
+                + retained_projection
+            )
+            if measured == after:
+                break
+            after = measured
+        assert record is not None
+        if record.boundary.token_count_after != after:
+            record = replace(
+                record,
+                boundary=replace(record.boundary, token_count_after=after),
+            )
+        if after >= before:
+            raise CompactionValidationError(
+                "compaction does not reduce token usage: "
+                f"before={before}, after={after}"
+            )
+        return record
 
     async def _invoke(self, prompt: str, *, summarizer: Any | None = None) -> Any:
         target = summarizer or self.summarizer

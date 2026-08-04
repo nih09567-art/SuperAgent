@@ -1,16 +1,18 @@
+import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 import sqlite3
 
 import pytest
 
-from src.memory.models import LongTermMemoryStatus
+from src.memory.compaction import CompactionEngine
+from src.memory.models import LongTermMemoryStatus, RecoveryAttachments
 from src.memory.retrieval import (
     LexicalMemoryRetriever,
     TaggedMemoryRetriever,
     format_untrusted_memories,
 )
-from src.memory.store import MemoryStore, SecretDetectedError
+from src.memory.store import MemoryStore, MemoryStoreError, SecretDetectedError
 
 
 def test_transcript_persists_and_isolates_users(tmp_path):
@@ -349,3 +351,107 @@ def test_markdown_projection_failure_preserves_previous_view_and_regenerates(
     rebuilt = target.read_text(encoding="utf-8")
     assert "preference.language" in rebuilt
     assert "preference.report_style" in rebuilt
+
+
+def test_successful_compaction_projects_immutable_and_latest_markdown(tmp_path):
+    store = MemoryStore(tmp_path / "memory.sqlite3")
+    messages = [
+        store.append_message(
+            user_id="alice",
+            session_id="thread",
+            role="user",
+            content="prepare a detailed quarterly report " * 200,
+            message_id="u1",
+        ),
+        store.append_message(
+            user_id="alice",
+            session_id="thread",
+            role="assistant",
+            content="completed report content " * 200,
+            message_id="a1",
+        ),
+    ]
+    record = asyncio.run(
+        CompactionEngine(summarizer=None, trigger_tokens=1, target_tokens=120).compact(
+            messages,
+            attachments=RecoveryAttachments(
+                current_plan={
+                    "steps": ["write report"],
+                    "credential": "Bearer abcdefghijklmnop",
+                },
+                active_skills=("reporter",),
+            ),
+            hook_results=({"token": "sk-abcdefghijklmnop"},),
+            retained_message_ids=("a1",),
+            retained_messages=(messages[1],),
+            retained_turn_count=1,
+            covered_user_message_ids=("u1",),
+        )
+    )
+
+    saved = store.save_compaction(record)
+    immutable = store.compaction_markdown_path(
+        "alice", "thread", compaction_id=saved.compaction_id
+    )
+    latest = store.compaction_markdown_path("alice", "thread")
+    rendered = latest.read_text(encoding="utf-8")
+
+    assert immutable.exists()
+    assert latest.exists()
+    assert immutable.read_text(encoding="utf-8") == rendered
+    assert "## Boundary" in rendered
+    assert "## Structured Summary" in rendered
+    assert "## Retained Turns" in rendered
+    assert "## Attachments" in rendered
+    assert "## Covered Messages" in rendered
+    assert f"- Before: {saved.boundary.token_count_before}" in rendered
+    assert f"- After: {saved.boundary.token_count_after}" in rendered
+    assert "- Summary mode: deterministic" in rendered
+    assert "u1" in rendered
+    assert "completed report content" in rendered
+    assert "Bearer abcdefghijklmnop" not in rendered
+    assert "sk-abcdefghijklmnop" not in rendered
+    assert "[REDACTED]" in rendered
+    assert saved.metadata["compaction_generation"] == 1
+    assert saved.metadata["markdown_projection_path"] == str(latest)
+    memory_view = store.markdown_path("alice").read_text(encoding="utf-8")
+    assert "Current Context Compaction (Diagnostic Only)" in memory_view
+    assert saved.summary in memory_view
+    assert "not a long-term memory record" in memory_view
+
+
+def test_compaction_projection_failure_rolls_back_new_database_record(
+    tmp_path, monkeypatch
+):
+    store = MemoryStore(tmp_path / "memory.sqlite3")
+    messages = [
+        store.append_message(
+            user_id="alice",
+            session_id="thread",
+            role="user",
+            content="large source request " * 200,
+            message_id="u1",
+        ),
+        store.append_message(
+            user_id="alice",
+            session_id="thread",
+            role="assistant",
+            content="large source result " * 200,
+            message_id="a1",
+        ),
+    ]
+    record = asyncio.run(
+        CompactionEngine(summarizer=None, trigger_tokens=1, target_tokens=120).compact(
+            messages,
+            covered_user_message_ids=("u1",),
+        )
+    )
+    monkeypatch.setattr(
+        "src.memory.store.os.replace",
+        lambda *_args: (_ for _ in ()).throw(OSError("disk full")),
+    )
+
+    with pytest.raises(MemoryStoreError, match="Markdown projection failed"):
+        store.save_compaction(record)
+
+    assert store.latest_compaction("alice", "thread") is None

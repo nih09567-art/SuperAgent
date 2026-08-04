@@ -232,6 +232,23 @@ WORKFLOW_SKILL_ADMIN_API_KEY = os.getenv("WORKFLOW_SKILL_ADMIN_API_KEY")
 GOVERNANCE_ADMIN_API_KEY = os.getenv("GOVERNANCE_ADMIN_API_KEY")
 GOVERNANCE_ADMIN_ACTOR_ID = os.getenv("GOVERNANCE_ADMIN_ACTOR_ID", "admin")
 
+# Step/Agent Skills are governed independently from whole-workflow skills.
+# Reuse starts in shadow mode; evidence collection and candidate distillation
+# remain enabled so operators can inspect quality before allowing bindings.
+AGENT_SKILL_ENABLED = _parse_bool("AGENT_SKILL_ENABLED", True)
+AGENT_SKILL_REUSE_ENABLED = _parse_bool("AGENT_SKILL_REUSE_ENABLED", False)
+AGENT_SKILL_AUTO_DISTILL_ENABLED = _parse_bool(
+    "AGENT_SKILL_AUTO_DISTILL_ENABLED", True
+)
+AGENT_SKILL_SIDE_EFFECT_REUSE_ENABLED = _parse_bool(
+    "AGENT_SKILL_SIDE_EFFECT_REUSE_ENABLED", False
+)
+AGENT_SKILL_MATCH_THRESHOLD = _parse_float("AGENT_SKILL_MATCH_THRESHOLD", 0.75)
+AGENT_SKILL_MATCH_MARGIN = _parse_float("AGENT_SKILL_MATCH_MARGIN", 0.08)
+AGENT_SKILL_PROMOTION_THRESHOLD = _parse_int("AGENT_SKILL_PROMOTION_THRESHOLD", 2)
+AGENT_SKILL_FAILURE_THRESHOLD = _parse_int("AGENT_SKILL_FAILURE_THRESHOLD", 2)
+AGENT_SKILL_DB_PATH = os.getenv("AGENT_SKILL_DB_PATH")
+
 if not DEBUG:
     logging.basicConfig(
         level=logging.WARNING,

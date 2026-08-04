@@ -220,6 +220,8 @@ class State(MessagesState):
     routing_decision: dict
     ROUTING_DECISION_TEXT: str
     agent_cards: list[dict]
+    agent_contract_fingerprints: dict[str, str]
+    agent_capability_bindings: dict[str, list[str]]
     runtime_event_handler: Optional[Callable[[dict[str, Any]], Awaitable[None]]]
     memory_session_id: str
     memory_context: dict[str, Any]
@@ -227,6 +229,8 @@ class State(MessagesState):
     reused_skill_id: str
     reused_skill_owner_id: str
     workflow_skill_match: dict[str, Any]
+    agent_skill_bindings: dict[str, str]
+    agent_skill_applied_steps: dict[str, str]
     workflow_execution_failed: bool
     skill_step_evidence: dict[str, Any]
     skill_execution_evidence: dict[str, Any]

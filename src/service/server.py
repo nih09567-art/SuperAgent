@@ -1,6 +1,7 @@
 from typing import Dict, List, AsyncGenerator, Optional
 from dotenv import load_dotenv
 import json
+import re
 from datetime import datetime, timezone
 from pydantic import BaseModel
 
@@ -24,6 +25,7 @@ from src.memory import (
 from src.service.env import MEMORY_ENABLED
 from src.memory.utils import redact_secrets
 from src.orchestrator.context_resolver import resolve_conversation_request
+from src.orchestrator.intent_recognition import memory_lookup_keys
 from src.orchestration.plan_snapshot import plan_hash
 from src.llm.agents import AGENT_LLM_MAP
 
@@ -31,6 +33,15 @@ from src.llm.agents import AGENT_LLM_MAP
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.WARNING)
 session_manager = SessionManager()
+_MAX_VISIBLE_RESULT_CHARS = 8000
+_VISIBLE_RESULT_CAPTURE_CHARS = _MAX_VISIBLE_RESULT_CHARS + 512
+
+
+def _bounded_visible_result(value: object) -> str:
+    rendered = redact_secrets(str(value).strip())
+    if len(rendered) <= _MAX_VISIBLE_RESULT_CHARS:
+        return rendered
+    return rendered[: _MAX_VISIBLE_RESULT_CHARS - 3] + "..."
 
 
 def _active_compaction_model_type(request: AgentRequest) -> str:
@@ -45,16 +56,109 @@ def _compact_execution_result(data: Dict) -> str:
 
     if not isinstance(data, dict):
         return ""
-    payload = {
-        "workflow_status": data.get("workflow_status") or data.get("status"),
-        "available": bool(data.get("available")),
-        "result": data.get("result"),
-        "unavailable_artifacts": data.get("unavailable_artifacts") or [],
-    }
-    rendered = redact_secrets(
-        json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+    result = data.get("result")
+    if isinstance(result, str):
+        rendered = result
+    elif result is not None:
+        rendered = json.dumps(result, ensure_ascii=False, sort_keys=True, default=str)
+    else:
+        payload = {
+            "workflow_status": data.get("workflow_status") or data.get("status"),
+            "available": bool(data.get("available")),
+            "unavailable_artifacts": data.get("unavailable_artifacts") or [],
+        }
+        rendered = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+    return _bounded_visible_result(rendered)
+
+
+def _is_visible_remote_agent(agent_name: str) -> bool:
+    return bool(_visible_remote_agent_name(agent_name))
+
+
+def _visible_remote_agent_name(agent_name: str) -> str:
+    raw_name = str(agent_name or "").strip()
+    normalized = raw_name.casefold()
+    proxy_match = re.fullmatch(
+        r"agent_proxy\s*(?:【(?P<cjk>[^】]+)】|\[(?P<bracket>[^\]]+)\]|\((?P<paren>[^)]+)\))",
+        raw_name,
+        flags=re.IGNORECASE,
     )
-    return rendered if len(rendered) <= 8000 else rendered[:7997] + "..."
+    if proxy_match:
+        raw_name = next(
+            value for value in proxy_match.groupdict().values() if value is not None
+        ).strip()
+        normalized = raw_name.casefold()
+    elif normalized.startswith("agent_proxy"):
+        return ""
+    if not normalized or normalized in {
+        "assistant",
+        "coordinator",
+        "planner",
+        "publisher",
+        "system",
+        "tool",
+    }:
+        return ""
+    if normalized.startswith("scheduler"):
+        return ""
+    return raw_name
+
+
+def _assistant_memory_outputs(
+    assistant_buffers: Dict[str, str],
+    visible_remote_buffers: Dict[str, str],
+) -> list[dict[str, object]]:
+    outputs = [
+        {"agent_name": name, "content": content, "user_visible": True}
+        for name, content in assistant_buffers.items()
+        if name != "execution_result" and content
+    ]
+    final_result = assistant_buffers.get("execution_result", "").strip()
+    if final_result:
+        outputs.append(
+            {
+                "agent_name": "execution_result",
+                "content": final_result,
+                "user_visible": True,
+            }
+        )
+    elif visible_remote_buffers:
+        agent_name = next(reversed(visible_remote_buffers))
+        content = _bounded_visible_result(visible_remote_buffers[agent_name])
+        agent_name = _visible_remote_agent_name(agent_name)
+        if content:
+            outputs.append(
+                {
+                    "agent_name": agent_name,
+                    "content": content,
+                    "user_visible": True,
+                }
+            )
+    return outputs
+
+
+def _memory_compacted_event(record) -> dict:
+    covered_ids = list(
+        record.metadata.get("covered_message_ids")
+        or record.metadata.get("covered_user_message_ids")
+        or ()
+    )
+    return {
+        "event": "memory_compacted",
+        "data": {
+            "compaction_id": record.compaction_id,
+            "session_id": record.session_id,
+            "generation": int(record.metadata.get("compaction_generation") or 0),
+            "covered_message_ids": covered_ids,
+            "covered_message_count": len(covered_ids),
+            "retained_turn_count": record.boundary.retained_turn_count,
+            "token_count_before": record.boundary.token_count_before,
+            "token_count_after": record.boundary.token_count_after,
+            "summary_mode": record.metadata.get("summary_mode") or "unknown",
+            "fallback_reason": record.metadata.get("fallback_reason"),
+            "markdown_path": record.metadata.get("markdown_projection_path"),
+        },
+    }
 
 class Server:
     def __init__(self, host="0.0.0.0", port=8001) -> None:
@@ -213,6 +317,7 @@ class Server:
                         f"entity.{key}"
                         for key in sorted(resolved_request.entity_overrides)
                     ],
+                    memory_keys=memory_lookup_keys(resolved_request.resolved_message),
                     compaction_model_type=_active_compaction_model_type(request),
                 )
             except PlanContextOverflowError as exc:
@@ -302,7 +407,11 @@ class Server:
             ],
         )
         assistant_buffers: Dict[str, str] = {}
+        visible_remote_buffers: Dict[str, str] = {}
         actual_workflow_id = request.workflow_id
+        stream_completed = False
+        workflow_ended = False
+        compaction_record = None
         try:
             async for res in response_stream:
                 try:
@@ -312,11 +421,18 @@ class Server:
                         actual_workflow_id = data.get("workflow_id")
                     if event_type == "messages":
                         agent_name = str(res.get("agent_name") or "assistant")
+                        delta = (data.get("delta") or {}).get("content", "")
                         if agent_name in {"planner", "coordinator", "assistant"}:
-                            delta = (data.get("delta") or {}).get("content", "")
                             assistant_buffers[agent_name] = (
                                 assistant_buffers.get(agent_name, "") + str(delta)
                             )
+                        else:
+                            visible_agent_name = _visible_remote_agent_name(agent_name)
+                            if visible_agent_name and delta:
+                                visible_remote_buffers[visible_agent_name] = (
+                                    visible_remote_buffers.get(visible_agent_name, "")
+                                    + str(delta)
+                                )[:_VISIBLE_RESULT_CAPTURE_CHARS]
                     elif event_type == "final_result":
                         compact_result = _compact_execution_result(data)
                         if compact_result:
@@ -330,28 +446,47 @@ class Server:
                         else:
                             logger.warning("Could not serialize agent object for new_agent_created event.")
                             data.pop("agent_obj", None)
+                    if event_type == "end_of_workflow":
+                        workflow_ended = True
                     yield res
                 except (TypeError, ValueError, json.JSONDecodeError) as e:
                     logging.error(f"Error serializing event: {e}", exc_info=True)
+            stream_completed = True
         finally:
-            if memory_manager is not None and assistant_buffers:
+            outputs = _assistant_memory_outputs(
+                assistant_buffers, visible_remote_buffers
+            )
+            if memory_manager is not None and outputs:
                 try:
                     await memory_manager.record_assistant_outputs(
                         user_id=request.user_id,
                         session_id=memory_session_id,
                         workflow_id=actual_workflow_id,
-                        outputs=[
-                            {"agent_name": name, "content": content}
-                            for name, content in assistant_buffers.items()
-                            if content
-                        ],
+                        outputs=outputs,
                     )
                 except Exception as exc:
                     logger.warning(
                         "Failed to persist streamed assistant memory: %s",
                         type(exc).__name__,
                     )
-                
+                else:
+                    if stream_completed or workflow_ended:
+                        try:
+                            compaction_record = await memory_manager.compact_if_needed(
+                                user_id=request.user_id,
+                                session_id=memory_session_id,
+                                workflow_id=actual_workflow_id,
+                                current_step_id="assistant_persisted",
+                                compaction_model_type=_active_compaction_model_type(request),
+                            )
+                        except Exception as exc:
+                            logger.warning(
+                                "Post-assistant memory compaction failed: %s",
+                                type(exc).__name__,
+                            )
+        if stream_completed and compaction_record is not None:
+            yield _memory_compacted_event(compaction_record)
+
     async def _run_agent_workflow_with_resume(
             self,
             request: "AgentRequest",
@@ -406,18 +541,32 @@ class Server:
             request_input_messages=session_messages,
         )
         assistant_buffers: Dict[str, str] = {}
+        visible_remote_buffers: Dict[str, str] = {}
+        actual_workflow_id = request.workflow_id
+        stream_completed = False
+        workflow_ended = False
+        compaction_record = None
         try:
             async for res in response_stream:
                 try:
                     event_type = res.get("event")
                     data = res.get("data") or {}
+                    if data.get("workflow_id"):
+                        actual_workflow_id = data.get("workflow_id")
                     if event_type == "messages":
                         agent_name = str(res.get("agent_name") or "assistant")
+                        delta = (data.get("delta") or {}).get("content", "")
                         if agent_name in {"planner", "coordinator", "assistant"}:
-                            delta = (data.get("delta") or {}).get("content", "")
                             assistant_buffers[agent_name] = (
                                 assistant_buffers.get(agent_name, "") + str(delta)
                             )
+                        else:
+                            visible_agent_name = _visible_remote_agent_name(agent_name)
+                            if visible_agent_name and delta:
+                                visible_remote_buffers[visible_agent_name] = (
+                                    visible_remote_buffers.get(visible_agent_name, "")
+                                    + str(delta)
+                                )[:_VISIBLE_RESULT_CAPTURE_CHARS]
                     elif event_type == "final_result":
                         compact_result = _compact_execution_result(data)
                         if compact_result:
@@ -430,27 +579,46 @@ class Server:
                         else:
                             logger.warning("Could not serialize agent object for new_agent_created event.")
                             data.pop("agent_obj", None)
+                    if event_type == "end_of_workflow":
+                        workflow_ended = True
                     yield res
                 except (TypeError, ValueError, json.JSONDecodeError) as e:
                     logging.error(f"Error serializing event: {e}", exc_info=True)
+            stream_completed = True
         finally:
-            if memory_manager is not None and assistant_buffers:
+            outputs = _assistant_memory_outputs(
+                assistant_buffers, visible_remote_buffers
+            )
+            if memory_manager is not None and outputs:
                 try:
                     await memory_manager.record_assistant_outputs(
                         user_id=request.user_id,
                         session_id=memory_session_id,
-                        workflow_id=request.workflow_id,
-                        outputs=[
-                            {"agent_name": name, "content": content}
-                            for name, content in assistant_buffers.items()
-                            if content
-                        ],
+                        workflow_id=actual_workflow_id,
+                        outputs=outputs,
                     )
                 except Exception as exc:
                     logger.warning(
                         "Failed to persist resumed assistant memory: %s",
                         type(exc).__name__,
                     )
+                else:
+                    if stream_completed or workflow_ended:
+                        try:
+                            compaction_record = await memory_manager.compact_if_needed(
+                                user_id=request.user_id,
+                                session_id=memory_session_id,
+                                workflow_id=actual_workflow_id,
+                                current_step_id="assistant_persisted",
+                                compaction_model_type=_active_compaction_model_type(request),
+                            )
+                        except Exception as exc:
+                            logger.warning(
+                                "Post-resume assistant memory compaction failed: %s",
+                                type(exc).__name__,
+                            )
+        if stream_completed and compaction_record is not None:
+            yield _memory_compacted_event(compaction_record)
 
     @staticmethod
     async def _list_agents(

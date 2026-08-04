@@ -8,6 +8,7 @@ import sqlite3
 import tempfile
 import threading
 from contextlib import closing
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
@@ -356,6 +357,9 @@ class MemoryStore:
     def save_compaction(self, record: CompactionRecord) -> CompactionRecord:
         self._validate_scope(record.user_id, record.session_id)
         boundary = record.boundary
+        inserted = False
+        projection_started = False
+        saved = record
         with closing(self._connect()) as connection:
             try:
                 connection.execute("BEGIN IMMEDIATE")
@@ -364,61 +368,122 @@ class MemoryStore:
                     (record.compaction_id,),
                 ).fetchone()
                 if existing is not None:
-                    connection.execute("COMMIT")
-                    return self._row_to_compaction(existing)
-                covered = connection.execute(
-                    """
-                    SELECT message_id FROM memory_messages
-                    WHERE user_id=? AND session_id=? AND sequence=?
-                    """,
-                    (record.user_id, record.session_id, boundary.last_sequence),
-                ).fetchone()
-                if covered is None or covered["message_id"] != boundary.last_message_id:
-                    raise MemoryStoreError("compaction boundary does not match transcript")
-                expected_watermark = record.metadata.get("transcript_watermark_sequence")
-                if expected_watermark is not None:
-                    current_watermark = connection.execute(
+                    saved = self._row_to_compaction(existing)
+                else:
+                    covered = connection.execute(
                         """
-                        SELECT COALESCE(MAX(sequence), 0) FROM memory_messages
-                        WHERE user_id=? AND session_id=?
+                        SELECT message_id FROM memory_messages
+                        WHERE user_id=? AND session_id=? AND sequence=?
                         """,
-                        (record.user_id, record.session_id),
-                    ).fetchone()[0]
-                    if int(current_watermark) != int(expected_watermark):
-                        raise MemoryStoreError(
-                            "compaction transcript watermark changed before commit"
-                        )
-                connection.execute(
+                        (record.user_id, record.session_id, boundary.last_sequence),
+                    ).fetchone()
+                    if covered is None or covered["message_id"] != boundary.last_message_id:
+                        raise MemoryStoreError("compaction boundary does not match transcript")
+                    expected_watermark = record.metadata.get("transcript_watermark_sequence")
+                    if expected_watermark is not None:
+                        current_watermark = connection.execute(
+                            """
+                            SELECT COALESCE(MAX(sequence), 0) FROM memory_messages
+                            WHERE user_id=? AND session_id=?
+                            """,
+                            (record.user_id, record.session_id),
+                        ).fetchone()[0]
+                        if int(current_watermark) != int(expected_watermark):
+                            raise MemoryStoreError(
+                                "compaction transcript watermark changed before commit"
+                            )
+                    generation = int(
+                        connection.execute(
+                            """
+                            SELECT COUNT(*) FROM memory_compactions
+                            WHERE user_id=? AND session_id=?
+                            """,
+                            (record.user_id, record.session_id),
+                        ).fetchone()[0]
+                    ) + 1
+                    latest_path = self.compaction_markdown_path(
+                        record.user_id, record.session_id
+                    )
+                    saved = replace(
+                        record,
+                        metadata={
+                            **record.metadata,
+                            "compaction_generation": generation,
+                            "markdown_projection_path": str(latest_path),
+                        },
+                    )
+                    connection.execute(
+                        """
+                        INSERT INTO memory_compactions (
+                            compaction_id, user_id, session_id, last_sequence,
+                            last_message_id, boundary_json, summary, attachments_json,
+                            hook_results_json, metadata_json, retained_message_ids_json,
+                            retained_turn_count, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            saved.compaction_id,
+                            saved.user_id,
+                            saved.session_id,
+                            boundary.last_sequence,
+                            boundary.last_message_id,
+                            _json(boundary),
+                            saved.summary,
+                            _json(saved.attachments),
+                            _json(saved.hook_results),
+                            _json(saved.metadata),
+                            _json(boundary.retained_message_ids),
+                            int(boundary.retained_turn_count),
+                            _iso(saved.created_at),
+                        ),
+                    )
+                    inserted = True
+                self._expire_records(connection, saved.user_id)
+                long_term_rows = connection.execute(
                     """
-                    INSERT INTO memory_compactions (
-                        compaction_id, user_id, session_id, last_sequence,
-                        last_message_id, boundary_json, summary, attachments_json,
-                        hook_results_json, metadata_json, retained_message_ids_json,
-                        retained_turn_count, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    SELECT * FROM memory_long_term
+                    WHERE user_id=? AND status='active'
+                    ORDER BY updated_at DESC, memory_id ASC
                     """,
-                    (
-                        record.compaction_id,
-                        record.user_id,
-                        record.session_id,
-                        boundary.last_sequence,
-                        boundary.last_message_id,
-                        _json(boundary),
-                        record.summary,
-                        _json(record.attachments),
-                        _json(record.hook_results),
-                        _json(record.metadata),
-                        _json(boundary.retained_message_ids),
-                        int(boundary.retained_turn_count),
-                        _iso(record.created_at),
-                    ),
+                    (saved.user_id,),
+                ).fetchall()
+                compaction_rows = connection.execute(
+                    """
+                    SELECT * FROM memory_compactions
+                    WHERE user_id=?
+                    ORDER BY session_id ASC, last_sequence DESC, created_at DESC
+                    """,
+                    (saved.user_id,),
+                ).fetchall()
+                projection_compactions: dict[str, CompactionRecord] = {}
+                for row in compaction_rows:
+                    projection_compactions.setdefault(
+                        row["session_id"], self._row_to_compaction(row)
+                    )
+                projection_record = projection_compactions[saved.session_id]
+                projection_started = True
+                self.project_compaction_markdown(projection_record)
+                self.project_markdown(
+                    saved.user_id,
+                    records_override=[
+                        self._row_to_long_term(row) for row in long_term_rows
+                    ],
+                    compactions_override=list(projection_compactions.values()),
                 )
                 connection.execute("COMMIT")
-            except Exception:
+            except Exception as exc:
                 if connection.in_transaction:
                     connection.execute("ROLLBACK")
+                if projection_started:
+                    self._restore_compaction_projections(
+                        saved,
+                        remove_immutable=inserted,
+                    )
+                    raise MemoryStoreError(
+                        "compaction Markdown projection failed"
+                    ) from exc
                 raise
-        return record
+        return saved
 
     commit_compaction = save_compaction
 
@@ -452,6 +517,22 @@ class MemoryStore:
                 (user_id, session_id),
             ).fetchall()
         return [self._row_to_compaction(row) for row in rows]
+
+    def latest_compactions_for_user(self, user_id: str) -> list[CompactionRecord]:
+        self._validate_scope(user_id)
+        with closing(self._connect()) as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM memory_compactions
+                WHERE user_id=?
+                ORDER BY session_id ASC, last_sequence DESC, created_at DESC
+                """,
+                (user_id,),
+            ).fetchall()
+        latest = {}
+        for row in rows:
+            latest.setdefault(row["session_id"], self._row_to_compaction(row))
+        return list(latest.values())
 
     @staticmethod
     def _row_to_compaction(row: sqlite3.Row) -> CompactionRecord:
@@ -761,11 +842,26 @@ class MemoryStore:
         *,
         scope: str | None = None,
         path: str | Path | None = None,
+        records_override: Sequence[LongTermMemory] | None = None,
+        compactions_override: Sequence[CompactionRecord] | None = None,
     ) -> Path:
         """Atomically materialize active labels as an inspectable MEMORY.md view."""
 
         self._validate_scope(user_id)
-        records = self.list_long_term(user_id)
+        records = (
+            list(records_override)
+            if records_override is not None
+            else self.list_long_term(user_id)
+        )
+        compactions = (
+            list(compactions_override)
+            if compactions_override is not None
+            else self.latest_compactions_for_user(user_id)
+        )
+        if any(record.user_id != user_id for record in records):
+            raise MemoryScopeError("long-term projection user mismatch")
+        if any(record.user_id != user_id for record in compactions):
+            raise MemoryScopeError("compaction projection user mismatch")
         if scope:
             records = [item for item in records if item.scope in {"user", scope}]
         target = Path(path) if path else self.markdown_path(user_id, scope=scope)
@@ -786,6 +882,32 @@ class MemoryStore:
                     f"- {key}{label} _(evidence: {evidence_at.isoformat()})_"
                 )
             lines.append("")
+        if compactions:
+            lines.extend(
+                [
+                    "## Current Context Compaction (Diagnostic Only)",
+                    "",
+                    "<!-- This section is not a long-term memory record and is not recalled into prompts. -->",
+                    "",
+                ]
+            )
+            for record in compactions:
+                generation = int(
+                    record.metadata.get("compaction_generation") or 0
+                )
+                lines.extend(
+                    [
+                        f"### Session `{record.session_id}`",
+                        "",
+                        f"- Generation: {generation}",
+                        f"- Covered through: `{record.boundary.last_message_id}`",
+                        f"- Tokens: {record.boundary.token_count_before} -> {record.boundary.token_count_after}",
+                        f"- Snapshot: `{record.metadata.get('markdown_projection_path') or ''}`",
+                        "",
+                        redact_secrets(record.summary),
+                        "",
+                    ]
+                )
         payload = "\n".join(lines).rstrip() + "\n"
         lock_key = str(target.resolve(strict=False)).casefold()
         with self._projection_lock_guard:
@@ -807,6 +929,182 @@ class MemoryStore:
                     except OSError:
                         pass
         return target
+
+    def project_compaction_markdown(self, record: CompactionRecord) -> Path:
+        """Materialize one immutable compaction snapshot and refresh LATEST.md."""
+
+        self._validate_scope(record.user_id, record.session_id)
+        messages = self.list_messages(record.user_id, record.session_id)
+        by_id = {message.message_id: message for message in messages}
+        retained = [
+            by_id[message_id]
+            for message_id in record.boundary.retained_message_ids
+            if message_id in by_id
+        ]
+        covered_ids = tuple(
+            str(item)
+            for item in (
+                record.metadata.get("covered_message_ids")
+                or record.metadata.get("covered_user_message_ids")
+                or ()
+            )
+        )
+        generation = int(record.metadata.get("compaction_generation") or 0)
+        boundary = record.boundary
+        lines = [
+            "# Context Compaction",
+            "",
+            f"<!-- user: {record.user_id}; session: {record.session_id}; compaction: {record.compaction_id} -->",
+            "",
+            "## Boundary",
+            "",
+            f"- Kind: {boundary.kind}",
+            f"- Trigger: {boundary.trigger}",
+            f"- Generation: {generation}",
+            f"- Last message: `{boundary.last_message_id}`",
+            f"- Last sequence: {boundary.last_sequence}",
+            f"- Before: {boundary.token_count_before}",
+            f"- After: {boundary.token_count_after}",
+            f"- Summary mode: {record.metadata.get('summary_mode') or 'unknown'}",
+            f"- Fallback reason: {record.metadata.get('fallback_reason') or 'none'}",
+            "",
+            "## Structured Summary",
+            "",
+            redact_secrets(record.summary),
+            "",
+            "## Retained Turns",
+            "",
+            f"- Count: {boundary.retained_turn_count}",
+        ]
+        if retained:
+            for message in retained:
+                lines.extend(
+                    [
+                        f"### {message.role} `{message.message_id}`",
+                        "",
+                        redact_secrets(message.content),
+                        "",
+                    ]
+                )
+        else:
+            lines.extend(["- None", ""])
+        lines.extend(["## Covered Messages", ""])
+        lines.extend(f"- `{message_id}`" for message_id in covered_ids)
+        if not covered_ids:
+            lines.append("- None")
+        lines.extend(
+            [
+                "",
+                "## Attachments",
+                "",
+                "```json",
+                redact_secrets(
+                    json.dumps(
+                        to_json_safe(record.attachments),
+                        ensure_ascii=False,
+                        indent=2,
+                        sort_keys=True,
+                    )
+                ),
+                "```",
+                "",
+                "## Hook Results",
+                "",
+                "```json",
+                redact_secrets(
+                    json.dumps(
+                        to_json_safe(record.hook_results),
+                        ensure_ascii=False,
+                        indent=2,
+                        sort_keys=True,
+                    )
+                ),
+                "```",
+                "",
+            ]
+        )
+        payload = "\n".join(lines)
+        immutable = self.compaction_markdown_path(
+            record.user_id,
+            record.session_id,
+            compaction_id=record.compaction_id,
+        )
+        latest = self.compaction_markdown_path(record.user_id, record.session_id)
+        self._atomic_write_text(immutable, payload)
+        self._atomic_write_text(latest, payload)
+        return latest
+
+    def compaction_markdown_path(
+        self,
+        user_id: str,
+        session_id: str,
+        *,
+        compaction_id: str | None = None,
+    ) -> Path:
+        self._validate_scope(user_id, session_id)
+        directory = (
+            self.path.parent
+            / "memory_views"
+            / safe_identifier(user_id, prefix="user")
+            / "compactions"
+            / safe_identifier(session_id, prefix="session")
+        )
+        filename = (
+            f"{safe_identifier(compaction_id, prefix='compaction')}.md"
+            if compaction_id
+            else "LATEST.md"
+        )
+        return directory / filename
+
+    def _atomic_write_text(self, target: Path, payload: str) -> None:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        lock_key = str(target.resolve(strict=False)).casefold()
+        with self._projection_lock_guard:
+            projection_lock = self._projection_locks.setdefault(
+                lock_key, threading.Lock()
+            )
+        with projection_lock:
+            fd, temporary = tempfile.mkstemp(
+                dir=str(target.parent), prefix=f".{target.name}.", suffix=".tmp"
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                    handle.write(payload)
+                os.replace(temporary, target)
+            finally:
+                if os.path.exists(temporary):
+                    try:
+                        os.remove(temporary)
+                    except OSError:
+                        pass
+
+    def _restore_compaction_projections(
+        self,
+        failed: CompactionRecord,
+        *,
+        remove_immutable: bool = True,
+    ) -> None:
+        immutable = self.compaction_markdown_path(
+            failed.user_id,
+            failed.session_id,
+            compaction_id=failed.compaction_id,
+        )
+        latest_path = self.compaction_markdown_path(
+            failed.user_id, failed.session_id
+        )
+        try:
+            if remove_immutable:
+                immutable.unlink(missing_ok=True)
+            previous = self.latest_compaction(failed.user_id, failed.session_id)
+            if previous is None:
+                latest_path.unlink(missing_ok=True)
+            else:
+                self.project_compaction_markdown(previous)
+            self.project_markdown(failed.user_id)
+        except Exception:
+            # The authoritative row was already removed. A later successful
+            # projection or process restart can rebuild these diagnostic views.
+            pass
 
     def markdown_path(self, user_id: str, *, scope: str | None = None) -> Path:
         self._validate_scope(user_id)

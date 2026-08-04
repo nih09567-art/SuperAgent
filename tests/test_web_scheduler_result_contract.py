@@ -17,6 +17,28 @@ def test_web_recognizes_scheduler_agents_and_result_events():
     assert "renderFinalResult(payload.data || {})" in source
 
 
+def test_web_displays_context_compaction_event_details():
+    source = _source()
+
+    assert source.count('eventName === "memory_compacted"') == 2
+    assert "const handleResumeEvent" in source
+    assert "上下文已压缩" in source
+    assert "token_count_before" in source
+    assert "token_count_after" in source
+    assert "covered_message_count" in source
+    assert "retained_turn_count" in source
+    assert "summary_mode" in source
+
+
+def test_web_assigns_and_preserves_stable_message_ids():
+    source = _source()
+
+    assert "const createConversationMessageId" in source
+    assert "message_id: metadata.message_id || createConversationMessageId(role)" in source
+    assert "message_id: message.message_id" in source
+    assert "execute-confirmed-plan" in source
+
+
 def test_web_keys_parallel_step_cards_by_scheduler_event_identity():
     source = _source()
 

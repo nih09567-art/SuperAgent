@@ -38,9 +38,16 @@ from src.robust.hooks import (
 from src.security.enforcement import PermissionDeniedError
 from src.security.scenario_analyzer import analyze_task_context
 from src.orchestrator import make_routing_decision
+from src.orchestrator.intent_recognition import memory_lookup_keys
 from src.skills.workflow_skill import get_workflow_skill_manager
+from src.skills.agent_skill import (
+    get_agent_skill_manager,
+    slice_agent_skill_evidence,
+)
 from src.skills.execution_evidence import (
+    SIDE_EFFECT_MODES,
     SkillExecutionEvidence,
+    VerificationStatus,
     build_legacy_evidence,
     evaluate_distillation_evidence,
     load_execution_evidence,
@@ -86,6 +93,52 @@ def _normalize_planning_steps(raw: Any) -> list:
             return []
         return _normalize_planning_steps(parsed)
     return []
+
+
+def _agent_skill_bindings_from_steps(steps: Any) -> dict[str, str]:
+    bindings: dict[str, str] = {}
+    for index, step in enumerate(_normalize_planning_steps(steps)):
+        if not isinstance(step, dict):
+            continue
+        binding = step.get("agent_skill_binding")
+        if not isinstance(binding, dict) or not binding.get("skill_id"):
+            continue
+        step_id = str(
+            step.get("step_id") or step.get("subtask_id") or f"step_{index + 1}"
+        )
+        bindings[step_id] = str(binding["skill_id"])
+    return bindings
+
+
+def _strip_agent_skill_runtime_state(state: dict[str, Any]) -> None:
+    """Remove attempt-local bindings/evidence before a resumed execution."""
+
+    stripped_steps: list[dict[str, Any]] = []
+    for step in _normalize_planning_steps(state.get("planning_steps")):
+        if not isinstance(step, dict):
+            continue
+        clean = dict(step)
+        clean.pop("agent_skill_binding", None)
+        clean.pop("agent_skill_guidance", None)
+        stripped_steps.append(clean)
+    if stripped_steps:
+        state["planning_steps"] = stripped_steps
+        try:
+            cache.restore_planning_steps(
+                str(state.get("workflow_id") or ""),
+                stripped_steps,
+                str(state.get("user_id") or ""),
+            )
+        except Exception:  # pragma: no cover - cache may be absent in unit tests
+            pass
+    task_graph = state.get("task_graph")
+    if isinstance(task_graph, dict) and isinstance(task_graph.get("steps"), list):
+        for raw_step in task_graph["steps"]:
+            if isinstance(raw_step, dict):
+                raw_step.pop("agent_skill_binding", None)
+                raw_step.pop("agent_skill_guidance", None)
+    state["agent_skill_bindings"] = {}
+    state["agent_skill_applied_steps"] = {}
 
 
 def _resume_step_evidence(raw: Any, resume_step: int | None) -> dict[str, Any]:
@@ -781,17 +834,35 @@ async def run_agent_workflow(
                     ]
                 )
             )
-            reference, memory_ids = await get_memory_manager().recall_labels(
-                user_id=user_id,
-                query=routing_query,
-                intent_tags=scenario_memory_tags,
-                scopes=("user", "task", "project") if project_id else ("user", "task"),
-                project_id=project_id or str(resolved_memory_context.get("project_id") or "") or None,
-            )
+            memory_manager = get_memory_manager()
+            recall_context = getattr(memory_manager, "recall_context", None)
+            requested_memory_keys = memory_lookup_keys(routing_query)
+            if callable(recall_context):
+                reference, memory_ids, memory_entries = await recall_context(
+                    user_id=user_id,
+                    query=routing_query,
+                    intent_tags=scenario_memory_tags,
+                    scopes=("user", "task", "project") if project_id else ("user", "task"),
+                    project_id=project_id or str(resolved_memory_context.get("project_id") or "") or None,
+                    memory_keys=requested_memory_keys,
+                )
+            else:
+                reference, memory_ids = await memory_manager.recall_labels(
+                    user_id=user_id,
+                    query=routing_query,
+                    intent_tags=scenario_memory_tags,
+                    scopes=("user", "task", "project") if project_id else ("user", "task"),
+                    project_id=project_id or str(resolved_memory_context.get("project_id") or "") or None,
+                )
+                memory_entries = ()
             if reference:
                 resolved_memory_context["long_term_reference"] = reference
             if memory_ids:
                 resolved_memory_context["retrieved_memory_ids"] = list(memory_ids)
+            if memory_entries:
+                resolved_memory_context["retrieved_memories"] = [
+                    dict(item) for item in memory_entries
+                ]
         except Exception as exc:
             logger.warning(
                 "Scenario-tag memory recall skipped: %s", type(exc).__name__
@@ -831,6 +902,9 @@ async def run_agent_workflow(
     execution_phase = TaskLogger.determine_execution_phase(
         workmode, instruction_history_list)
     logger.info(f"Execution phase determined: {execution_phase}")
+    serialized_agent_cards = [card.model_dump() for card in agent_cards]
+    contract_fingerprints = _agent_contract_fingerprints(serialized_agent_cards)
+    capability_bindings = _agent_capability_bindings(serialized_agent_cards)
 
     async for event_data in _process_workflow(
         graph,
@@ -874,7 +948,9 @@ async def run_agent_workflow(
                 ensure_ascii=False,
                 indent=2,
             ),
-            "agent_cards": [card.model_dump() for card in agent_cards],
+            "agent_cards": serialized_agent_cards,
+            "agent_contract_fingerprints": contract_fingerprints,
+            "agent_capability_bindings": capability_bindings,
             "memory_session_id": memory_session_id or "",
             "memory_context": resolved_memory_context,
             "compaction_model_type": compaction_model_type or "basic",
@@ -882,6 +958,8 @@ async def run_agent_workflow(
             "reused_skill_id": "",
             "reused_skill_owner_id": "",
             "workflow_skill_match": {},
+            "agent_skill_bindings": {},
+            "agent_skill_applied_steps": {},
             "workflow_execution_failed": False,
             "skill_step_evidence": {},
             "skill_execution_evidence": {},
@@ -918,6 +996,9 @@ async def _process_workflow(
             "TEAM_MEMBERS_DESCRIPTION",
             "TOOLS",
             "RESOURCE_CATALOG",
+            "agent_cards",
+            "agent_contract_fingerprints",
+            "agent_capability_bindings",
         )
         if initial_state.get(key) is not None
     }
@@ -948,10 +1029,14 @@ async def _process_workflow(
             "routing_decision",
             "ROUTING_DECISION_TEXT",
             "agent_cards",
+            "agent_contract_fingerprints",
+            "agent_capability_bindings",
             "skill_reuse_enabled",
             "reused_skill_id",
             "reused_skill_owner_id",
             "workflow_skill_match",
+            "agent_skill_bindings",
+            "agent_skill_applied_steps",
             "workflow_execution_failed",
             "skill_step_evidence",
             "skill_execution_evidence",
@@ -1000,6 +1085,7 @@ async def _process_workflow(
         )
         target_state["business_success"] = None
         target_state["workflow_execution_failed"] = False
+        _strip_agent_skill_runtime_state(target_state)
         if hasattr(task_logger, "set_skill_execution_evidence"):
             task_logger.set_skill_execution_evidence({})
         else:
@@ -1071,15 +1157,149 @@ async def _process_workflow(
         )
         decision = evaluate_distillation_evidence(evidence)
         events: list[dict[str, Any]] = []
+        planning_steps = (
+            _normalize_planning_steps(getattr(task_logger, "planning_steps", []))
+            or evidence.planning_steps
+            or _normalize_planning_steps(source_state.get("planning_steps"))
+            or _normalize_planning_steps(cache.get_planning_steps(workflow_id))
+        )
+
+        # Agent Skills learn and account by step, independently from the
+        # all-or-nothing workflow distillation gate below.
+        try:
+            agent_skill_manager = get_agent_skill_manager()
+            if (
+                planning_steps
+                and agent_skill_manager.settings.enabled
+                and agent_skill_manager.settings.auto_distill_enabled
+            ):
+                user_id = str(source_state.get("user_id") or "")
+                contract_fingerprints = (
+                    getattr(task_logger, "agent_contract_fingerprints", {})
+                    or source_state.get("agent_contract_fingerprints")
+                    or _agent_contract_fingerprints(source_state.get("agent_cards"))
+                )
+                capability_bindings = (
+                    getattr(task_logger, "agent_capability_bindings", {})
+                    or source_state.get("agent_capability_bindings")
+                    or _agent_capability_bindings(source_state.get("agent_cards"))
+                )
+                sliced_evidence = slice_agent_skill_evidence(
+                    user_id=user_id,
+                    evidence=evidence,
+                    planning_steps=planning_steps,
+                    task_profile=(
+                        getattr(task_logger, "task_profile", {})
+                        or source_state.get("task_profile")
+                        or {}
+                    ),
+                    agent_contracts=contract_fingerprints,
+                    agent_capabilities=capability_bindings,
+                )
+                for step_evidence in sliced_evidence:
+                    result = agent_skill_manager.distill(step_evidence)
+                    events.append(
+                        {
+                            "event": (
+                                "agent_skill_promoted"
+                                if result.promoted
+                                else "agent_skill_candidate"
+                            ),
+                            "data": {
+                                "skill_id": result.card.skill_id,
+                                "step_id": step_evidence.step_id,
+                                "agent_name": step_evidence.agent_name,
+                                "status": result.card.status.value,
+                                "version": result.card.version,
+                                "evidence_count": result.card.evidence_count,
+                                "promotion_ready": result.decision.promotion_ready,
+                                "reasons": list(result.decision.reasons),
+                            },
+                        }
+                    )
+
+                plan_by_id: dict[str, dict[str, Any]] = {}
+                aliases: dict[str, str] = {}
+                agent_to_steps: dict[str, list[str]] = {}
+                for index, raw_step in enumerate(planning_steps):
+                    if not isinstance(raw_step, dict):
+                        continue
+                    step_id = str(
+                        raw_step.get("step_id")
+                        or raw_step.get("subtask_id")
+                        or f"step_{index + 1}"
+                    )
+                    plan_by_id[step_id] = raw_step
+                    aliases[step_id] = step_id
+                    for alias in raw_step.get("subtask_ids") or ():
+                        aliases[str(alias)] = step_id
+                    if raw_step.get("subtask_id"):
+                        aliases[str(raw_step["subtask_id"])] = step_id
+                    agent_name = str(raw_step.get("agent_name") or "")
+                    if agent_name:
+                        agent_to_steps.setdefault(agent_name, []).append(step_id)
+
+                observed_by_step: dict[str, Any] = {}
+                for observed in evidence.steps:
+                    step_id = aliases.get(observed.step_id)
+                    if step_id is None:
+                        candidates = agent_to_steps.get(observed.agent_name, [])
+                        if len(candidates) == 1:
+                            step_id = candidates[0]
+                    if step_id:
+                        observed_by_step[step_id] = observed
+
+                for step_id, skill_id in dict(
+                    source_state.get("agent_skill_applied_steps") or {}
+                ).items():
+                    observed = observed_by_step.get(str(step_id))
+                    if observed is None:
+                        continue  # skipped or not reached is neutral
+                    is_side_effect = (
+                        str(observed.operation_mode).casefold()
+                        in SIDE_EFFECT_MODES
+                    )
+                    success = bool(
+                        observed.technical_success
+                        and not observed.needs_reconciliation
+                        and (
+                            not is_side_effect
+                            or (
+                                observed.business_success is True
+                                and observed.verification_status
+                                == VerificationStatus.VERIFIED
+                            )
+                        )
+                    )
+                    updated = agent_skill_manager.record_outcome(
+                        user_id, str(skill_id), success=success
+                    )
+                    if updated is None:
+                        continue
+                    events.append(
+                        {
+                            "event": (
+                                "agent_skill_execution_succeeded"
+                                if success
+                                else "agent_skill_disabled"
+                                if updated.status.value == "disabled"
+                                else "agent_skill_execution_failed"
+                            ),
+                            "data": {
+                                "skill_id": updated.skill_id,
+                                "step_id": str(step_id),
+                                "status": updated.status.value,
+                                "consecutive_failures": updated.consecutive_failures,
+                            },
+                        }
+                    )
+        except Exception as exc:
+            logger.warning("Agent Skill completion failed: %s", exc)
+
         manager = get_workflow_skill_manager()
         distilled_card = None
 
         if manager.settings.enabled and manager.settings.auto_distill_enabled and decision.eligible:
-            planning_steps = (
-                _normalize_planning_steps(getattr(task_logger, "planning_steps", []))
-                or evidence.planning_steps
-                or _normalize_planning_steps(source_state.get("planning_steps"))
-            )
             if planning_steps:
                 distilled_card = manager.distill(
                     user_id=source_state.get("user_id", ""),
@@ -1250,6 +1470,9 @@ async def _process_workflow(
                     planning_snapshot,
                     state.get("task_profile") or {},
                 )
+                state["agent_skill_bindings"] = (
+                    _agent_skill_bindings_from_steps(planning_snapshot)
+                )
                 if hasattr(task_logger, "set_agent_contract_fingerprints"):
                     task_logger.set_agent_contract_fingerprints(
                         _agent_contract_fingerprints(state.get("agent_cards"))
@@ -1415,6 +1638,11 @@ async def _process_workflow(
                     "plan snapshot rejected for %s: trusted registry unavailable",
                     state.get("workflow_id"),
                 )
+
+            if should_resume:
+                # Snapshot loading can restore the prior attempt's reference;
+                # a resumed attempt starts without historical Skill binding.
+                _strip_agent_skill_runtime_state(state)
 
             ready, category, detail = scheduler_ready(state)
             if category == "no_graph" and state.get("task_graph_rejection_reason"):
