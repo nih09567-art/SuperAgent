@@ -1,9 +1,9 @@
 """Minimal schema registry (Plan §7, Phase 1).
 
 Provides ``register`` / ``validate`` with a deliberately small validation model
-(required fields + basic type checks) and no third-party dependency. The
-interface is shaped so it can later be swapped for ``jsonschema`` without callers
-changing.
+(required fields + basic type checks), plus optional schema-specific semantic
+validators for cross-field invariants. The interface is shaped so it can later
+be swapped for ``jsonschema`` without callers changing.
 
 Schema format (minimal subset)::
 
@@ -20,7 +20,66 @@ Schema format (minimal subset)::
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Tuple
+from typing import Any, Callable, Dict, List, Tuple
+
+SemanticValidator = Callable[[Dict[str, Any]], List[str]]
+
+_DEFAULT_SEMANTIC_VALIDATORS: Dict[str, SemanticValidator] = {}
+
+
+def register_default_semantic_validators(
+    validators: Dict[str, SemanticValidator],
+) -> None:
+    """Register semantic validators used by versioned built-in schemas."""
+    for schema_ref, validator in validators.items():
+        if not isinstance(schema_ref, str) or not schema_ref:
+            raise ValueError("schema_ref must be a non-empty string")
+        if not callable(validator):
+            raise TypeError("semantic validators must be callable")
+        _DEFAULT_SEMANTIC_VALIDATORS[schema_ref] = validator
+
+
+def _resolve_default_semantic_validator(
+    schema_ref: str,
+) -> SemanticValidator | None:
+    """Resolve a built-in validator without relying on import order.
+
+    The contract catalog normally registers validators during import. A caller
+    may, however, instantiate a fresh ``SchemaRegistry`` and register a known
+    contract directly before importing the catalog. Lazy resolution keeps that
+    direct API fail-closed while avoiding a module-level circular import.
+    """
+
+    validator = _DEFAULT_SEMANTIC_VALIDATORS.get(schema_ref)
+    if validator is not None:
+        return validator
+    if not schema_ref.startswith("policy.info@"):
+        return None
+
+    try:
+        from src.contracts.agent_schema_catalog import AGENT_SCHEMA_VALIDATORS
+    except (AttributeError, ImportError):
+        return None
+
+    validator = AGENT_SCHEMA_VALIDATORS.get(schema_ref)
+    if validator is not None:
+        _DEFAULT_SEMANTIC_VALIDATORS[schema_ref] = validator
+    return validator
+
+
+def _compose_semantic_validators(
+    *validators: SemanticValidator,
+) -> SemanticValidator:
+    """Run multiple validators while preserving built-in invariants."""
+
+    def validate(payload: Dict[str, Any]) -> List[str]:
+        errors: List[str] = []
+        for validator in validators:
+            errors.extend(validator(payload))
+        return errors
+
+    return validate
+
 
 from src.orchestration.output_contracts import OUTPUT_SCHEMAS
 
@@ -104,14 +163,61 @@ class SchemaRegistry:
 
     def __init__(self) -> None:
         self._schemas: Dict[str, Dict[str, Any]] = {}
+        self._semantic_validators: Dict[str, SemanticValidator] = {}
 
-    def register(self, schema_ref: str, schema: Dict[str, Any]) -> None:
-        """Register (or overwrite) a schema under ``schema_ref``."""
+    def register(
+        self,
+        schema_ref: str,
+        schema: Dict[str, Any],
+        *,
+        semantic_validator: SemanticValidator | None = None,
+    ) -> None:
+        """Register a schema and its optional cross-field validator."""
         if not isinstance(schema_ref, str) or not schema_ref:
             raise ValueError("schema_ref must be a non-empty string")
         if not isinstance(schema, dict):
             raise TypeError("schema must be a dict")
+        if semantic_validator is not None and not callable(semantic_validator):
+            raise TypeError("semantic_validator must be callable")
         self._schemas[schema_ref] = schema
+        builtin_validator = _resolve_default_semantic_validator(schema_ref)
+        if builtin_validator is not None:
+            if semantic_validator is None or semantic_validator is builtin_validator:
+                semantic_validator = builtin_validator
+            else:
+                # A caller may add stricter checks, but cannot replace the
+                # platform invariant for a versioned built-in contract.
+                semantic_validator = _compose_semantic_validators(
+                    builtin_validator,
+                    semantic_validator,
+                )
+        if semantic_validator is None:
+            self._semantic_validators.pop(schema_ref, None)
+        else:
+            self._semantic_validators[schema_ref] = semantic_validator
+
+    def set_semantic_validator(
+        self,
+        schema_ref: str,
+        semantic_validator: SemanticValidator,
+    ) -> None:
+        """Attach a semantic validator without replacing the registered schema."""
+        if not isinstance(schema_ref, str) or not schema_ref:
+            raise ValueError("schema_ref must be a non-empty string")
+        if schema_ref not in self._schemas:
+            raise KeyError(f"unknown schema_ref: {schema_ref!r}")
+        if not callable(semantic_validator):
+            raise TypeError("semantic_validator must be callable")
+        builtin_validator = _resolve_default_semantic_validator(schema_ref)
+        if (
+            builtin_validator is not None
+            and semantic_validator is not builtin_validator
+        ):
+            semantic_validator = _compose_semantic_validators(
+                builtin_validator,
+                semantic_validator,
+            )
+        self._semantic_validators[schema_ref] = semantic_validator
 
     def has(self, schema_ref: str) -> bool:
         return schema_ref in self._schemas
@@ -144,6 +250,10 @@ class SchemaRegistry:
             ]
 
         _validate_value(payload, schema, "payload", errors)
+
+        semantic_validator = self._semantic_validators.get(schema_ref)
+        if semantic_validator is not None and not errors:
+            errors.extend(semantic_validator(payload))
 
         return (len(errors) == 0), errors
 

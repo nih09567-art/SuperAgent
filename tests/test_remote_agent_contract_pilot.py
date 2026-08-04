@@ -18,12 +18,16 @@ class Extractor:
         return dict(self.result)
 
 
-def _validate(result, agent) -> None:
-    validation = validate_agent_result(
+def _validation(result, agent):
+    return validate_agent_result(
         result,
         agent.contract,
         register_agent_schemas(SchemaRegistry()),
     )
+
+
+def _validate(result, agent) -> None:
+    validation = _validation(result, agent)
     assert validation.valid, validation.errors
 
 
@@ -56,7 +60,19 @@ def test_knowledge_marks_demo_law_content_as_statutory() -> None:
         return {
             "query": "年假",
             "answer": "依据《职工带薪年休假条例》",
-            "knowledge_items_count": 2,
+            "knowledge_items_count": 1,
+            "sources": [
+                {
+                    "id": "annual_leave_001",
+                    "category": "劳动法规-年休假",
+                    "source": "职工带薪年休假条例（演示摘录）",
+                    "effective_date": "2008-01-01",
+                    "is_demo": True,
+                    "policy_scope": "statutory",
+                }
+            ],
+            "matched_items": ["annual_leave_001"],
+            "not_found": False,
         }
 
     agent.call_tool = success
@@ -83,6 +99,18 @@ def test_knowledge_preserves_explicit_company_policy_scope() -> None:
             "answer": "公司报销流程",
             "knowledge_items_count": 1,
             "policy_scope": "company",
+            "sources": [
+                {
+                    "id": "reimbursement_001",
+                    "category": "公司制度-费用报销",
+                    "source": "演示公司财务报销制度（模拟）",
+                    "effective_date": "2026-01-01",
+                    "is_demo": True,
+                    "policy_scope": "company",
+                }
+            ],
+            "matched_items": ["reimbursement_001"],
+            "not_found": False,
         }
 
     agent.call_tool = success
@@ -114,6 +142,7 @@ def test_knowledge_preserves_sources_and_not_found_metadata() -> None:
                     "category": "公司制度-费用报销",
                     "source": "演示公司财务报销制度（模拟）",
                     "effective_date": "2026-01-01",
+                    "is_demo": True,
                     "policy_scope": "company",
                 }
             ],
@@ -138,7 +167,7 @@ def test_knowledge_preserves_sources_and_not_found_metadata() -> None:
     _validate(result, agent)
 
 
-def test_knowledge_rejects_string_not_found_instead_of_coercing_it() -> None:
+def test_knowledge_v2_preserves_malformed_not_found_for_contract_validation() -> None:
     agent = RemoteKnowledgeAgent()
 
     async def success(**_kwargs):
@@ -152,6 +181,8 @@ def test_knowledge_rejects_string_not_found_instead_of_coercing_it() -> None:
                     "id": "reimbursement_001",
                     "category": "公司制度-费用报销",
                     "source": "演示公司财务报销制度（模拟）",
+                    "effective_date": "2026-01-01",
+                    "is_demo": True,
                     "policy_scope": "company",
                 }
             ],
@@ -160,6 +191,7 @@ def test_knowledge_rejects_string_not_found_instead_of_coercing_it() -> None:
         }
 
     agent.call_tool = success
+
     result = asyncio.run(
         agent.execute(
             [{"name": "knowledge_search_tool"}],
@@ -169,11 +201,104 @@ def test_knowledge_rejects_string_not_found_instead_of_coercing_it() -> None:
         )
     )
 
-    assert result["status"] == "error"
-    assert result["outputs"] == {}
-    assert result["error"]["code"] == "REMOTE_TOOL_ERROR"
-    assert "expected bool, got str" in result["error"]["message"]
-    _validate(result, agent)
+    assert result["outputs"]["policy.info"]["not_found"] == "false"
+    validation = _validation(result, agent)
+    assert not validation.valid
+    assert any(
+        "payload.not_found: expected boolean, got str" in error
+        for error in validation.errors[0].details["errors"]
+    )
+
+
+def test_knowledge_v2_rejects_success_without_verifiable_sources() -> None:
+    agent = RemoteKnowledgeAgent()
+
+    async def inconsistent_success(**_kwargs):
+        return {
+            "query": "报销",
+            "answer": "已检索到知识",
+            "knowledge_items_count": 1,
+            "policy_scope": "company",
+            "sources": [],
+            "matched_items": [],
+            "not_found": False,
+        }
+
+    agent.call_tool = inconsistent_success
+    result = asyncio.run(
+        agent.execute(
+            [{"name": "knowledge_search_tool"}],
+            [],
+            {},
+            Extractor({"query": "报销"}),
+        )
+    )
+
+    validation = _validation(result, agent)
+
+    assert agent.contract.output_schema_refs == {"policy.info": "policy.info@v2"}
+    assert not validation.valid
+    assert validation.errors[0].code == "SCHEMA_VALIDATION_FAILED"
+    assert any(
+        "must be non-empty" in error for error in validation.errors[0].details["errors"]
+    )
+
+
+def test_knowledge_v2_does_not_sanitize_malformed_tool_metadata() -> None:
+    source = {
+        "id": "reimbursement_001",
+        "category": "公司制度-费用报销",
+        "source": "演示公司财务报销制度（模拟）",
+        "effective_date": "2026-01-01",
+        "is_demo": True,
+        "policy_scope": "company",
+    }
+    cases = [
+        (
+            {
+                "sources": [source, "not-a-source"],
+                "matched_items": ["reimbursement_001"],
+            },
+            "payload.sources[1]: expected object",
+        ),
+        (
+            {
+                "sources": [source],
+                "matched_items": [123],
+            },
+            "payload.matched_items[0]: expected string",
+        ),
+    ]
+
+    for metadata, error_fragment in cases:
+        agent = RemoteKnowledgeAgent()
+
+        async def malformed_success(**_kwargs):
+            return {
+                "query": "报销",
+                "answer": "公司报销流程",
+                "knowledge_items_count": 1,
+                "policy_scope": "company",
+                "not_found": False,
+                **metadata,
+            }
+
+        agent.call_tool = malformed_success
+        result = asyncio.run(
+            agent.execute(
+                [{"name": "knowledge_search_tool"}],
+                [],
+                {},
+                Extractor({"query": "报销"}),
+            )
+        )
+        validation = _validation(result, agent)
+
+        assert not validation.valid
+        assert any(
+            error_fragment in error
+            for error in validation.errors[0].details["errors"]
+        )
 
 
 def test_report_returns_generic_markdown_output() -> None:

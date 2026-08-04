@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from src.contracts.agent_contract import AgentContract, DataContractRef
+from src.contracts.agent_schema_catalog import AGENT_SCHEMA_CATALOG
 from src.manager.executor.agent_result_adapter import (
     AgentResultNormalizationError,
     _register_missing_agent_schemas,
@@ -264,11 +265,154 @@ def test_builtin_schema_registration_does_not_replace_existing_schema():
         "properties": {"sentinel": {"type": "string"}},
     }
     registry.register("employee.info@v1", strict_schema)
+    raw_v2_schema = AGENT_SCHEMA_CATALOG["policy.info@v2"]
+    registry.register("policy.info@v2", raw_v2_schema)
 
     _register_missing_agent_schemas(registry)
 
     assert registry.get("employee.info@v1") == strict_schema
+    assert registry.get("policy.info@v2") is raw_v2_schema
     assert registry.has("policy.info@v1")
+
+    valid, errors = registry.validate(
+        {
+            "query": "报销",
+            "answer": "已检索到知识",
+            "knowledge_items_count": 1,
+            "policy_scope": "company",
+            "sources": [],
+            "matched_items": [],
+            "not_found": False,
+        },
+        "policy.info@v2",
+    )
+    assert not valid
+    assert any("must be non-empty" in error for error in errors)
+
+
+def test_direct_v2_registration_uses_builtin_semantic_validator():
+    registry = SchemaRegistry()
+    registry.register("policy.info@v2", AGENT_SCHEMA_CATALOG["policy.info@v2"])
+
+    valid, errors = registry.validate(
+        {
+            "query": "报销",
+            "answer": "已检索到知识",
+            "knowledge_items_count": 1,
+            "policy_scope": "company",
+            "sources": [],
+            "matched_items": [],
+            "not_found": False,
+        },
+        "policy.info@v2",
+    )
+
+    assert not valid
+    assert any("must be non-empty" in error for error in errors)
+
+
+def test_direct_v2_registration_resolves_validator_after_catalog_map_reset(monkeypatch):
+    from src.orchestration import schema_registry as registry_module
+
+    monkeypatch.delitem(
+        registry_module._DEFAULT_SEMANTIC_VALIDATORS,
+        "policy.info@v2",
+        raising=False,
+    )
+    registry = SchemaRegistry()
+    registry.register("policy.info@v2", AGENT_SCHEMA_CATALOG["policy.info@v2"])
+
+    valid, errors = registry.validate(
+        {
+            "query": "报销",
+            "answer": "已检索到知识",
+            "knowledge_items_count": 1,
+            "policy_scope": "company",
+            "sources": [],
+            "matched_items": [],
+            "not_found": False,
+        },
+        "policy.info@v2",
+    )
+
+    assert not valid
+    assert any("must be non-empty" in error for error in errors)
+
+
+def test_weak_custom_v2_schema_fails_closed_without_key_error():
+    registry = SchemaRegistry()
+    registry.register(
+        "policy.info@v2",
+        {
+            "required": ["sentinel"],
+            "properties": {"sentinel": {"type": "string"}},
+        },
+    )
+
+    valid, errors = registry.validate(
+        {"sentinel": "custom"},
+        "policy.info@v2",
+    )
+
+    assert not valid
+    assert any(
+        "missing required field: 'knowledge_items_count'" in error
+        for error in errors
+    )
+
+
+def test_custom_v2_validator_cannot_disable_builtin_invariants():
+    registry = SchemaRegistry()
+    registry.register(
+        "policy.info@v2",
+        AGENT_SCHEMA_CATALOG["policy.info@v2"],
+        semantic_validator=lambda _payload: [],
+    )
+
+    valid, errors = registry.validate(
+        {
+            "query": "报销",
+            "answer": "已检索到知识",
+            "knowledge_items_count": 1,
+            "policy_scope": "company",
+            "sources": [],
+            "matched_items": [],
+            "not_found": False,
+        },
+        "policy.info@v2",
+    )
+
+    assert not valid
+    assert any("must be non-empty" in error for error in errors)
+
+
+def test_normalization_attaches_builtin_validator_to_explicit_registry():
+    registry = SchemaRegistry()
+    registry.register("policy.info@v2", AGENT_SCHEMA_CATALOG["policy.info@v2"])
+
+    with pytest.raises(AgentResultNormalizationError) as exc:
+        normalize_agent_result(
+            _ok(
+                _envelope(
+                    "RemoteKnowledgeAgent",
+                    {
+                        "policy.info": {
+                            "query": "报销",
+                            "answer": "已检索到知识",
+                            "knowledge_items_count": 1,
+                            "policy_scope": "company",
+                            "sources": [],
+                            "matched_items": [],
+                            "not_found": False,
+                        }
+                    },
+                )
+            ),
+            agent_contract=_contract("policy.info", "policy.info@v2"),
+            schema_registry=registry,
+        )
+
+    assert exc.value.code == "SCHEMA_VALIDATION_FAILED"
 
 
 def test_fan_in_schema_backfill_does_not_replace_existing_schema(monkeypatch):
