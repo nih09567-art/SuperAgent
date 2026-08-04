@@ -77,7 +77,7 @@ def test_communication_agent_queries_contacts_then_sends_notification() -> None:
     assert calls[1][1]["to"] == "wangjing@ccb.com,lina@ccb.com"
 
 
-def test_communication_agent_outputs_partial_notification_without_recipients() -> None:
+def test_communication_agent_rejects_notification_without_recipients() -> None:
     class Extractor:
         async def extract(self, **_kwargs):
             return {"subject": "通知"}
@@ -112,7 +112,6 @@ def test_communication_agent_outputs_partial_notification_without_recipients() -
 
     result = asyncio.run(agent.execute(tools, messages, {}, Extractor()))
 
-    assert result["status"] == "success"
-    assert result["recipients"] == []
-    assert [item[0] for item in calls] == ["remote_email_tool"]
-    assert calls[0][1] == {"subject": "通知", "to": "", "body": ""}
+    assert result["status"] == "failed"
+    assert "收件人" in result["error"]
+    assert calls == []

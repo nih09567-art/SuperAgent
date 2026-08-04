@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi.testclient import TestClient
+import pytest
 
 import mock_remote_tool_skill as tool_server
 from mock_remote_tool_skill import _parse_optional_amount, app
@@ -22,53 +23,93 @@ def test_document_amount_parser_accepts_business_placeholders() -> None:
         assert _parse_optional_amount(placeholder) is None
 
 
-def test_email_outputs_available_content_when_recipient_is_missing(
-    monkeypatch, tmp_path
+@pytest.mark.parametrize(
+    ("arguments", "expected_error"),
+    [
+        ({"body": "test body"}, "to is required"),
+        ({"to": "recipient@example.com"}, "body is required"),
+    ],
+)
+def test_email_rejects_missing_recipient_or_body_without_persisting(
+    monkeypatch, tmp_path, arguments, expected_error
 ) -> None:
     monkeypatch.setattr(tool_server, "_EMAIL_CACHE", None)
-    monkeypatch.setattr(tool_server, "_email_path", lambda: tmp_path / "emails.json")
+    email_path = tmp_path / "emails.json"
+    monkeypatch.setattr(tool_server, "_email_path", lambda: email_path)
     response = TestClient(app).post(
         "/tool",
         json={
             "tool": "remote_email_tool",
-            "arguments": {"body": "test body"},
+            "arguments": arguments,
         },
     )
 
     assert response.status_code == 200
     result = response.json()["result"]
-    assert result["status"] == "success"
-    assert result["sent"]["to"] == ""
-    assert result["sent"]["body"] == "test body"
-    assert result["persisted"] is True
-    assert result["external_operation_id"]
-    assert "failure_phase" not in result
-    assert "safe_to_retry" not in result
+    assert result["status"] == "failed"
+    assert result["error"] == expected_error
+    assert result["failure_phase"] == "validation"
+    assert result["safe_to_retry"] is True
+    assert "external_operation_id" not in result
+    assert not email_path.exists()
 
 
-def test_travel_query_outputs_available_records_without_employee(
-    monkeypatch,
+@pytest.mark.parametrize(
+    ("tool_name", "loader_name"),
+    [
+        ("query_leave_record", "_load_leave_applications"),
+        ("query_travel_record", "_load_travel_applications"),
+    ],
+)
+def test_high_sensitivity_record_query_rejects_missing_employee_scope(
+    monkeypatch, tool_name, loader_name
 ) -> None:
-    monkeypatch.setattr(
-        tool_server,
-        "_load_travel_applications",
-        lambda: [
-            {
-                "employee_id": "E001",
-                "employee_name": "李娜",
-                "destination": "上海",
-            }
-        ],
-    )
+    monkeypatch.setattr(tool_server, loader_name, lambda: [{"employee_id": "E001"}])
     response = TestClient(app).post(
         "/tool",
-        json={"tool": "query_travel_record", "arguments": {}},
+        json={"tool": tool_name, "arguments": {}},
     )
 
     assert response.status_code == 200
     result = response.json()["result"]
-    assert result["status"] == "success"
-    assert result["records"][0]["employee_name"] == "李娜"
+    assert result["status"] == "failed"
+    assert result["error"] == "employee_id or employee_name is required"
+    assert "records" not in result
+
+
+def test_document_save_failure_is_not_reported_as_success(
+    monkeypatch, tmp_path
+) -> None:
+    import docx.document
+
+    attempted = {"save": False}
+
+    def fail_save(_document, _path):
+        attempted["save"] = True
+        raise OSError("simulated disk failure")
+
+    monkeypatch.setattr(docx.document.Document, "save", fail_save)
+    response = TestClient(app).post(
+        "/tool",
+        json={
+            "tool": "remote_docx_generator_tool",
+            "arguments": {
+                "template_name": "",
+                "data": {"title": "test document"},
+                "output_filename": str(tmp_path / "cannot-write"),
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert attempted["save"] is True
+    result = response.json()["result"]
+    assert result["status"] == "failed"
+    assert result["file_path"] == ""
+    assert result["partial_result"]["content"]["title"] == "test document"
+    assert result["failure_phase"] == "external_operation"
+    assert result["safe_to_retry"] is False
+    assert "external_operation_id" not in result
 
 
 def test_weather_tool_uses_the_remote_agent_result_contract() -> None:

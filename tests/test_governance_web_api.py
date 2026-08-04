@@ -1,5 +1,7 @@
+from concurrent.futures import ThreadPoolExecutor
 from fastapi.testclient import TestClient
 import pytest
+import threading
 from types import SimpleNamespace
 
 import src.service.web_app as web_app
@@ -10,7 +12,10 @@ from src.orchestration.completion import (
     normalize_input,
     validate_receipt,
 )
-from src.orchestration.reconciliation import get_reconciliation_store
+from src.orchestration.reconciliation import (
+    ReconciliationStore,
+    get_reconciliation_store,
+)
 from src.orchestration.governance import record_governance_event
 from src.robust.task_logger import TaskLogger
 from src.security.approval import get_approval_store
@@ -233,6 +238,48 @@ def test_reconciliation_resume_claim_is_single_use_and_consumed_on_success(
     )
 
 
+def test_reconciliation_resume_claim_is_atomic_across_store_instances(
+    tmp_path,
+) -> None:
+    base_dir = tmp_path / "reconciliations"
+    setup_store = ReconciliationStore(base_dir)
+    request = setup_store.create(
+        user_id="u1",
+        workflow_id="wf-recon",
+        task_id="task-cross-store",
+        step_id="write-1",
+        resume_step=2,
+        agent_name="DocumentAgent",
+        error="external result unknown",
+    )
+    setup_store.resolve(
+        request.reconciliation_id,
+        status="retry_ready",
+        operator="admin",
+    )
+    store_a = ReconciliationStore(base_dir)
+    store_b = ReconciliationStore(base_dir)
+    barrier = threading.Barrier(2)
+
+    def claim(store):
+        barrier.wait()
+        try:
+            result = store.claim_for_resume(
+                task_id="task-cross-store",
+                resume_step=2,
+                operator="admin",
+            )
+            return result.status if result else "none"
+        except ValueError as exc:
+            return str(exc)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        outcomes = list(executor.map(claim, (store_a, store_b)))
+
+    assert outcomes.count("resuming") == 1
+    assert sum("already in progress" in value for value in outcomes) == 1
+
+
 def test_failed_reconciliation_resume_returns_to_ready_state(tmp_path, monkeypatch):
     reconciliation, _ = _reconciliation(tmp_path, monkeypatch)
     store = get_reconciliation_store()
@@ -253,6 +300,179 @@ def test_failed_reconciliation_resume_returns_to_ready_state(tmp_path, monkeypat
     )
 
     assert restored.status == "retry_ready"
+    assert restored.resolution["resume_succeeded"] is False
+
+
+def _patch_resume_dependencies(monkeypatch, events):
+    import src.robust.checkpoint as checkpoint_module
+
+    checkpoint = SimpleNamespace(
+        workflow_id="wf-recon",
+        state={
+            "messages": [{"role": "user", "content": "resume"}],
+            "workflow_mode": "production",
+            "coor_agents": [],
+        },
+    )
+
+    class FakeCheckpointManager:
+        def load_checkpoint(self, **_kwargs):
+            return checkpoint
+
+    class FakeServer:
+        async def _run_agent_workflow_with_resume(self, *_args, **_kwargs):
+            for event in events:
+                if isinstance(event, Exception):
+                    raise event
+                yield event
+
+    monkeypatch.setattr(
+        checkpoint_module, "CheckpointManager", FakeCheckpointManager
+    )
+    monkeypatch.setattr(web_app, "Server", FakeServer)
+
+
+@pytest.mark.parametrize("terminal_status", ["FAILED", "NEEDS_RECONCILIATION"])
+def test_resume_api_restores_reconciliation_after_failed_terminal(
+    tmp_path, monkeypatch, terminal_status
+) -> None:
+    reconciliation, _ = _reconciliation(
+        tmp_path, monkeypatch, task_id=f"task-{terminal_status.lower()}"
+    )
+    store = get_reconciliation_store()
+    store.resolve(
+        reconciliation.reconciliation_id,
+        status="confirmed_succeeded",
+        operator="admin",
+    )
+    _patch_resume_dependencies(
+        monkeypatch,
+        [
+            {
+                "event": "end_of_workflow",
+                "data": {
+                    "task_id": reconciliation.task_id,
+                    "status": terminal_status,
+                },
+            }
+        ],
+    )
+
+    response = _client().post(
+        "/api/tasks/resume",
+        json={
+            "task_id": reconciliation.task_id,
+            "resume_step": reconciliation.resume_step,
+            "user_id": "admin",
+        },
+    )
+
+    assert response.status_code == 200
+    restored = store.get(reconciliation.reconciliation_id)
+    assert restored.status == "confirmed_succeeded"
+    assert restored.resolution["resume_succeeded"] is False
+
+
+def test_resume_api_consumes_reconciliation_only_after_successful_terminal(
+    tmp_path, monkeypatch
+) -> None:
+    reconciliation, _ = _reconciliation(
+        tmp_path, monkeypatch, task_id="task-resume-success"
+    )
+    store = get_reconciliation_store()
+    store.resolve(
+        reconciliation.reconciliation_id,
+        status="confirmed_succeeded",
+        operator="admin",
+    )
+    _patch_resume_dependencies(
+        monkeypatch,
+        [
+            {
+                "event": "end_of_workflow",
+                "data": {
+                    "task_id": reconciliation.task_id,
+                    "status": "SUCCEEDED",
+                },
+            }
+        ],
+    )
+
+    response = _client().post(
+        "/api/tasks/resume",
+        json={
+            "task_id": reconciliation.task_id,
+            "resume_step": reconciliation.resume_step,
+            "user_id": "admin",
+        },
+    )
+
+    assert response.status_code == 200
+    assert store.get(reconciliation.reconciliation_id).status == "consumed"
+
+
+def test_resume_api_restores_reconciliation_when_stream_raises(
+    tmp_path, monkeypatch
+) -> None:
+    reconciliation, _ = _reconciliation(
+        tmp_path, monkeypatch, task_id="task-resume-error"
+    )
+    store = get_reconciliation_store()
+    store.resolve(
+        reconciliation.reconciliation_id,
+        status="confirmed_succeeded",
+        operator="admin",
+    )
+    _patch_resume_dependencies(monkeypatch, [RuntimeError("resume failed")])
+
+    with pytest.raises(Exception, match="resume failed"):
+        _client().post(
+            "/api/tasks/resume",
+            json={
+                "task_id": reconciliation.task_id,
+                "resume_step": reconciliation.resume_step,
+                "user_id": "admin",
+            },
+        )
+
+    restored = store.get(reconciliation.reconciliation_id)
+    assert restored.status == "confirmed_succeeded"
+    assert restored.resolution["resume_succeeded"] is False
+
+
+def test_resume_api_restores_reconciliation_when_client_disconnects(
+    tmp_path, monkeypatch
+) -> None:
+    reconciliation, _ = _reconciliation(
+        tmp_path, monkeypatch, task_id="task-resume-disconnect"
+    )
+    store = get_reconciliation_store()
+    store.resolve(
+        reconciliation.reconciliation_id,
+        status="confirmed_succeeded",
+        operator="admin",
+    )
+    _patch_resume_dependencies(
+        monkeypatch,
+        [{"event": "message", "data": {"task_id": reconciliation.task_id}}],
+    )
+
+    async def disconnected(_request):
+        return True
+
+    monkeypatch.setattr(web_app.Request, "is_disconnected", disconnected)
+    response = _client().post(
+        "/api/tasks/resume",
+        json={
+            "task_id": reconciliation.task_id,
+            "resume_step": reconciliation.resume_step,
+            "user_id": "admin",
+        },
+    )
+
+    assert response.status_code == 200
+    restored = store.get(reconciliation.reconciliation_id)
+    assert restored.status == "confirmed_succeeded"
     assert restored.resolution["resume_succeeded"] is False
 
 

@@ -1393,11 +1393,7 @@ def create_app() -> FastAPI:
         async def event_stream() -> AsyncGenerator[str, None]:
             active_task_id: Optional[str] = body.task_id
             disconnected = False
-            reconciled_step_succeeded = bool(
-                resumed_reconciliation
-                and resumed_reconciliation.resolution.get("resume_from_status")
-                == "confirmed_succeeded"
-            )
+            resumed_workflow_succeeded = False
             try:
                 async for event in server._run_agent_workflow_with_resume(
                     agent_request, resume_step=body.resume_step, task_id=body.task_id
@@ -1406,11 +1402,10 @@ def create_app() -> FastAPI:
                     active_task_id = event_data.get("task_id") or active_task_id
                     if (
                         resumed_reconciliation
-                        and event.get("event") == "step_result"
-                        and event_data.get("step_id") == resumed_reconciliation.step_id
+                        and event.get("event") == "end_of_workflow"
                         and str(event_data.get("status") or "").upper() == "SUCCEEDED"
                     ):
-                        reconciled_step_succeeded = True
+                        resumed_workflow_succeeded = True
                     if await request.is_disconnected():
                         disconnected = True
                         break
@@ -1423,7 +1418,9 @@ def create_app() -> FastAPI:
                     try:
                         get_reconciliation_store().finish_resume(
                             resumed_reconciliation.reconciliation_id,
-                            succeeded=reconciled_step_succeeded,
+                            succeeded=(
+                                resumed_workflow_succeeded and not disconnected
+                            ),
                         )
                     except Exception:
                         logging.exception(

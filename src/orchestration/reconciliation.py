@@ -308,7 +308,8 @@ class ReconciliationStore:
     ) -> Optional[ReconciliationRequest]:
         """Atomically claim a manually cleared reconciliation for one resume."""
 
-        with self._lock:
+        with self._lock, FileLock(self._file_lock_path):
+            self._recover_transaction_unlocked()
             matches = [
                 ReconciliationRequest(**item)
                 for item in self.list(task_id=task_id)
@@ -348,7 +349,8 @@ class ReconciliationStore:
     ) -> ReconciliationRequest:
         """Consume a successful resume or restore its ready state on failure."""
 
-        with self._lock:
+        with self._lock, FileLock(self._file_lock_path):
+            self._recover_transaction_unlocked()
             request = self._require(reconciliation_id)
             if request.status != "resuming":
                 return request

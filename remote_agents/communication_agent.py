@@ -82,6 +82,8 @@ class RemoteCommunicationAgent(BaseRemoteAgent):
         email_tool = _tool_by_name(tools, "remote_email_tool")
         if _is_notification_step(messages) and email_tool:
             recipients = _notification_recipients(messages)
+            if not recipients:
+                return {"status": "failed", "error": "通知任务没有可解析的收件人"}
 
             contacts_result: Dict[str, Any] = {"contacts": []}
             if contact_tool and recipients:
@@ -97,6 +99,14 @@ class RemoteCommunicationAgent(BaseRemoteAgent):
                     if str(contact.get("email") or "").strip()
                 )
             )
+            unresolved = contacts_result.get("unresolved_names") or []
+            if unresolved or not emails:
+                return {
+                    "status": "failed",
+                    "error": "通知对象没有可用邮箱",
+                    "unresolved_recipients": unresolved or recipients,
+                    "contact_lookup": contacts_result,
+                }
 
             email_arguments = await parameter_extractor.extract(
                 agent_name=self.name,
@@ -107,17 +117,17 @@ class RemoteCommunicationAgent(BaseRemoteAgent):
             )
             if not isinstance(email_arguments, dict):
                 email_arguments = {}
-            if emails:
-                email_arguments["to"] = ",".join(emails)
-            else:
-                email_arguments.setdefault("to", "")
+            email_arguments["to"] = ",".join(emails)
             email_arguments.setdefault("subject", "")
-            email_arguments.setdefault("body", "")
+            if not str(email_arguments.get("body") or "").strip():
+                return {"status": "failed", "error": "未能生成通知正文"}
 
             sent = await self.call_tool(
                 tool_name="remote_email_tool",
                 arguments=email_arguments,
             )
+            if str(sent.get("status") or "").lower() not in {"success", "succeeded"}:
+                return sent
             return {
                 "status": "success",
                 "message": (
