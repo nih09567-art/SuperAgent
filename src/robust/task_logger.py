@@ -30,6 +30,8 @@ import hashlib
 import hmac
 import json
 import logging
+import os
+import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -59,6 +61,38 @@ def _get_task_logs_dir() -> Path:
     if not logs_dir.exists():
         logs_dir.mkdir(parents=True, exist_ok=True)
     return logs_dir
+
+
+def _atomic_write_json(path: Path, payload: Dict[str, Any]) -> None:
+    """Durably write JSON before atomically publishing it at the final path."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path: Optional[Path] = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as stream:
+            temp_path = Path(stream.name)
+            json.dump(payload, stream, indent=2, ensure_ascii=False, default=str)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temp_path, path)
+    finally:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
+
+
+def _remove_orphaned_temp_files(path: Path) -> None:
+    for temp_path in path.parent.glob(f".{path.name}.*.tmp"):
+        try:
+            temp_path.unlink(missing_ok=True)
+        except OSError:
+            logger.warning("Failed to remove orphaned task log temp file: %s", temp_path)
 
 
 class TaskLogger:
@@ -132,8 +166,8 @@ class TaskLogger:
         with FileLock(task._log_file):
             if task._log_file.exists():
                 return False, cls.load(task_id)
-            with open(task._log_file, "x", encoding="utf-8") as stream:
-                json.dump(task.to_dict(), stream, indent=2, ensure_ascii=False, default=str)
+            _remove_orphaned_temp_files(task._log_file)
+            _atomic_write_json(task._log_file, task.to_dict())
             return True, task
 
     @staticmethod
@@ -590,8 +624,7 @@ class TaskLogger:
     def _flush(self) -> None:
         """Write current log state to disk."""
         try:
-            with open(self._log_file, "w", encoding="utf-8") as f:
-                json.dump(self.to_dict(), f, indent=2, ensure_ascii=False, default=str)
+            _atomic_write_json(self._log_file, self.to_dict())
         except Exception as e:
             logger.error(f"Failed to flush task log: {e}")
 

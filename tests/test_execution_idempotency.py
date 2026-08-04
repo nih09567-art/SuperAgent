@@ -157,6 +157,59 @@ class ExecutionIdempotencyTests(unittest.TestCase):
         self.assertTrue(all(task is not None for _reserved, task in results))
         self.assertTrue(all(task.status == "reserved" for _reserved, task in results))
 
+    def test_interrupted_reservation_write_leaves_no_corrupt_final_log(self):
+        identity = {
+            "task_id": "exec-interrupted-write",
+            "workflow_id": "u1:wf-1",
+            "user_query": "execute approved plan",
+            "attempt_id": "attempt-interrupted",
+            "idempotency_key": "production:interrupted",
+            "plan_hash": "a" * 64,
+            "user_id": "u1",
+            "confirmation_request_id": "confirmation-interrupted",
+        }
+
+        def interrupted_dump(_payload, stream, **_kwargs):
+            stream.write('{"task_id":')
+            stream.flush()
+            raise OSError("simulated process interruption")
+
+        with patch.object(task_logger_mod.json, "dump", side_effect=interrupted_dump):
+            with self.assertRaisesRegex(OSError, "simulated process interruption"):
+                TaskLogger.reserve_execution(**identity)
+
+        log_file = Path(self._temp_dir.name) / "task_logs" / "exec-interrupted-write.json"
+        self.assertFalse(log_file.exists())
+
+        reserved, task = TaskLogger.reserve_execution(**identity)
+        self.assertTrue(reserved)
+        self.assertIsNotNone(task)
+        self.assertEqual(TaskLogger.load(identity["task_id"]).status, "reserved")
+
+    def test_orphaned_partial_temp_file_does_not_lock_confirmation(self):
+        logs_dir = Path(self._temp_dir.name) / "task_logs"
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        orphan = logs_dir / ".exec-orphan.json.crashed.tmp"
+        orphan.write_text('{"task_id":', encoding="utf-8")
+
+        reserved, task = TaskLogger.reserve_execution(
+            task_id="exec-orphan",
+            workflow_id="u1:wf-1",
+            user_query="execute approved plan",
+            attempt_id="attempt-orphan",
+            idempotency_key="production:orphan",
+            plan_hash="a" * 64,
+            user_id="u1",
+            confirmation_request_id="confirmation-orphan",
+        )
+
+        self.assertTrue(reserved)
+        self.assertIsNotNone(task)
+        restored = TaskLogger.load("exec-orphan")
+        self.assertIsNotNone(restored)
+        self.assertEqual(restored.execution_attempt_id, "attempt-orphan")
+        self.assertFalse(orphan.exists())
+
     def test_reserved_task_can_be_finalized_before_workflow_activation(self):
         reserved, task = TaskLogger.reserve_execution(
             task_id="exec-preparation-failed",
