@@ -136,9 +136,7 @@ async function loadSecurityPolicies() {
 async function loadSecurityApprovals() {
     const el = document.getElementById("securityApprovals");
     try {
-        secApprovals = await secFetch("/api/security/approvals", {
-            headers: governanceAuthHeaders(false),
-        });
+        secApprovals = await secFetch("/api/security/approvals");
         renderSecurityApprovals();
     } catch (e) {
         if (el) {
@@ -150,9 +148,7 @@ async function loadSecurityApprovals() {
 async function loadSecurityReconciliations() {
     const el = document.getElementById("securityReconciliations");
     try {
-        secReconciliations = await secFetch("/api/security/reconciliations", {
-            headers: governanceAuthHeaders(false),
-        });
+        secReconciliations = await secFetch("/api/security/reconciliations");
         renderSecurityReconciliations();
     } catch (e) {
         if (el) {
@@ -160,20 +156,6 @@ async function loadSecurityReconciliations() {
         }
     }
 }
-
-function governanceAuthHeaders(includeJson = true) {
-    let token = window.sessionStorage.getItem("governanceAdminApiKey") || "";
-    if (!token) {
-        token = window.prompt("请输入治理管理员凭据：", "") || "";
-        if (!token) throw new Error("未提供治理管理员凭据");
-        window.sessionStorage.setItem("governanceAdminApiKey", token);
-    }
-    const headers = { "Authorization": `Bearer ${token}` };
-    if (includeJson) headers["Content-Type"] = "application/json";
-    return headers;
-}
-
-window.getGovernanceAuthHeaders = governanceAuthHeaders;
 
 async function decideSecurityReconciliation(reconciliationId, decision) {
     let externalOperationId = "";
@@ -232,7 +214,7 @@ async function decideSecurityReconciliation(reconciliationId, decision) {
         `/api/security/reconciliations/${encodeURIComponent(reconciliationId)}/${decision}`,
         {
             method: "POST",
-            headers: governanceAuthHeaders(),
+            headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
                 comment,
                 external_operation_id: externalOperationId.trim(),
@@ -242,9 +224,6 @@ async function decideSecurityReconciliation(reconciliationId, decision) {
     );
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
-        if (response.status === 401) {
-            window.sessionStorage.removeItem("governanceAdminApiKey");
-        }
         throw new Error(data.detail || `HTTP ${response.status}`);
     }
     await loadSecurityReconciliations();
@@ -366,15 +345,12 @@ async function decideSecurityApproval(approvalId, decision) {
         `/api/security/approvals/${encodeURIComponent(approvalId)}/${decision}`,
         {
             method: "POST",
-            headers: governanceAuthHeaders(),
+            headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ comment }),
         }
     );
     if (!response.ok) {
         const data = await response.json().catch(() => ({}));
-        if (response.status === 401) {
-            window.sessionStorage.removeItem("governanceAdminApiKey");
-        }
         throw new Error(data.detail || `HTTP ${response.status}`);
     }
     await loadSecurityApprovals();
@@ -625,12 +601,16 @@ function renderPolicies() {
 
 function renderLastDeniedEvent() {
     const el = document.getElementById("securityLastDenied");
+    const card = document.getElementById("securityLastDeniedCard");
     if (!el) return;
 
     if (!secLastDeniedEvents.length) {
-        el.innerHTML = '<div class="sec-empty">No permission-denied events yet.</div>';
+        if (card) card.hidden = true;
+        el.replaceChildren();
         return;
     }
+
+    if (card) card.hidden = false;
 
     el.innerHTML = secLastDeniedEvents.map((d, idx) => {
         const policy = d.policy_result || {};
@@ -679,7 +659,32 @@ function renderRuleCondition(cond) {
 
 // Event Handlers
 
+function bindSecurityCollapseButton(buttonId, contentId, defaultCollapsed) {
+    const button = document.getElementById(buttonId);
+    const content = document.getElementById(contentId);
+    if (!button || !content) return;
+
+    const update = (collapsed) => {
+        content.hidden = collapsed;
+        button.setAttribute("aria-expanded", String(!collapsed));
+        const label = button.querySelector(".sec-collapse-label");
+        const icon = button.querySelector(".sec-collapse-icon");
+        if (label) label.textContent = collapsed ? "展开" : "收起";
+        if (icon) icon.textContent = collapsed ? "⌄" : "⌃";
+    };
+
+    update(defaultCollapsed);
+    button.addEventListener("click", () => update(!content.hidden));
+}
+
 function initSecurityTab() {
+    bindSecurityCollapseButton("toggleToolAccessBtn", "toolAccessGrid", false);
+    bindSecurityCollapseButton(
+        "toggleAdvancedSecurityBtn",
+        "advancedSecurityContent",
+        true
+    );
+
     const sel = document.getElementById("securityUserSelect");
     if (sel) {
         sel.addEventListener("change", () => {

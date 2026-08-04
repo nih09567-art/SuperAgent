@@ -36,10 +36,6 @@ from src.orchestration.completion import (
 )
 from src.orchestration.reconciliation import get_reconciliation_store
 from src.security.approval import get_approval_store
-from src.security.cleanup_capabilities import (
-    CleanupCapabilityError,
-    get_cleanup_capability_store,
-)
 from config.s_abac_demo_users import get_demo_user, list_demo_users, get_user_available_agents
 from config.s_abac_config import (
     AGENT_SECURITY_ATTRIBUTES,
@@ -57,7 +53,6 @@ from src.service.env import (
     SCHEDULER_RETRY_JITTER_RATIO,
     USE_MCP_TOOLS,
     WORKFLOW_SKILL_ADMIN_API_KEY,
-    GOVERNANCE_ADMIN_API_KEY,
     GOVERNANCE_ADMIN_ACTOR_ID,
 )
 from src.memory import get_memory_manager
@@ -212,128 +207,12 @@ def _require_governance_reviewer(actor_id: str) -> dict[str, Any]:
     return profile
 
 
-def _authenticate_governance_operator(
-    authorization: Optional[str] = Header(default=None),
-) -> str:
-    """Return the server-owned governance principal for a valid credential."""
+def _trusted_governance_operator() -> str:
+    """Return the server-owned trusted principal for governance actions."""
 
-    configured = str(GOVERNANCE_ADMIN_API_KEY or "")
-    if not configured:
-        raise HTTPException(
-            status_code=503,
-            detail="governance mutation credential is not configured",
-        )
-    scheme, separator, supplied = (authorization or "").partition(" ")
-    if (
-        not separator
-        or scheme.casefold() != "bearer"
-        or not hmac.compare_digest(supplied, configured)
-    ):
-        raise HTTPException(
-            status_code=401,
-            detail="governance mutation authentication failed",
-        )
     actor_id = str(GOVERNANCE_ADMIN_ACTOR_ID or "").strip()
     _require_governance_reviewer(actor_id)
     return actor_id
-
-
-def _authorize_runtime_cleanup(
-    *,
-    task_id: str = "",
-    workflow_id: str = "",
-    owner_token: str = "",
-    authorization: str = "",
-) -> str:
-    """Accept a resource-owner capability or a governance-admin credential."""
-
-    capabilities = get_cleanup_capability_store()
-    if task_id and capabilities.authorize_task(task_id, owner_token):
-        return "task_owner"
-    if workflow_id and capabilities.authorize_workflow(workflow_id, owner_token):
-        return "workflow_owner"
-    if authorization:
-        return _authenticate_governance_operator(authorization)
-    raise HTTPException(
-        status_code=401,
-        detail="runtime cleanup authentication failed",
-    )
-
-
-def _bind_runtime_cleanup_capability(
-    *,
-    token: str,
-    user_id: str,
-    workflow_id: str,
-    task_id: str = "",
-    trusted_new_task_id: str = "",
-) -> None:
-    if not token or not workflow_id:
-        return
-    try:
-        get_cleanup_capability_store().bind(
-            token=token,
-            user_id=user_id,
-            workflow_id=workflow_id,
-            task_id=task_id,
-            allow_new_workflow=not _workflow_has_persisted_records(
-                workflow_id,
-                excluding_task_id=trusted_new_task_id,
-            ),
-        )
-    except CleanupCapabilityError as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
-
-
-def _workflow_has_persisted_records(
-    workflow_id: str, *, excluding_task_id: str = ""
-) -> bool:
-    """Whether a workflow predates the requesting cleanup capability."""
-
-    excluded = str(excluding_task_id or "")
-    for task in TaskLogger.list_tasks(workflow_id=workflow_id):
-        if str(task.get("task_id") or "") != excluded:
-            return True
-    for approval in get_approval_store().list(workflow_id=workflow_id):
-        if str(approval.get("task_id") or "") != excluded:
-            return True
-    for reconciliation in get_reconciliation_store().list():
-        if (
-            str(reconciliation.get("workflow_id") or "") == workflow_id
-            and str(reconciliation.get("task_id") or "") != excluded
-        ):
-            return True
-    return False
-
-
-def _task_record_owner_ids(task_id: str) -> set[str]:
-    """Collect trusted owners from persisted task and governance records."""
-
-    owners: set[str] = set()
-    task = TaskLogger.load(task_id)
-    if task is not None:
-        owner, _ = _parse_workflow_id(str(task.workflow_id or ""))
-        if owner:
-            owners.add(owner)
-    for item in get_approval_store().list(task_id=task_id):
-        if item.get("user_id"):
-            owners.add(str(item["user_id"]))
-    for item in get_reconciliation_store().list(task_id=task_id):
-        if item.get("user_id"):
-            owners.add(str(item["user_id"]))
-    return owners
-
-
-def _authorize_task_cleanup(task_id: str, actor_id: str) -> None:
-    profile = _governance_actor_profile(actor_id)
-    if _is_governance_reviewer(profile):
-        return
-    owners = _task_record_owner_ids(task_id)
-    if not owners or str(actor_id) not in owners:
-        raise HTTPException(
-            status_code=403,
-            detail="task does not belong to the selected user",
-        )
 
 
 def _static_resource_precheck(
@@ -820,40 +699,14 @@ def create_app() -> FastAPI:
     @app.post("/api/workflows/run")
     async def run_workflow(request: Request, body: AgentRequest):
         server = Server()
-        cleanup_token = str(request.headers.get("X-Task-Owner-Token") or "")
-        if body.workflow_id:
-            _bind_runtime_cleanup_capability(
-                token=cleanup_token,
-                user_id=body.user_id,
-                workflow_id=body.workflow_id,
-            )
 
         async def event_stream() -> AsyncGenerator[str, None]:
             active_task_id: Optional[str] = None
-            bound_records: set[tuple[str, str]] = set()
             disconnected = False
             try:
                 async for event in server._run_agent_workflow(body):
                     event_data = event.get("data") or {}
                     active_task_id = event_data.get("task_id") or active_task_id
-                    active_workflow_id = str(
-                        event_data.get("workflow_id") or body.workflow_id or ""
-                    )
-                    binding = (active_workflow_id, str(active_task_id or ""))
-                    if (
-                        cleanup_token
-                        and active_workflow_id
-                        and (body.workflow_id or active_task_id)
-                        and binding not in bound_records
-                    ):
-                        _bind_runtime_cleanup_capability(
-                            token=cleanup_token,
-                            user_id=body.user_id,
-                            workflow_id=active_workflow_id,
-                            task_id=str(active_task_id or ""),
-                            trusted_new_task_id=str(active_task_id or ""),
-                        )
-                        bound_records.add(binding)
                     if await request.is_disconnected():
                         disconnected = True
                         break
@@ -1304,7 +1157,6 @@ def create_app() -> FastAPI:
         task_id: str,
         event_type: Optional[str] = None,
         step_id: Optional[str] = None,
-        _operator: str = Depends(_authenticate_governance_operator),
     ):
         """Return the append-only governance timeline for one task."""
         return get_governance_event_store().list(
@@ -1487,19 +1339,10 @@ def create_app() -> FastAPI:
         )
 
     @app.delete("/api/tasks/{task_id}")
-    async def delete_task(
-        task_id: str,
-        authorization: Optional[str] = Header(default=None),
-        x_task_owner_token: Optional[str] = Header(default=None),
-    ):
+    async def delete_task(task_id: str):
         """
         Delete a task's operational history and Security queue records.
         """
-        _authorize_runtime_cleanup(
-            task_id=task_id,
-            owner_token=str(x_task_owner_token or ""),
-            authorization=str(authorization or ""),
-        )
         try:
             deleted = _delete_task_runtime_records(task_id)
             if not any(deleted.values()):
@@ -1507,7 +1350,6 @@ def create_app() -> FastAPI:
                     status_code=404,
                     detail=f"Task runtime records not found: {task_id}",
                 )
-            get_cleanup_capability_store().delete_task_binding(task_id)
             return {
                 "result": "success",
                 "task_id": task_id,
@@ -1521,9 +1363,8 @@ def create_app() -> FastAPI:
 
     @app.delete("/api/conversation-history")
     async def delete_conversation_history(
-        workflow_id: str,
-        authorization: Optional[str] = Header(default=None),
-        x_task_owner_token: Optional[str] = Header(default=None),
+        workflow_id: Optional[str] = None,
+        user_id: Optional[str] = None,
     ):
         """Remove orphan Security records for a deleted browser conversation.
 
@@ -1531,31 +1372,39 @@ def create_app() -> FastAPI:
         are deleted only through the exact ``/api/tasks/{task_id}`` endpoint.
         """
 
-        owner_id, _ = _parse_workflow_id(workflow_id)
-        if not owner_id:
-            raise HTTPException(status_code=400, detail="invalid workflow id")
-        _authorize_runtime_cleanup(
-            workflow_id=workflow_id,
-            owner_token=str(x_task_owner_token or ""),
-            authorization=str(authorization or ""),
+        normalized_workflow_id = str(workflow_id or "").strip()
+        normalized_user_id = str(user_id or "").strip()
+        if not normalized_workflow_id and not normalized_user_id:
+            raise HTTPException(
+                status_code=400,
+                detail="workflow_id or user_id is required",
+            )
+        if normalized_workflow_id:
+            owner_id, _ = _parse_workflow_id(normalized_workflow_id)
+            if normalized_user_id and owner_id != normalized_user_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail="workflow_id does not belong to user_id",
+                )
+
+        cleanup_scope = (
+            {"workflow_id": normalized_workflow_id}
+            if normalized_workflow_id
+            else {"user_id": normalized_user_id}
         )
 
         # Older browser history entries did not persist exact task ids. Remove
         # their workflow-scoped queue cards, but do not guess which task logs
         # the user intended to delete.
         totals = {
-            "reconciliations": get_reconciliation_store().delete(
-                workflow_id=workflow_id,
-            ),
-            "approvals": get_approval_store().delete(
-                workflow_id=workflow_id,
-            ),
+            "reconciliations": get_reconciliation_store().delete(**cleanup_scope),
+            "approvals": get_approval_store().delete(**cleanup_scope),
         }
-        get_cleanup_capability_store().delete_workflow_binding(workflow_id)
 
         return {
             "result": "success",
-            "workflow_id": workflow_id,
+            "workflow_id": normalized_workflow_id or None,
+            "user_id": normalized_user_id or None,
             "deleted_tasks": 0,
             "deleted": totals,
             "business_outputs_preserved": True,
@@ -1687,7 +1536,6 @@ def create_app() -> FastAPI:
         workflow_id: Optional[str] = None,
         task_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        _operator: str = Depends(_authenticate_governance_operator),
     ):
         return _enrich_governance_queue_items(
             get_approval_store().list(
@@ -1702,7 +1550,7 @@ def create_app() -> FastAPI:
     async def approve_security_request(
         approval_id: str,
         body: ApprovalDecisionRequest,
-        operator: str = Depends(_authenticate_governance_operator),
+        operator: str = Depends(_trusted_governance_operator),
     ):
         try:
             approval = get_approval_store().approve(
@@ -1745,7 +1593,7 @@ def create_app() -> FastAPI:
     async def reject_security_request(
         approval_id: str,
         body: ApprovalDecisionRequest,
-        operator: str = Depends(_authenticate_governance_operator),
+        operator: str = Depends(_trusted_governance_operator),
     ):
         try:
             approval = get_approval_store().reject(
@@ -1779,7 +1627,7 @@ def create_app() -> FastAPI:
         status: Optional[str] = None,
         task_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        _operator: str = Depends(_authenticate_governance_operator),
+        _operator: str = Depends(_trusted_governance_operator),
     ):
         """List uncertain side effects that require an explicit human verdict."""
         store = get_reconciliation_store()
@@ -1840,7 +1688,7 @@ def create_app() -> FastAPI:
     async def retry_reconciliation(
         reconciliation_id: str,
         body: ReconciliationDecisionRequest,
-        operator: str = Depends(_authenticate_governance_operator),
+        operator: str = Depends(_trusted_governance_operator),
     ):
         """Confirm no external effect occurred and release the receipt for retry."""
         reconciliation = _load_reconciliation(reconciliation_id)
@@ -1896,7 +1744,7 @@ def create_app() -> FastAPI:
     async def confirm_reconciliation_succeeded(
         reconciliation_id: str,
         body: ReconciliationDecisionRequest,
-        operator: str = Depends(_authenticate_governance_operator),
+        operator: str = Depends(_trusted_governance_operator),
     ):
         """Confirm the external operation succeeded and complete its receipt."""
         reconciliation = _load_reconciliation(reconciliation_id)
@@ -1956,7 +1804,7 @@ def create_app() -> FastAPI:
     async def freeze_reconciliation(
         reconciliation_id: str,
         body: ReconciliationDecisionRequest,
-        operator: str = Depends(_authenticate_governance_operator),
+        operator: str = Depends(_trusted_governance_operator),
     ):
         try:
             reconciliation = get_reconciliation_store().freeze(
@@ -1989,7 +1837,7 @@ def create_app() -> FastAPI:
     async def terminate_reconciliation(
         reconciliation_id: str,
         body: ReconciliationDecisionRequest,
-        operator: str = Depends(_authenticate_governance_operator),
+        operator: str = Depends(_trusted_governance_operator),
     ):
         try:
             reconciliation = get_reconciliation_store().resolve(
