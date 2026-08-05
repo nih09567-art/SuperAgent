@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import time
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 
 import pytest
 
@@ -80,6 +83,80 @@ def test_export_rejects_path_traversal(tmp_path, relative_dir):
 def test_export_rejects_path_separator_in_filename(tmp_path):
     with pytest.raises(MarkdownArtifactExportError):
         export_markdown_artifact(_report(), tmp_path, filename="../outside.md")
+
+
+@pytest.mark.parametrize(
+    ("filename", "manifest_filename"),
+    [
+        ("same name.md", "same_name.md"),
+        ("Report.md", "report.md"),
+    ],
+)
+def test_export_rejects_report_manifest_filename_collision(
+    tmp_path, filename, manifest_filename
+):
+    with pytest.raises(
+        MarkdownArtifactExportError,
+        match="filename and manifest_filename must be different",
+    ):
+        export_markdown_artifact(
+            _report(),
+            tmp_path,
+            filename=filename,
+            manifest_filename=manifest_filename,
+        )
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_concurrent_different_artifacts_cannot_both_succeed(
+    tmp_path, monkeypatch
+):
+    from src.orchestration import markdown_artifact_exporter as exporter
+
+    original_atomic_write = exporter._atomic_write
+    start = Barrier(2)
+
+    def slow_atomic_write(path, content):
+        if path.name == "final-report.md":
+            time.sleep(0.05)
+        original_atomic_write(path, content)
+
+    monkeypatch.setattr(exporter, "_atomic_write", slow_atomic_write)
+    first = _report(markdown="# first")
+    second = _report(markdown="# second")
+    second.artifact_id = "report-artifact-2"
+    second = second.with_checksum()
+
+    def export(artifact):
+        start.wait(timeout=5)
+        return export_markdown_artifact(artifact, tmp_path)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(export, artifact) for artifact in (first, second)]
+
+    successes = []
+    failures = []
+    for future in futures:
+        try:
+            successes.append(future.result())
+        except Exception as exc:  # both outcomes are asserted below
+            failures.append(exc)
+
+    assert len(successes) == 1
+    assert len(failures) == 1
+    assert isinstance(failures[0], FileExistsError)
+    manifest = json.loads(
+        (tmp_path / "export-manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest == successes[0]
+    expected_markdown = (
+        first.payload["markdown"]
+        if manifest["artifact_id"] == first.artifact_id
+        else second.payload["markdown"]
+    )
+    assert (
+        tmp_path / "final-report.md"
+    ).read_text(encoding="utf-8") == expected_markdown
 
 
 @pytest.mark.parametrize(

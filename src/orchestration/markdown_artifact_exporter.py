@@ -13,6 +13,7 @@ import json
 import os
 import re
 import tempfile
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -25,10 +26,20 @@ DEFAULT_REPORT_FILENAME = "final-report.md"
 DEFAULT_MANIFEST_FILENAME = "export-manifest.json"
 
 _SAFE_COMPONENT_RE = re.compile(r"[^0-9A-Za-z._-]+")
+_EXPORT_LOCKS_GUARD = threading.Lock()
+_EXPORT_LOCKS: dict[str, threading.Lock] = {}
 
 
 class MarkdownArtifactExportError(ValueError):
     """Raised when an Artifact cannot be exported safely."""
+
+
+def _export_lock(destination_dir: Path) -> threading.Lock:
+    """Return the process-local lock that serializes one export directory."""
+
+    key = os.path.normcase(str(destination_dir))
+    with _EXPORT_LOCKS_GUARD:
+        return _EXPORT_LOCKS.setdefault(key, threading.Lock())
 
 
 def _safe_component(value: str, *, label: str) -> str:
@@ -167,6 +178,12 @@ def export_markdown_artifact(
     safe_manifest_filename = _safe_component(
         manifest_filename, label="manifest_filename"
     )
+    # Be conservative across supported filesystems: a demo produced on Linux
+    # may later be copied to a case-insensitive Windows volume.
+    if safe_filename.casefold() == safe_manifest_filename.casefold():
+        raise MarkdownArtifactExportError(
+            "filename and manifest_filename must be different"
+        )
 
     root = Path(output_root)
     root.mkdir(parents=True, exist_ok=True)
@@ -190,31 +207,34 @@ def export_markdown_artifact(
         "relative_path": relative_path,
     }
 
-    if report_path.exists() or manifest_path.exists():
-        if (
-            report_path.exists()
-            and manifest_path.exists()
-            and _existing_manifest_is_same(manifest_path, manifest)
-            and report_path.read_bytes() == payload["markdown"].encode("utf-8")
-        ):
-            return manifest
-        raise FileExistsError(
-            f"refusing to overwrite existing export in {destination_dir}"
-        )
+    # The prototype runs one Python service process.  Serialize the complete
+    # check-and-write transaction for a destination so concurrent requests
+    # cannot both report success while replacing each other's Artifact pair.
+    with _export_lock(destination_dir):
+        if report_path.exists() or manifest_path.exists():
+            if (
+                report_path.exists()
+                and manifest_path.exists()
+                and _existing_manifest_is_same(manifest_path, manifest)
+                and report_path.read_bytes() == payload["markdown"].encode("utf-8")
+            ):
+                return manifest
+            raise FileExistsError(
+                f"refusing to overwrite existing export in {destination_dir}"
+            )
 
-    _atomic_write(report_path, payload["markdown"].encode("utf-8"))
-    try:
-        _atomic_write(
-            manifest_path,
-            (json.dumps(manifest, ensure_ascii=False, indent=2) + "\n").encode(
-                "utf-8"
-            ),
-        )
-    except Exception:
-        # A report without its manifest is not a valid completed export.  The
-        # report itself is left recoverable for inspection; a later retry will
-        # refuse to overwrite it rather than hiding the partial state.
-        raise
+        _atomic_write(report_path, payload["markdown"].encode("utf-8"))
+        try:
+            _atomic_write(
+                manifest_path,
+                (json.dumps(manifest, ensure_ascii=False, indent=2) + "\n").encode(
+                    "utf-8"
+                ),
+            )
+        except Exception:
+            # A report without its manifest is not a valid completed export.
+            # Leave it recoverable; a retry refuses to hide the partial state.
+            raise
     return manifest
 
 

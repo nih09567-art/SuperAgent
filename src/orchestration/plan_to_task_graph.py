@@ -251,6 +251,7 @@ _ANNUAL_LEAVE_AGENT_STEP_IDS = {
     "RemoteKnowledgeAgent": "policy_query",
     "RemoteReportAgent": "generate_report",
 }
+_ANNUAL_LEAVE_REPORT_OUTPUTS = {"employee.info", "policy.info"}
 
 
 def canonicalize_annual_leave_plan(
@@ -632,11 +633,6 @@ def plan_to_task_graph(
                         f"step {step_id!r} depends on unknown step "
                         f"{source_step!r}"
                     )
-                if step_position[resolved] >= idx:
-                    raise TaskGraphValidationError(
-                        f"step {step_id!r} input binding source step "
-                        f"{source_step!r} must appear before the consumer"
-                    )
                 available_outputs, producer_contract = producer_outputs(resolved)
                 if source_output and available_outputs and str(source_output) not in available_outputs:
                     raise TaskGraphValidationError(
@@ -723,15 +719,34 @@ def plan_to_task_graph(
                             f"schema {assembly_schema!r} does not match "
                             f"trusted schema {expected_schema!r}"
                         )
-                if (
-                    parameter_name == "report.sources"
-                    and isinstance(binding.get("source_artifacts"), list)
-                    and len(binding["source_artifacts"]) < 2
+                if parameter_name == "report.sources" and isinstance(
+                    binding.get("source_artifacts"), list
                 ):
-                    raise TaskGraphValidationError(
-                        "report.sources fan-in must contain at least two "
-                        "upstream Artifacts"
-                    )
+                    source_outputs = [
+                        str(source.get("source_output") or "")
+                        for source in binding["source_artifacts"]
+                        if isinstance(source, dict)
+                    ]
+                    # report.sources is also used by generic reports.  Apply
+                    # the fixed annual-leave evidence contract only when this
+                    # fan-in enters that vocabulary.
+                    if _ANNUAL_LEAVE_REPORT_OUTPUTS.intersection(source_outputs):
+                        missing = sorted(
+                            output
+                            for output in _ANNUAL_LEAVE_REPORT_OUTPUTS
+                            if source_outputs.count(output) == 0
+                        )
+                        duplicates = sorted(
+                            output
+                            for output in _ANNUAL_LEAVE_REPORT_OUTPUTS
+                            if source_outputs.count(output) > 1
+                        )
+                        if missing or duplicates:
+                            raise TaskGraphValidationError(
+                                "annual-leave report.sources must contain exactly "
+                                "one employee.info and one policy.info Artifact; "
+                                f"missing={missing!r}, duplicates={duplicates!r}"
+                            )
 
         # ``depends_on`` is an execution-order edge.  For a governed Agent
         # chain it must also carry the producer Artifact into the consumer.

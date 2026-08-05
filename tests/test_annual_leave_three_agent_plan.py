@@ -167,6 +167,14 @@ ANNUAL_QUERY = (
     "mutation",
     [
         lambda plan: plan[2]["inputs"][0]["source_artifacts"].pop(),
+        lambda plan: plan[2]["inputs"][0]["source_artifacts"].__setitem__(
+            1,
+            {
+                "source_step": "hr_query",
+                "source_output": "employee.info",
+                "schema_ref": "employee.info@v1",
+            },
+        ),
         lambda plan: plan[2]["inputs"][0]["source_artifacts"][0].update(
             source_step="missing_step"
         ),

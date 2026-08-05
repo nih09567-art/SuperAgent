@@ -53,7 +53,7 @@ def test_report_agent_locks_tool_data_to_scheduler_fan_in(monkeypatch) -> None:
         },
         {
             "logical_name": "policy.info",
-            "schema_ref": "policy.info@v1",
+            "schema_ref": "policy.info@v2",
             "payload": {"answer": "五天"},
         },
     ]
@@ -95,3 +95,45 @@ def test_report_agent_locks_tool_data_to_scheduler_fan_in(monkeypatch) -> None:
     assert captured["title"] == "真实汇总"
     assert captured["instruction"] == "严格使用两个来源"
     assert result["outputs"]["report.markdown"]["source_count"] == 2
+
+
+def test_report_agent_rejects_duplicate_employee_source_without_policy(
+    monkeypatch,
+) -> None:
+    agent = RemoteReportAgent()
+    employee = {
+        "logical_name": "employee.info",
+        "schema_ref": "employee.info@v1",
+        "payload": {"records": [{"name": "王强"}]},
+    }
+    brief = {
+        "resolved_inputs": {
+            "report.sources": {
+                "sources": [employee, dict(employee)],
+                "title": "年度假汇总",
+                "instruction": "依据政策判断年假天数",
+            }
+        }
+    }
+
+    async def unexpected_call(**_kwargs):
+        raise AssertionError("invalid annual-leave sources must not call the tool")
+
+    monkeypatch.setattr(agent, "call_tool", unexpected_call)
+    result = asyncio.run(
+        agent.execute(
+            tools=[{"name": "remote_report_builder_tool"}],
+            messages=[
+                {
+                    "role": "user",
+                    "content": "EXECUTION_CONTEXT\n"
+                    + json.dumps(brief, ensure_ascii=False),
+                }
+            ],
+            context={},
+            parameter_extractor=FakeExtractor(),
+        )
+    )
+
+    assert result["status"] == "error"
+    assert result["error"]["code"] == "REPORT_TOOL_ERROR"

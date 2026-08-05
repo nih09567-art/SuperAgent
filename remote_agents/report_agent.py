@@ -15,6 +15,11 @@ from .base_agent import BaseRemoteAgent
 
 logger = logging.getLogger(__name__)
 
+_ANNUAL_LEAVE_SOURCE_SCHEMAS = {
+    "employee.info": "employee.info@v1",
+    "policy.info": "policy.info@v2",
+}
+
 
 class _ReportOutputValidationError(ValueError):
     """The remote report tool returned a structurally unsafe result."""
@@ -110,6 +115,27 @@ def _resolved_report_sources(messages: List[Dict[str, Any]]) -> Dict[str, Any] |
     return None
 
 
+def _validate_annual_leave_sources(sources: List[Dict[str, Any]]) -> None:
+    """Fail closed when an annual-leave fan-in is incomplete or duplicated."""
+
+    logical_names = [
+        str(source.get("logical_name") or "")
+        for source in sources
+        if isinstance(source, dict)
+    ]
+    if not set(_ANNUAL_LEAVE_SOURCE_SCHEMAS).intersection(logical_names):
+        return
+    for logical_name, schema_ref in _ANNUAL_LEAVE_SOURCE_SCHEMAS.items():
+        matches = [
+            source
+            for source in sources
+            if isinstance(source, dict)
+            and source.get("logical_name") == logical_name
+        ]
+        if len(matches) != 1 or matches[0].get("schema_ref") != schema_ref:
+            raise ValueError("annual-leave report sources are incomplete or invalid")
+
+
 class RemoteReportAgent(BaseRemoteAgent):
     """Report Agent for generating reports."""
 
@@ -165,6 +191,7 @@ class RemoteReportAgent(BaseRemoteAgent):
                     raise ValueError(
                         "report.sources must contain at least one upstream source"
                     )
+                _validate_annual_leave_sources(sources)
                 arguments = {
                     "data": sources,
                     "title": str(report_sources.get("title") or "分析报告"),

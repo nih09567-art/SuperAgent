@@ -615,6 +615,17 @@ async def _validate_plan_data_flow(steps: list, user_id: str) -> tuple[bool, lis
     # rejecting a plan whose upstream Agent already produces the exact field.
     available_outputs = set()
     available_output_sources: dict[str, str] = {}
+    structural_source_steps: dict[str, dict] = {}
+    for candidate in steps:
+        if not isinstance(candidate, dict):
+            continue
+        references = {
+            str(candidate.get("step_id") or ""),
+            str(candidate.get("subtask_id") or ""),
+        }
+        references.update(_step_subtask_ids(candidate))
+        for reference in references - {""}:
+            structural_source_steps[reference] = candidate
 
     for step_idx, step in enumerate(steps):
         agent_name = step.get("agent_name")
@@ -689,27 +700,47 @@ async def _validate_plan_data_flow(steps: list, user_id: str) -> tuple[bool, lis
                     )
                     continue
 
-                # Verify source_step exists in previous steps
+                # Structural step/subtask ids are unambiguous and may point to
+                # a later list entry; TaskGraph validation/topological sorting
+                # determines execution order.  Legacy Agent-name aliases stay
+                # backward-only because one Agent may own multiple steps.
                 source_found = False
-                for prev_idx in range(step_idx):
-                    prev_step = steps[prev_idx]
-                    source_references = {
-                        str(prev_step.get("agent_name") or ""),
-                        str(prev_step.get("step_id") or ""),
-                        str(prev_step.get("subtask_id") or ""),
-                    }
-                    source_references.update(_step_subtask_ids(prev_step))
-                    if str(source_step) in source_references:
+                source_candidate = structural_source_steps.get(str(source_step))
+                if source_candidate is not None:
+                    source_found = True
+                    if source_candidate is step:
+                        errors.append(
+                            f"Step {step_idx + 1} ({agent_name}): Input mapping "
+                            f"references its own source_step '{source_step}'"
+                        )
+                    source_agent = source_candidate.get("agent_name")
+                    source_metadata = agent_metadata.get(source_agent)
+                    if (
+                        source_metadata
+                        and source_output not in source_metadata["produces"]
+                    ):
+                        errors.append(
+                            f"Step {step_idx + 1} ({agent_name}): Input mapping "
+                            f"references '{source_output}' from '{source_step}', but "
+                            f"it produces {source_metadata['produces']}"
+                        )
+                else:
+                    for prev_idx in range(step_idx):
+                        prev_step = steps[prev_idx]
+                        if str(source_step) != str(prev_step.get("agent_name") or ""):
+                            continue
                         source_found = True
-                        source_agent = prev_step.get("agent_name")
-                        source_metadata = agent_metadata.get(source_agent)
+                        source_metadata = agent_metadata.get(
+                            prev_step.get("agent_name")
+                        )
                         if (
                             source_metadata
                             and source_output not in source_metadata["produces"]
                         ):
                             errors.append(
                                 f"Step {step_idx + 1} ({agent_name}): Input mapping "
-                                f"references '{source_output}' from '{source_step}', but "
+                                f"references '{source_output}' from "
+                                f"'{source_step}', but "
                                 f"it produces {source_metadata['produces']}"
                             )
                         break
@@ -717,7 +748,7 @@ async def _validate_plan_data_flow(steps: list, user_id: str) -> tuple[bool, lis
                 if not source_found:
                     errors.append(
                         f"Step {step_idx + 1} ({agent_name}): Input mapping references "
-                        f"source_step '{source_step}' which does not exist in previous steps"
+                        f"unknown source_step '{source_step}'"
                     )
 
         # If the Planner omitted an input mapping but an earlier Agent declares
