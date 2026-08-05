@@ -796,11 +796,39 @@ const appendActiveConversationMessage = (role, content, metadata = {}) => {
   saveActiveConversation();
 };
 
-const captureAssistantConversationContext = () => {
-  if (latestFinalResultText) {
-    appendActiveConversationMessage("assistant", latestFinalResultText);
-    return;
+const replaceLatestAssistantConversationMessage = (content, metadata = {}) => {
+  const normalized = String(content || "").trim();
+  if (!normalized) return false;
+  const lastUserIndex = activeConversationTranscript.findLastIndex(
+    (message) => message.role === "user"
+  );
+  let assistantIndex = -1;
+  for (let index = activeConversationTranscript.length - 1; index > lastUserIndex; index -= 1) {
+    if (activeConversationTranscript[index]?.role === "assistant") {
+      assistantIndex = index;
+      break;
+    }
   }
+  if (assistantIndex < 0) return false;
+  const replacement = {
+    role: "assistant",
+    content: normalized.slice(0, CONVERSATION_MESSAGE_CHAR_LIMIT),
+  };
+  if (Array.isArray(metadata.results) && metadata.results.length) {
+    replacement.results = metadata.results.map((result) => ({
+      agentName: String(result.agentName || "assistant"),
+      content: String(result.content || "").slice(0, CONVERSATION_MESSAGE_CHAR_LIMIT),
+    }));
+  }
+  activeConversationTranscript.splice(assistantIndex, 1, replacement);
+  activeConversationMessages = activeConversationTranscript
+    .slice(-ACTIVE_CONVERSATION_LIMIT)
+    .map((message) => ({ role: message.role, content: message.content }));
+  saveActiveConversation();
+  return true;
+};
+
+const captureAssistantConversationContext = ({ replaceLatest = false } = {}) => {
   const structuredResults = executionStepCards
     .map((card) => {
       const content = String(card.content || "").trim();
@@ -835,11 +863,17 @@ const captureAssistantConversationContext = () => {
   }
   const cardResults = structuredResults.map((result) => `[${result.agentName}]\n${result.content}`);
   const fallback = executionOutput ? executionOutput.innerText.trim() : "";
-  appendActiveConversationMessage(
-    "assistant",
-    cardResults.join("\n\n") || fallback,
-    { results: structuredResults }
+  const unavailableFinalResult = latestFinalResultText === "工作流未产生可展示的最终结果。";
+  const content = (
+    (!unavailableFinalResult ? latestFinalResultText : "")
+    || cardResults.join("\n\n")
+    || latestFinalResultText
+    || fallback
+    || (replaceLatest ? "任务已恢复并执行成功。" : "")
   );
+  const metadata = { results: structuredResults };
+  if (replaceLatest && replaceLatestAssistantConversationMessage(content, metadata)) return;
+  appendActiveConversationMessage("assistant", content, metadata);
 };
 
 const getChatHistoryKey = (userId) => `${CHAT_HISTORY_KEY_PREFIX}:${encodeURIComponent(userId)}`;
@@ -2614,6 +2648,19 @@ const getDecisionConsoleConversations = () => {
     }
   }
   return conversations.filter((conversation) => conversation.decisions?.length);
+};
+
+const findConversationByTaskId = (userId, taskId, workflowId = "") => {
+  const normalizedTaskId = String(taskId || "").trim();
+  const normalizedWorkflowId = String(workflowId || "").trim();
+  if (!userId || (!normalizedTaskId && !normalizedWorkflowId)) return null;
+  return loadChatHistory(userId).find((conversation) => (
+    (normalizedTaskId && conversation.taskIds.includes(normalizedTaskId))
+    || (normalizedTaskId && conversation.decisions.some(
+      (decision) => decision.taskIds.includes(normalizedTaskId)
+    ))
+    || (normalizedWorkflowId && conversation.workflowId === normalizedWorkflowId)
+  )) || null;
 };
 
 const hideDecisionConsole = () => {
@@ -5890,6 +5937,8 @@ const resumeTask = async ({ inChat = false } = {}) => {
 
   if (inChat) {
     switchTab("chat");
+    clearOutputPhase("executing");
+    resetSummary();
     currentRunContext = "executing";
     executionInProgress = true;
     currentRunHasError = false;
@@ -5918,6 +5967,7 @@ const resumeTask = async ({ inChat = false } = {}) => {
   };
 
   resumeAbortController = new AbortController();
+  let resumeTerminalStatus = "";
   try {
     const response = await fetch("/api/tasks/resume", {
       method: "POST",
@@ -5939,6 +5989,9 @@ const resumeTask = async ({ inChat = false } = {}) => {
 
     const handleResumeEvent = (eventName, payload) => {
       if (inChat) {
+        if (eventName === "end_of_workflow") {
+          resumeTerminalStatus = String(payload.data?.status || "").toUpperCase();
+        }
         handleEvent(eventName, payload);
         return;
       }
@@ -5993,12 +6046,19 @@ const resumeTask = async ({ inChat = false } = {}) => {
     }
   } finally {
     if (inChat) {
+      if (resumeTerminalStatus === "SUCCEEDED" && !currentRunHasError) {
+        captureAssistantConversationContext({ replaceLatest: true });
+        if (currentChatLifecycle) {
+          currentChatLifecycle.confirmPlanButton.textContent = "已执行";
+          currentChatLifecycle.confirmPlanButton.disabled = true;
+          currentChatLifecycle.modifyPlanButton.disabled = true;
+        }
+      }
       currentRunContext = null;
       executionInProgress = false;
       runBtn.disabled = false;
       userIdInput.disabled = false;
       if (newConversationBtn) newConversationBtn.disabled = false;
-      if (!currentRunHasError) captureAssistantConversationContext();
       scrollChatToLatest();
     }
     resumeBtn.disabled = false;
@@ -6067,11 +6127,21 @@ window.resumeApprovedTask = async ({
   resume_step,
   user_id,
 }) => {
+  const resumeUserId = String(user_id || userIdInput.value || "test").trim() || "test";
+  if (userIdInput.value.trim() !== resumeUserId) {
+    userIdInput.value = resumeUserId;
+  }
+  const originalConversation = findConversationByTaskId(
+    resumeUserId,
+    task_id,
+    workflow_id
+  );
+  if (originalConversation) loadConversation(originalConversation);
   selectedTaskId = task_id;
   resumeTaskIdInput.value = task_id || "";
   resumeWorkflowIdInput.value = workflow_id || "";
   resumeStepInput.value = Number(resume_step) || 1;
-  resumeUserIdInput.value = user_id || "test";
+  resumeUserIdInput.value = resumeUserId;
   await resumeTask({ inChat: true });
   if (window.SecurityModule?.loadSecurityApprovals) {
     window.SecurityModule.loadSecurityApprovals();

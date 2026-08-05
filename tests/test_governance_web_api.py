@@ -1174,6 +1174,12 @@ def test_demo_static_assets_disable_stale_cache_and_include_resume_fixes():
     assert script.headers["cache-control"] == "no-store"
     assert "const uniqueOutputs = []" in script.text
     assert 'await resumeTask({ inChat: true })' in script.text
+    assert "const findConversationByTaskId" in script.text
+    assert "if (originalConversation) loadConversation(originalConversation);" in script.text
+    assert 'clearOutputPhase("executing");' in script.text
+    assert 'resumeTerminalStatus === "SUCCEEDED"' in script.text
+    assert "captureAssistantConversationContext({ replaceLatest: true });" in script.text
+    assert "replaceLatestAssistantConversationMessage" in script.text
 
 
 def test_governance_queue_items_include_chinese_friendly_task_context(
