@@ -1,8 +1,10 @@
 from concurrent.futures import ThreadPoolExecutor
 from fastapi.testclient import TestClient
+import json
 import pytest
 import threading
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import src.service.web_app as web_app
 import src.orchestration.reconciliation as reconciliation_module
@@ -963,7 +965,47 @@ def test_task_owner_capability_allows_cleanup_without_governance_admin_key(
     assert TaskLogger.load(task_id) is None
 
 
+def _production_authorization_fields(
+    client, *, user_id: str, workflow_id: str, owner_token: str
+):
+    credential = f"execution-key-{user_id}"
+    with patch.object(
+        web_app,
+        "EXECUTION_USER_API_KEYS_JSON",
+        json.dumps({user_id: credential}),
+    ):
+        response = client.post(
+            "/api/workflows/execution-authorizations",
+            headers={
+                "X-Task-Owner-Token": owner_token,
+                "Authorization": f"Bearer {credential}",
+                "Idempotency-Key": "confirmation-governance-request",
+            },
+            json={
+                "user_id": user_id,
+                "workflow_id": workflow_id,
+                "plan_hash": "a" * 64,
+                "user_query": "test",
+            },
+        )
+    if response.status_code != 200:
+        return response, {}
+    data = response.json()
+    return response, {
+        "execution_task_id": data["task_id"],
+        "execution_attempt_id": data["execution_attempt_id"],
+        "execution_idempotency_key": data["execution_idempotency_key"],
+        "execution_plan_hash": data["execution_plan_hash"],
+        "execution_authorization_token": data["execution_authorization_token"],
+    }
+
+
 def test_workflow_run_binds_browser_cleanup_capability(tmp_path, monkeypatch):
+    import src.robust.task_logger as task_logger_module
+
+    monkeypatch.setattr(
+        task_logger_module, "checkpoints_dir", tmp_path / "checkpoints"
+    )
     monkeypatch.setenv(
         "CLEANUP_CAPABILITY_STORE_PATH", str(tmp_path / "cleanup-capabilities.json")
     )
@@ -976,9 +1018,17 @@ def test_workflow_run_binds_browser_cleanup_capability(tmp_path, monkeypatch):
             }
 
     monkeypatch.setattr(web_app, "Server", FakeServer)
+    monkeypatch.setattr(
+        web_app, "_server_execution_plan_hash", lambda _user, _workflow: "a" * 64
+    )
     token = "owner-capability-token-with-at-least-32-chars"
+    client = TestClient(create_app())
+    authorization, identity = _production_authorization_fields(
+        client, user_id="u1", workflow_id="u1:wf", owner_token=token
+    )
+    assert authorization.status_code == 200
 
-    response = TestClient(create_app()).post(
+    response = client.post(
         "/api/workflows/run",
         headers={"X-Task-Owner-Token": token},
         json={
@@ -991,6 +1041,7 @@ def test_workflow_run_binds_browser_cleanup_capability(tmp_path, monkeypatch):
             "coor_agents": None,
             "workmode": "production",
             "workflow_id": "u1:wf",
+            **identity,
         },
     )
 
@@ -1021,22 +1072,15 @@ def test_unbound_historical_workflow_cannot_be_claimed_by_new_client(
             yield {"event": "done", "data": {}}
 
     monkeypatch.setattr(web_app, "Server", FakeServer)
+    monkeypatch.setattr(
+        web_app, "_server_execution_plan_hash", lambda _user, _workflow: "a" * 64
+    )
     attacker_token = "attacker-capability-token-with-at-least-32-chars"
-
-    response = TestClient(create_app()).post(
-        "/api/workflows/run",
-        headers={"X-Task-Owner-Token": attacker_token},
-        json={
-            "user_id": "victim",
-            "lang": "zh",
-            "messages": [{"role": "user", "content": "claim history"}],
-            "debug": False,
-            "deep_thinking_mode": False,
-            "search_before_planning": False,
-            "coor_agents": None,
-            "workmode": "production",
-            "workflow_id": "victim:history",
-        },
+    response, _ = _production_authorization_fields(
+        TestClient(create_app()),
+        user_id="victim",
+        workflow_id="victim:history",
+        owner_token=attacker_token,
     )
 
     assert response.status_code == 403
@@ -1065,23 +1109,14 @@ def test_unbound_workflow_with_only_governance_records_cannot_be_claimed(
         agent_name="RemoteEmailDispatchAgent",
         error="unknown",
     )
-
-    response = TestClient(create_app()).post(
-        "/api/workflows/run",
-        headers={
-            "X-Task-Owner-Token": "attacker-capability-token-with-at-least-32-chars"
-        },
-        json={
-            "user_id": "victim",
-            "lang": "zh",
-            "messages": [{"role": "user", "content": "claim governance"}],
-            "debug": False,
-            "deep_thinking_mode": False,
-            "search_before_planning": False,
-            "coor_agents": None,
-            "workmode": "production",
-            "workflow_id": workflow_id,
-        },
+    monkeypatch.setattr(
+        web_app, "_server_execution_plan_hash", lambda _user, _workflow: "a" * 64
+    )
+    response, _ = _production_authorization_fields(
+        TestClient(create_app()),
+        user_id="victim",
+        workflow_id=workflow_id,
+        owner_token="attacker-capability-token-with-at-least-32-chars",
     )
 
     assert response.status_code == 403

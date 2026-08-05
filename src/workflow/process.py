@@ -692,6 +692,15 @@ async def run_agent_workflow(
                 reason = "Workflow preparation failed"
             logger.warning(
                 "S-ABAC workflow preparation blocked execution: %s", exc)
+            if task_id:
+                task_logger_loader = getattr(TaskLogger, "load", None)
+                reserved_task = (
+                    task_logger_loader(task_id)
+                    if callable(task_logger_loader)
+                    else None
+                )
+                if reserved_task is not None:
+                    reserved_task.log_workflow_terminal("FAILED", error=error_text)
             yield {
                 "event": "workflow_error",
                 "data": {
@@ -940,9 +949,20 @@ async def _process_workflow(
                 task_id=task_id, workflow_id=workflow_id, user_query=user_query)
             task_logger.set_execution_phase(execution_phase)  # 设置执行阶段
     else:
-        task_logger = TaskLogger(
-            task_id=task_id, workflow_id=workflow_id, user_query=user_query)
-        task_logger.set_execution_phase(execution_phase)  # 设置执行阶段
+        task_logger_loader = getattr(TaskLogger, "load", None)
+        existing_logger = (
+            task_logger_loader(task_id) if callable(task_logger_loader) else None
+        )
+        if existing_logger and existing_logger.status == "reserved":
+            task_logger = existing_logger
+            task_logger.activate_reserved_execution()
+            task_logger.set_execution_phase(execution_phase)
+        elif existing_logger:
+            raise RuntimeError(f"task id already exists: {task_id}")
+        else:
+            task_logger = TaskLogger(
+                task_id=task_id, workflow_id=workflow_id, user_query=user_query)
+            task_logger.set_execution_phase(execution_phase)  # 设置执行阶段
 
     def _reset_resume_evidence(target_state: dict[str, Any]) -> None:
         """Drop stale terminal evidence and keep only pre-resume step evidence."""
