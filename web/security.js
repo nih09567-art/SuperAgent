@@ -51,6 +51,18 @@ function reconciliationReasonZh(item) {
     if (/remote request timeout|timeout/i.test(raw)) {
         return "远程请求超时，系统无法确认外部操作是否已经完成。";
     }
+    if (/side effect succeeded but no durable external operation id was returned/i.test(raw)) {
+        return "外部操作可能已成功，但执行器没有返回可核验的外部操作编号，系统无法自动确认结果。";
+    }
+    if (/side effect succeeded but receipt persistence failed/i.test(raw)) {
+        return "外部操作可能已成功，但执行回执保存失败，系统无法自动确认结果。";
+    }
+    if (/side effect returned but completion condition failed/i.test(raw)) {
+        return "外部操作已经发起，但返回结果未满足完成条件，系统无法确认最终状态。";
+    }
+    if (/succeeded receipt.*output|receipt output/i.test(raw)) {
+        return "外部操作已有成功回执，但回执中的结果数据不完整或无法校验，需要人工核对。";
+    }
     return raw || "外部操作结果不确定，需要人工核对。";
 }
 
@@ -118,7 +130,10 @@ async function loadSecurityStatus() {
 async function loadSecurityUsers() {
     try {
         secUsers = await secFetch("/api/security/users");
-        populateUserSelects();
+        const selectedUserId = populateUserSelects();
+        if (selectedUserId) {
+            await loadUserSecurityProfile(selectedUserId);
+        }
     } catch (e) {
         console.warn("Failed to load security users:", e);
     }
@@ -494,12 +509,22 @@ function renderSecurityStatus() {
 
 function populateUserSelects() {
     const sel = document.getElementById("securityUserSelect");
-    if (!sel) return;
+    if (!sel) return "";
 
-    sel.innerHTML = '<option value="">-- Select demo user --</option>';
+    const requestedUserId = String(
+        document.getElementById("userId")?.value
+        || document.getElementById("demoUserRole")?.value
+        || "admin"
+    ).trim();
+    sel.innerHTML = "";
     secUsers.forEach((u) => {
         sel.innerHTML += `<option value="${u.user_id}">${u.icon} ${u.display_name}</option>`;
     });
+    const selectedUser = secUsers.find((user) => user.user_id === requestedUserId)
+        || secUsers[0];
+    if (!selectedUser) return "";
+    sel.value = selectedUser.user_id;
+    return selectedUser.user_id;
 }
 
 function renderUserProfile() {
@@ -678,7 +703,7 @@ function bindSecurityCollapseButton(buttonId, contentId, defaultCollapsed) {
 }
 
 function initSecurityTab() {
-    bindSecurityCollapseButton("toggleToolAccessBtn", "toolAccessGrid", false);
+    bindSecurityCollapseButton("toggleToolAccessBtn", "toolAccessGrid", true);
     bindSecurityCollapseButton(
         "toggleAdvancedSecurityBtn",
         "advancedSecurityContent",

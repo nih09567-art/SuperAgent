@@ -6,6 +6,7 @@ from src.manager.executor.base import ExecutionContext, ExecutionStatus
 from src.manager.executor.remote import RemoteExecutor
 from src.manager.executor.tool import RemoteToolExecutor
 from src.manager.mcp import normalize_mcp_servers
+from src.security.policy import Subject
 
 
 def test_mcp_sse_api_key_is_exported_and_appended_to_url(monkeypatch):
@@ -180,6 +181,64 @@ def test_remote_agent_request_carries_platform_authorized_tool_manifest():
 
     assert request["context"]["authorized_remote_tools"] == manifest
     assert request["security_context"]["authorized_remote_tools"] == manifest
+
+
+def test_legacy_remote_request_grants_trusted_attribute_admin_wildcard(monkeypatch):
+    """Legacy execution must preserve the bottom-layer admin capability.
+
+    The identity is intentionally not named ``admin``: authorization is driven
+    by trusted subject attributes rather than a username special case.
+    """
+
+    monkeypatch.setattr(
+        "src.security.context.SecurityContextBuilder.subject_for_user",
+        lambda _user_id: Subject(
+            subject_type="user",
+            id="operator-42",
+            attributes={"job_role": "system_orchestrator", "grants": ["all"]},
+        ),
+    )
+    executor = RemoteExecutor()
+    agent = SimpleNamespace(
+        agent_name="RemoteKnowledgeAgent", prompt="", selected_tools=[]
+    )
+    context = ExecutionContext(
+        user_id="operator-42",
+        workflow_id="wf-1",
+        workflow_mode="production",
+    )
+
+    request = executor._build_request(
+        agent, [{"role": "user", "content": "query policy"}], context
+    )
+
+    expected = [
+        {
+            "tool_name": "*",
+            "arguments": {"trusted_administrator": True},
+            "decision": "ALLOW",
+        }
+    ]
+    assert request["context"]["authorized_remote_tools"] == expected
+    assert request["security_context"]["authorized_remote_tools"] == expected
+
+
+def test_legacy_remote_request_does_not_grant_unknown_user_wildcard():
+    executor = RemoteExecutor()
+    agent = SimpleNamespace(
+        agent_name="RemoteKnowledgeAgent", prompt="", selected_tools=[]
+    )
+    context = ExecutionContext(
+        user_id="not-a-configured-user",
+        workflow_id="wf-1",
+        workflow_mode="production",
+    )
+
+    request = executor._build_request(
+        agent, [{"role": "user", "content": "query policy"}], context
+    )
+
+    assert request["context"]["authorized_remote_tools"] == []
 
 
 def test_remote_agent_side_effect_disables_internal_retries():

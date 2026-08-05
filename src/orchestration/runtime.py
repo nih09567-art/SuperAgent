@@ -795,6 +795,8 @@ def _make_real_authorize_step(state: dict):
     async def _authorize_step(*, step, selected_agent, context) -> Any:
         from src.manager import agent_manager
         from src.security.enforcement import enforce_agent_dispatch, enforce_tool_call
+        from src.security.context import SecurityContextBuilder
+        from src.security.policy import is_governance_administrator
         from src.security.remote_tool_gate import required_remote_tool_authorizations
 
         if not selected_agent:
@@ -821,6 +823,9 @@ def _make_real_authorize_step(state: dict):
             intents=list(getattr(step, "intents", []) or []),
             task_profile=state.get("task_profile") or {},
             operation_mode=str(getattr(step, "operation_mode", "read")),
+            trusted_administrator=is_governance_administrator(
+                SecurityContextBuilder.subject_for_user(str(state.get("user_id") or ""))
+            ),
         )
         authorized_manifest = []
         for authorization in tool_authorizations:

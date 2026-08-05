@@ -1,5 +1,6 @@
 import logging
 import json
+import asyncio
 import time
 from copy import deepcopy
 from typing import Any, Dict, Literal, Optional
@@ -87,6 +88,89 @@ def _stringify_stream_chunk(content) -> str:
         return json.dumps(content, ensure_ascii=False)
     except Exception:
         return str(content)
+
+
+def _is_transient_planner_stream_error(exc: BaseException) -> bool:
+    """Recognize transport interruptions that are safe to retry during planning."""
+
+    name = type(exc).__name__.lower()
+    message = str(exc).lower()
+    return name in {
+        "remoteprotocolerror",
+        "readerror",
+        "connecterror",
+        "timeout",
+        "timeouterror",
+    } or any(
+        marker in message
+        for marker in (
+            "incomplete chunked read",
+            "peer closed connection",
+            "connection reset",
+            "temporarily unavailable",
+        )
+    )
+
+
+async def _collect_planner_stream(
+    llm: Any,
+    messages: list[Any],
+    runtime_event_handler: Any,
+    *,
+    max_attempts: int = 2,
+) -> tuple[str, int]:
+    """Collect one planner response with a bounded safe transport retry."""
+
+    for attempt in range(1, max(1, max_attempts) + 1):
+        content = ""
+        chunk_count = 0
+        try:
+            async for chunk in llm.astream(messages):
+                chunk_text = _stringify_stream_chunk(
+                    getattr(chunk, "content", "")
+                )
+                if not chunk_text:
+                    continue
+                content += chunk_text
+                print(chunk_text, end="", flush=True)
+                if callable(runtime_event_handler):
+                    await runtime_event_handler(
+                        {
+                            "event": "planner_delta",
+                            "agent_name": "planner",
+                            "data": {
+                                "delta": {"content": chunk_text},
+                                "full_content": content,
+                                "is_final": False,
+                            },
+                        }
+                    )
+                chunk_count += 1
+            return content, chunk_count
+        except Exception as exc:  # noqa: BLE001 - retry only known transport failures
+            if attempt >= max_attempts or not _is_transient_planner_stream_error(exc):
+                raise
+            logger.warning(
+                "Planner stream connection interrupted; retrying (%s/%s): %s",
+                attempt,
+                max_attempts,
+                exc,
+            )
+            if callable(runtime_event_handler):
+                await runtime_event_handler(
+                    {
+                        "event": "planner_retry",
+                        "agent_name": "planner",
+                        "data": {
+                            "attempt": attempt + 1,
+                            "max_attempts": max_attempts,
+                            "reason": "规划模型连接中断，正在重新生成计划。",
+                            "full_content": "",
+                        },
+                    }
+                )
+            await asyncio.sleep(0.5)
+    raise AssertionError("planner stream retry loop exhausted unexpectedly")
 
 
 def _sanitize_messages(messages):
@@ -290,6 +374,20 @@ _PROFILE_INTENT_AGENT_PREFERENCES = {
     "travel_service": ("RemoteOfficeAssistantAgent",),
 }
 
+_INTENT_PRIMARY_OUTPUTS = {
+    "employee_information_query": "employee.info",
+    "salary_query": "employee.salary",
+    "leave_record_query": "employee.leave_records",
+    "travel_service": "employee.travel_records",
+    "information_research": "research.markdown",
+    "knowledge_lookup": "policy.info",
+    "risk_analysis": "risk.records",
+    "report_generation": "report.markdown",
+    "weather_query": "weather.forecast",
+    "schedule_management": "calendar.result",
+    "meeting_arrangement": "meeting.result",
+}
+
 
 def _normalize_text(value) -> str:
     return str(value or "").strip().lower()
@@ -360,6 +458,21 @@ def _infer_step_intents(step: dict) -> set[str]:
     if not intents and len(compatible) == 1:
         intents.update(compatible)
     return intents
+
+
+def _primary_output_for_step(step: dict, produced_outputs: list[str]) -> str | None:
+    """Choose a registered output only when the step intent makes it exact."""
+
+    produced = _string_list(produced_outputs)
+    if len(produced) == 1:
+        return produced[0]
+    intents = set(_string_list(step.get("intents"))) | _infer_step_intents(step)
+    matches = {
+        _INTENT_PRIMARY_OUTPUTS[intent]
+        for intent in intents
+        if _INTENT_PRIMARY_OUTPUTS.get(intent) in produced
+    }
+    return next(iter(matches)) if len(matches) == 1 else None
 
 
 def _plan_has_intent(steps: list[dict], intent: str) -> bool:
@@ -648,7 +761,60 @@ async def _validate_plan_data_flow(steps: list, user_id: str) -> tuple[bool, lis
         inputs = step.get("inputs", [])
         if not isinstance(inputs, list):
             inputs = []
-            step["inputs"] = inputs
+        # ``dict.get(..., [])`` creates a detached list when the key is absent;
+        # persist it before deterministic bindings are appended.
+        step["inputs"] = inputs
+
+        # ``report.sources`` is a trusted synthetic fan-in contract rather
+        # than an output produced verbatim by one Agent.  When the Planner
+        # supplies dependency edges but omits the verbose mapping, assemble it
+        # deterministically from those prior steps.  Each source is accepted
+        # only when its registered Agent has one unambiguous typed output.
+        existing_params = {
+            item.get("parameter_name")
+            for item in inputs
+            if isinstance(item, dict)
+        }
+        if "report.sources" in required_params and "report.sources" not in existing_params:
+            dependency_refs = {
+                str(value)
+                for value in (step.get("depends_on") or [])
+                if str(value)
+            }
+            source_artifacts = []
+            for prev_step in steps[:step_idx]:
+                prev_refs = {
+                    str(prev_step.get("agent_name") or ""),
+                    str(prev_step.get("step_id") or ""),
+                    str(prev_step.get("subtask_id") or ""),
+                    *_step_subtask_ids(prev_step),
+                }
+                if dependency_refs and not (dependency_refs & prev_refs):
+                    continue
+                prev_metadata = agent_metadata.get(prev_step.get("agent_name")) or {}
+                prev_outputs = _string_list(prev_metadata.get("produces"))
+                source_output = _primary_output_for_step(
+                    prev_step, prev_outputs
+                )
+                if not source_output:
+                    continue
+                source_artifacts.append(
+                    {
+                        "source_step": str(
+                            prev_step.get("step_id")
+                            or prev_step.get("agent_name")
+                        ),
+                        "source_output": source_output,
+                    }
+                )
+            if source_artifacts:
+                inputs.append(
+                    {
+                        "parameter_name": "report.sources",
+                        "source_artifacts": source_artifacts,
+                        "assembly": {"schema_ref": "report.sources@v1"},
+                    }
+                )
         mapped_params = set()
 
         for input_mapping in inputs:
@@ -707,11 +873,24 @@ async def _validate_plan_data_flow(steps: list, user_id: str) -> tuple[bool, lis
                             source_metadata
                             and source_output not in source_metadata["produces"]
                         ):
-                            errors.append(
-                                f"Step {step_idx + 1} ({agent_name}): Input mapping "
-                                f"references '{source_output}' from '{source_step}', but "
-                                f"it produces {source_metadata['produces']}"
+                            canonical_outputs = _string_list(
+                                source_metadata["produces"]
                             )
+                            canonical_output = _primary_output_for_step(
+                                prev_step, canonical_outputs
+                            )
+                            if canonical_output:
+                                # A Planner-authored alias cannot change the
+                                # trusted registry contract. The unique output
+                                # selected by the step intent is deterministic.
+                                source_mapping["source_output"] = canonical_output
+                                source_output = canonical_output
+                            else:
+                                errors.append(
+                                    f"Step {step_idx + 1} ({agent_name}): Input mapping "
+                                    f"references '{source_output}' from '{source_step}', but "
+                                    f"it produces {source_metadata['produces']}"
+                                )
                         break
 
                 if not source_found:
@@ -1257,6 +1436,12 @@ async def _finalize_validated_plan(
             or state.get("USER_QUERY", ""),
             agent_produces=produces,
             agent_contracts=contracts,
+            # Snapshot creation and execution-time verification must derive the
+            # graph from the same trusted TaskProfile context.  Omitting these
+            # subtasks made the approved graph choose an operation mode from
+            # Agent config while the verification rebuild chose the identical
+            # mode from the TaskProfile, causing a false TASK_GRAPH_INVALID.
+            subtasks=(state.get("task_profile") or {}).get("subtasks"),
         )
         unknown = unknown_operation_modes(task_graph)
         if unknown:
@@ -1471,27 +1656,9 @@ async def planner_node(state: State) -> Command[Literal["publisher", "__end__"]]
         logger.info("[PERF] Starting LLM call (model: %s)...", model_type)
 
         # Use async streaming with real-time display
-        response = llm.astream(messages)
-        chunk_count = 0
-        async for chunk in response:
-            chunk_text = _stringify_stream_chunk(getattr(chunk, "content", ""))
-            if chunk_text:
-                content += chunk_text
-                # Real-time streaming output to user
-                print(chunk_text, end="", flush=True)
-                if callable(runtime_event_handler):
-                    await runtime_event_handler(
-                        {
-                            "event": "planner_delta",
-                            "agent_name": "planner",
-                            "data": {
-                                "delta": {"content": chunk_text},
-                                "full_content": content,
-                                "is_final": False,
-                            },
-                        }
-                    )
-                chunk_count += 1
+        content, chunk_count = await _collect_planner_stream(
+            llm, messages, runtime_event_handler
+        )
 
         # Add newline after streaming completes
         if chunk_count > 0:
@@ -1550,28 +1717,9 @@ async def planner_node(state: State) -> Command[Literal["publisher", "__end__"]]
             "[PERF] Polish starting LLM call (model: %s)...", model_type)
 
         # Use async streaming with real-time display for polish mode
-        response = llm.astream(messages)
-        polish_content = ""
-        chunk_count = 0
-        async for chunk in response:
-            chunk_text = _stringify_stream_chunk(getattr(chunk, "content", ""))
-            if chunk_text:
-                polish_content += chunk_text
-                # Real-time streaming output to user
-                print(chunk_text, end="", flush=True)
-                if callable(runtime_event_handler):
-                    await runtime_event_handler(
-                        {
-                            "event": "planner_delta",
-                            "agent_name": "planner",
-                            "data": {
-                                "delta": {"content": chunk_text},
-                                "full_content": polish_content,
-                                "is_final": False,
-                            },
-                        }
-                    )
-                chunk_count += 1
+        polish_content, chunk_count = await _collect_planner_stream(
+            llm, messages, runtime_event_handler
+        )
 
         # Add newline after streaming completes
         if chunk_count > 0:

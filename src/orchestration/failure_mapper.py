@@ -8,6 +8,7 @@ remote responses, payloads, or schema-validator diagnostics.
 from __future__ import annotations
 
 import asyncio
+import re
 from dataclasses import dataclass
 from typing import Any, Mapping
 
@@ -271,6 +272,98 @@ _CONTRACT_RESULT_CODES = {
 }
 
 
+def public_execution_reason(error: Any) -> str | None:
+    """Translate allow-listed execution diagnostics into a safe Chinese reason.
+
+    Remote errors are untrusted and may contain credentials or business data,
+    so arbitrary text is never copied into SSE.  Known platform/provider
+    failure shapes are converted to an explicit reason; unknown text continues
+    to use the catalog fallback and remains available only in server logs.
+    """
+
+    raw = str(error or "").strip()
+    if not raw:
+        return None
+    lowered = raw.lower()
+
+    timeout = re.search(r"timed out after\s+(\d+)s", lowered)
+    if timeout:
+        return f"远程执行器在 {timeout.group(1)} 秒内未返回结果，已按超时处理。"
+    if "timeout" in lowered or "timed out" in lowered:
+        return "远程执行器请求超时，未在规定时间内返回结果。"
+    if "incomplete chunked read" in lowered or "peer closed connection" in lowered:
+        return "上游模型的流式连接在响应完成前中断。"
+    if "rate limit" in lowered or "too many requests" in lowered or "429" in lowered:
+        return "远程服务触发限流，当前请求被服务端拒绝。"
+    if any(marker in lowered for marker in (
+        "network error",
+        "connection refused",
+        "connection reset",
+        "service unavailable",
+        "bad gateway",
+    )):
+        return "远程服务网络连接失败或暂时不可用。"
+    if re.search(r"employee_id\s+or\s+employee_name\s+is\s+required", lowered):
+        return "员工查询缺少员工姓名或员工编号，执行器无法确定查询对象。"
+    if "missing endpoint" in lowered:
+        return "执行器未配置远程服务地址，无法发起请求。"
+    if "tool not found" in lowered:
+        return "计划指定的工具未注册，执行器无法调用该工具。"
+    if "not invokable" in lowered:
+        return "计划指定的工具已注册，但当前不可调用。"
+    if "invalid result payload" in lowered or "invalid result envelope" in lowered:
+        return "远程执行器返回了无法解析的结果格式。"
+    if "operation mode" in lowered and "not allowed" in lowered:
+        return "当前操作模式不在该资源允许的模式范围内。"
+    if any(marker in lowered for marker in (
+        "permission denied",
+        "not authorized",
+        "authorization manifest",
+    )):
+        return "当前用户或执行器没有调用目标资源的权限。"
+    if "validation failed" in lowered or "invalid input" in lowered:
+        return "执行输入未通过校验，请检查该步骤所需字段。"
+    return None
+
+
+def public_policy_reason(payload: Mapping[str, Any] | None) -> str:
+    """Return an explicit Chinese explanation for a policy-owned denial."""
+
+    data = dict(payload or {})
+    policy_result = data.get("policy_result")
+    policy_result = policy_result if isinstance(policy_result, Mapping) else {}
+    reason = str(policy_result.get("reason") or "").strip()
+    lowered = reason.lower()
+
+    if "human approval was rejected" in lowered:
+        return "该操作此前的人工审批已被拒绝。"
+    if "requires human approval" in lowered or "requires review" in lowered:
+        return "该资源或操作风险要求人工审批后才能执行。"
+    if "roles" in lowered and "not in allowed roles" in lowered:
+        return "当前用户角色不在该资源允许的角色范围内。"
+    if "job roles" in lowered and "not in allowed job roles" in lowered:
+        return "当前用户职务角色不在该资源允许的职务范围内。"
+    if "missing required grants" in lowered:
+        return "当前用户缺少该资源要求的授权项。"
+    if "operation mode" in lowered and "not in allowed modes" in lowered:
+        return "当前步骤的操作模式不在该资源允许的模式范围内。"
+    if "clearance insufficient" in lowered:
+        return "当前用户的安全级别低于该资源的敏感级别要求。"
+    if "outside working hours" in lowered:
+        return "该操作仅允许在工作时间执行，当前时间不符合要求。"
+    if "external network" in lowered:
+        return "该操作仅允许从内部网络执行，当前网络区域不符合要求。"
+    if "scenario" in lowered and any(word in lowered for word in ("mismatch", "do not align")):
+        return "当前任务场景与目标资源声明的适用场景不匹配。"
+    if "not in user" in lowered and "available agents" in lowered:
+        return "所选 Agent 不在当前用户可调用的 Agent 列表中。"
+    if "unknown security user" in lowered:
+        return "当前用户未登记安全属性，系统无法完成权限判断。"
+    if "no matching policy" in lowered or "default rule denied" in lowered:
+        return "没有找到允许当前用户执行此操作的权限规则。"
+    return "权限策略拒绝了当前操作，但没有返回可进一步细分的规则原因。"
+
+
 def _code_text(code: str | FailureCode) -> str:
     raw = code.value if isinstance(code, FailureCode) else str(code)
     raw = raw.strip().upper()
@@ -427,8 +520,10 @@ def failure_from_step_result(
         else:
             code = FailureCode.INTERNAL_STEP_ERROR
 
+    public_reason = public_execution_reason(error)
     return make_failure(
         code,
+        message=public_reason,
         step_id=step_id,
         agent_id=selected_agent,
         retryable=retryable,
@@ -464,4 +559,6 @@ __all__ = [
     "failure_from_exception",
     "failure_from_step_result",
     "make_failure",
+    "public_execution_reason",
+    "public_policy_reason",
 ]

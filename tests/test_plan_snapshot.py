@@ -230,6 +230,62 @@ def test_verify_rejects_modified_operation_mode(tmp_path):
     assert tg is None and "task_graph mismatch" in reason
 
 
+def test_verify_accepts_operation_mode_provenance_only_drift(tmp_path):
+    """Diagnostic derivation text must not invalidate an executable graph."""
+    snap = _saved_snapshot(tmp_path)
+    snap["task_graph"]["steps"][0]["operation_mode_source"] = (
+        "older_trusted_derivation"
+    )
+    snap["task_graph"]["steps"][0]["operation_mode_reason"] = (
+        "same read mode derived through an older trusted path"
+    )
+    _reseal(snap)
+
+    tg, reason = _verify(snap)
+
+    assert tg is not None and reason == "ok"
+    assert tg["steps"][0]["operation_mode"] == "read"
+
+
+def test_trusted_administrator_accepts_current_operation_mode_change(tmp_path):
+    snap = _saved_snapshot(tmp_path, steps=[_STEPS[0]])
+    changed_steps = [dict(_STEPS[0], operation_mode="send")]
+
+    ordinary, ordinary_reason = verify_snapshot_for_execution(
+        snap,
+        workflow_id="wf-1",
+        user_id="u1",
+        planning_steps=changed_steps,
+    )
+    trusted, trusted_reason = verify_snapshot_for_execution(
+        snap,
+        workflow_id="wf-1",
+        user_id="u1",
+        planning_steps=changed_steps,
+        allow_trusted_plan_update=True,
+    )
+
+    assert ordinary is None and "task_graph mismatch" in ordinary_reason
+    assert trusted is not None
+    assert trusted_reason == "trusted_administrator_current_plan"
+    assert trusted["steps"][0]["operation_mode"] == "send"
+
+
+def test_trusted_administrator_cannot_replace_real_plan_with_empty_graph(tmp_path):
+    snap = _saved_snapshot(tmp_path, steps=[_STEPS[0]])
+
+    trusted, reason = verify_snapshot_for_execution(
+        snap,
+        workflow_id="wf-1",
+        user_id="u1",
+        planning_steps=[],
+        allow_trusted_plan_update=True,
+    )
+
+    assert trusted is None
+    assert "task_graph mismatch" in reason
+
+
 def test_verify_rejects_modified_preferred_resource_id(tmp_path):
     snap = _saved_snapshot(tmp_path)
     snap["task_graph"]["steps"][0]["preferred_resource_id"] = "EvilAgent"

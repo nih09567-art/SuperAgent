@@ -14,6 +14,8 @@ import src.orchestration.runtime as runtime_mod
 import src.workflow.process as proc
 from src.orchestration.plan_snapshot import save_plan_snapshot
 from src.orchestration.plan_to_task_graph import plan_to_task_graph
+from src.security.context import SecurityContextBuilder
+from src.security.policy import Subject
 from src.skills.workflow_skill import (
     WorkflowSkillManager,
     WorkflowSkillSettings,
@@ -56,6 +58,26 @@ def _production_state():
     }
 
 
+def test_trusted_plan_refresh_is_attribute_driven_not_username(monkeypatch):
+    def _subject_for_user(user_id):
+        return Subject(
+            subject_type="user",
+            id=user_id,
+            attributes={
+                "job_role": "system_orchestrator",
+                "grants": ["all"],
+            },
+        )
+
+    monkeypatch.setattr(
+        SecurityContextBuilder,
+        "subject_for_user",
+        staticmethod(_subject_for_user),
+    )
+
+    assert proc._allows_trusted_plan_refresh("operator-with-any-name") is True
+
+
 def test_t12_production_enters_scheduler_via_snapshot(monkeypatch):
     # A validated snapshot exists for this workflow (as the Planner would have
     # persisted), and the current plan matches it.
@@ -72,6 +94,11 @@ def test_t12_production_enters_scheduler_via_snapshot(monkeypatch):
         proc, "orchestration_scheduler_enabled", True, raising=False)
     monkeypatch.setattr(proc.cache, "get_planning_steps",
                         lambda wf: _STEPS, raising=False)
+    async def _same_uncontracted_registry(_user_id):
+        return {}, {}
+    monkeypatch.setattr(
+        proc, "_trusted_registry_contract_data", _same_uncontracted_registry
+    )
 
     entered = {"v": False}
 
@@ -230,6 +257,11 @@ def test_scheduler_distills_before_terminal_event(tmp_path, monkeypatch):
     monkeypatch.setattr(proc, "get_workflow_skill_manager", lambda: manager)
     monkeypatch.setattr(proc, "orchestration_scheduler_enabled", True, raising=False)
     monkeypatch.setattr(proc.cache, "get_planning_steps", lambda _wf: _STEPS)
+    async def _same_uncontracted_registry(_user_id):
+        return {}, {}
+    monkeypatch.setattr(
+        proc, "_trusted_registry_contract_data", _same_uncontracted_registry
+    )
 
     async def fake_scheduler(state, *, task_id, **_kwargs):
         evidence = {
@@ -410,8 +442,7 @@ def test_t13_scheduler_disabled_uses_legacy_and_does_not_enter_scheduler(monkeyp
     assert entered["v"] is False  # scheduler NOT entered
     end = events[-1]
     assert end["event"] == "end_of_workflow"
-    # Legacy end_of_workflow carries no canonical status field.
-    assert "status" not in end["data"]
+    assert end["data"]["status"] == "SUCCEEDED"
 
 
 def test_t13_code_default_is_off(monkeypatch):

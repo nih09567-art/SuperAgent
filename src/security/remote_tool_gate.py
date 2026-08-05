@@ -63,6 +63,7 @@ def _stable_arguments(task_profile: Mapping[str, Any], intent: str) -> dict[str,
         "employee_id",
         "recipient",
         "recipients",
+        "people",
         "document_type",
         "date",
         "start_date",
@@ -84,8 +85,21 @@ def required_remote_tool_authorizations(
     intents: Iterable[str],
     task_profile: Any,
     operation_mode: str = "read",
+    trusted_administrator: bool = False,
 ) -> list[RemoteToolAuthorization]:
     """Resolve governed remote tools from trusted scheduler-owned fields."""
+
+    if trusted_administrator:
+        # Bottom-layer capability: a governance administrator may use every
+        # tool exposed by the selected registered Agent.  This wildcard is
+        # created only from trusted subject attributes in the scheduler; the
+        # remote service never derives it from a username or model output.
+        return [
+            RemoteToolAuthorization(
+                tool_name="*",
+                arguments={"trusted_administrator": True},
+            )
+        ]
 
     profile = _as_mapping(task_profile)
     resolved: list[RemoteToolAuthorization] = []
@@ -115,10 +129,19 @@ def required_remote_tool_authorizations(
                 continue
             seen.add(tool_name)
             arguments = _stable_arguments(profile, intent)
+            semantic_recipients = arguments.get("recipients") or arguments.get("recipient")
+            if (
+                agent_name == "RemoteCommunicationAgent"
+                and str(semantic_recipients or "").strip()
+                in {"参会人", "所有参会人", "全体参会人", "与会人员", "相关人员"}
+                and arguments.get("people")
+            ):
+                semantic_recipients = arguments["people"]
+                # Both the contact lookup and the email send must be bound to
+                # the concrete participant set used by the Agent.
+                arguments["recipients"] = semantic_recipients
+                arguments.pop("recipient", None)
             if tool_name == "remote_email_tool":
-                semantic_recipients = (
-                    arguments.get("recipients") or arguments.get("recipient")
-                )
                 arguments["resolved_recipient_addresses"] = (
                     resolve_trusted_recipient_addresses(semantic_recipients)
                 )

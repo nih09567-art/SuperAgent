@@ -86,6 +86,20 @@ def test_step_read_only_flag():
     assert _step("w", mode="write").is_read_only is False
 
 
+def test_only_external_mutations_require_provider_receipts():
+    assert TaskStep(
+        step_id="report", operation_mode="generate"
+    ).requires_external_receipt is False
+    assert TaskStep(
+        step_id="document",
+        operation_mode="generate",
+        external_side_effect=True,
+    ).requires_external_receipt is True
+    assert TaskStep(
+        step_id="email", operation_mode="send"
+    ).requires_external_receipt is True
+
+
 def test_completion_condition_and_step_extra_fields():
     step = TaskStep(
         step_id="s1",

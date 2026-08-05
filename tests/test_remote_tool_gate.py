@@ -174,6 +174,39 @@ def test_email_authorization_uses_platform_trusted_recipient_resolution():
     ]
 
 
+def test_trusted_administrator_email_skips_secondary_recipient_rule():
+    resolved = required_remote_tool_authorizations(
+        agent_name="RemoteEmailDispatchAgent",
+        intents=["message_or_email_send"],
+        task_profile={"entities": {"recipient": "王经理"}},
+        operation_mode="send",
+        trusted_administrator=True,
+    )
+
+    assert [(item.tool_name, item.arguments) for item in resolved] == [
+        ("*", {"trusted_administrator": True})
+    ]
+
+
+def test_trusted_administrator_communication_skips_secondary_recipient_rule():
+    resolved = required_remote_tool_authorizations(
+        agent_name="RemoteCommunicationAgent",
+        intents=["message_or_email_send"],
+        task_profile={
+            "entities": {
+                "recipient": "参会人",
+                "people": ["王经理", "李娜"],
+            }
+        },
+        operation_mode="send",
+        trusted_administrator=True,
+    )
+
+    assert [(item.tool_name, item.arguments) for item in resolved] == [
+        ("*", {"trusted_administrator": True})
+    ]
+
+
 def test_email_dispatch_accepts_trusted_name_to_email_resolution(monkeypatch):
     import httpx
 
@@ -404,3 +437,69 @@ def test_remote_agent_accepts_normalized_bound_salary_arguments(monkeypatch):
         assert result["status"] == "success"
     finally:
         reset_authorized_remote_tools(token)
+
+
+def test_record_query_admin_marker_is_injected_only_by_trusted_manifest(monkeypatch):
+    import httpx
+
+    forwarded = []
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"result": {"status": "success", "records": []}}
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, *_args, **kwargs):
+            forwarded.append(kwargs["json"]["arguments"])
+            return FakeResponse()
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **_kwargs: FakeClient())
+
+    ordinary_token = bind_authorized_remote_tools(
+        {
+            "authorized_remote_tools": [
+                {"tool_name": "query_travel_record", "arguments": {}}
+            ]
+        }
+    )
+    try:
+        asyncio.run(
+            BaseRemoteAgent.call_tool(
+                object(),
+                "query_travel_record",
+                {"__trusted_administrator": True},
+            )
+        )
+    finally:
+        reset_authorized_remote_tools(ordinary_token)
+
+    admin_token = bind_authorized_remote_tools(
+        {
+            "authorized_remote_tools": [
+                {
+                    "tool_name": "*",
+                    "arguments": {"trusted_administrator": True},
+                }
+            ]
+        }
+    )
+    try:
+        asyncio.run(
+            BaseRemoteAgent.call_tool(object(), "query_travel_record", {})
+        )
+    finally:
+        reset_authorized_remote_tools(admin_token)
+
+    assert forwarded == [
+        {},
+        {"__trusted_administrator": True},
+    ]

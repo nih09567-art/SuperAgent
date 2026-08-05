@@ -34,6 +34,14 @@ class Subject:
         return int(self.attributes.get("clearance_level", 0) or 0)
 
 
+def is_governance_administrator(subject: Subject) -> bool:
+    """Identify a governance administrator from trusted attributes only."""
+
+    grants = {str(item).lower() for item in subject.get_grants()}
+    job_roles = {str(item).lower() for item in subject.get_job_roles()}
+    return "all" in grants or "system_orchestrator" in job_roles
+
+
 @dataclass
 class Object:
     object_type: str
@@ -198,6 +206,18 @@ class PolicyEngine:
             "approval_level": None,
             "decision": "DENY",
         }
+
+        if is_governance_administrator(subject):
+            result.update(
+                {
+                    "allowed": True,
+                    "reason": "Trusted governance administrator attributes",
+                    "decision": "ALLOW",
+                }
+            )
+            self._finalize_result(result)
+            self._log_audit(subject, object, scenario, action, result, None, None)
+            return result
 
         matched_policy: Optional[Policy] = None
         matched_rule: Optional[Dict[str, Any]] = None
@@ -378,9 +398,7 @@ class PolicyEngine:
         ordinary authorization rules.
         """
 
-        grants = {str(item).lower() for item in subject.get_grants()}
-        job_roles = {str(item).lower() for item in subject.get_job_roles()}
-        return "all" in grants or "system_orchestrator" in job_roles
+        return is_governance_administrator(subject)
 
     @staticmethod
     def _bypasses_environment_constraints(subject: Subject) -> bool:
