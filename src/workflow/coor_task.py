@@ -1178,6 +1178,7 @@ async def _finalize_validated_plan(
     TaskGraph/PlanSnapshot that production execution requires.
     """
 
+    trusted_scenario_contract_id = None
     if steps:
         # The annual-leave defense workflow has a fixed evidence contract.  A
         # real Planner may choose the right Agents and edges while emitting
@@ -1186,8 +1187,14 @@ async def _finalize_validated_plan(
         try:
             from src.orchestration.plan_to_task_graph import (
                 canonicalize_annual_leave_plan,
+                trusted_scenario_contract_for_plan,
             )
 
+            trusted_scenario_contract_id = trusted_scenario_contract_for_plan(
+                steps,
+                user_query=state.get("original_user_query", "")
+                or state.get("USER_QUERY", ""),
+            )
             steps = canonicalize_annual_leave_plan(
                 steps,
                 user_query=state.get("original_user_query", "")
@@ -1310,6 +1317,7 @@ async def _finalize_validated_plan(
             agent_produces=produces,
             agent_contracts=contracts,
             subtasks=(state.get("task_profile") or {}).get("subtasks"),
+            trusted_scenario_contract_id=trusted_scenario_contract_id,
         )
         unknown = unknown_operation_modes(task_graph)
         if unknown:

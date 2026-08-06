@@ -9,10 +9,12 @@ from remote_agents.hr_assistant_agent import RemoteHRAssistantAgent
 from remote_agents.knowledge_agent import RemoteKnowledgeAgent
 from remote_agents.report_agent import RemoteReportAgent
 from src.contracts.agent_schema_catalog import register_agent_schemas
+from src.contracts.scenario_contract import ANNUAL_LEAVE_REPORT_V1
 from src.interface.task_graph import TaskGraphValidationError
 from src.orchestration.plan_to_task_graph import (
     canonicalize_annual_leave_plan,
     plan_to_task_graph,
+    trusted_scenario_contract_for_plan,
 )
 from src.orchestration.schema_registry import SchemaRegistry
 from tests.integration.annual_leave_e2e_harness import _timeline_event
@@ -66,11 +68,16 @@ def _annual_leave_plan() -> list[dict]:
 
 
 def test_annual_leave_plan_has_exact_three_step_contract_fan_in():
+    scenario_contract_id = trusted_scenario_contract_for_plan(
+        _annual_leave_plan(),
+        user_query=ANNUAL_QUERY,
+    )
     graph = plan_to_task_graph(
         _annual_leave_plan(),
         task_id="annual-leave-plan",
         subject="demo_hr_manager",
         agent_contracts=_contracts(),
+        trusted_scenario_contract_id=scenario_contract_id,
     )
 
     assert [step.step_id for step in graph.steps] == [
@@ -89,6 +96,10 @@ def test_annual_leave_plan_has_exact_three_step_contract_fan_in():
     assert by_id["generate_report"].expected_schema_refs == {
         "report.markdown": "report.markdown@v1"
     }
+    assert (
+        by_id["generate_report"].scenario_contract_id
+        == ANNUAL_LEAVE_REPORT_V1
+    )
     assert len(by_id["generate_report"].input_bindings) == 1
     assert {
         (item["source_step"], item["source_output"])
@@ -192,7 +203,47 @@ def test_annual_leave_invalid_fan_in_fails_during_task_graph_conversion(mutation
             plan,
             task_id="annual-leave-invalid",
             agent_contracts=_contracts(),
+            trusted_scenario_contract_id=ANNUAL_LEAVE_REPORT_V1,
         )
+
+
+def test_generic_employee_report_accepts_one_employee_source():
+    plan = [
+        {
+            "step_id": "employee_query",
+            "agent_name": "RemoteHRAssistantAgent",
+            "depends_on": [],
+        },
+        {
+            "step_id": "employee_report",
+            "agent_name": "RemoteReportAgent",
+            "depends_on": ["employee_query"],
+            # A Planner-provided marker is not a trusted scenario contract.
+            "scenario_contract_id": ANNUAL_LEAVE_REPORT_V1,
+            "inputs": [
+                {
+                    "parameter_name": "report.sources",
+                    "source_artifacts": [
+                        {
+                            "source_step": "employee_query",
+                            "source_output": "employee.info",
+                        }
+                    ],
+                    "assembly": {"schema_ref": "report.sources@v1"},
+                }
+            ],
+        },
+    ]
+
+    graph = plan_to_task_graph(
+        plan,
+        task_id="generic-employee-report",
+        agent_contracts=_contracts(),
+    )
+
+    report_step = graph.step_map()["employee_report"]
+    assert report_step.scenario_contract_id is None
+    assert len(report_step.input_bindings[0]["source_artifacts"]) == 1
 
 
 def test_annual_leave_assembly_schema_mismatch_fails_closed():

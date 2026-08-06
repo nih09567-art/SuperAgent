@@ -83,6 +83,9 @@ class TaskStep(BaseModel):
     # for a human/operator; it is never executed blindly as an ordinary retry.
     compensation_action: Optional[Dict[str, Any]] = None
     preferred_resource_id: Optional[str] = None
+    # Platform-owned marker selecting a scenario-specific validation contract.
+    # Planner-authored values are discarded by the plan converter.
+    scenario_contract_id: Optional[str] = None
 
     model_config = ConfigDict(extra="allow")
 

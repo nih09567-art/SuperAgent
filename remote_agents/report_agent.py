@@ -10,6 +10,7 @@ import re
 
 from src.contracts.agent_contract import AgentContract, DataContractRef
 from src.contracts.agent_result import AgentResultError
+from src.contracts.scenario_contract import ANNUAL_LEAVE_REPORT_V1
 
 from .base_agent import BaseRemoteAgent
 
@@ -94,8 +95,8 @@ def _report_external_operation_id(payload: dict[str, Any]) -> str:
     return "report-" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def _resolved_report_sources(messages: List[Dict[str, Any]]) -> Dict[str, Any] | None:
-    """Read the Scheduler-assembled report input without asking an LLM to copy it."""
+def _execution_context_brief(messages: List[Dict[str, Any]]) -> Dict[str, Any] | None:
+    """Read the newest Scheduler-created execution brief."""
 
     for message in reversed(messages or []):
         content = message.get("content") if isinstance(message, dict) else None
@@ -106,24 +107,30 @@ def _resolved_report_sources(messages: List[Dict[str, Any]]) -> Dict[str, Any] |
             brief = json.loads(raw)
         except (TypeError, ValueError, json.JSONDecodeError):
             continue
-        resolved = brief.get("resolved_inputs") if isinstance(brief, dict) else None
-        report_sources = (
-            resolved.get("report.sources") if isinstance(resolved, dict) else None
-        )
-        if isinstance(report_sources, dict):
-            return report_sources
+        if isinstance(brief, dict):
+            return brief
     return None
 
 
-def _validate_annual_leave_sources(sources: List[Dict[str, Any]]) -> None:
+def _resolved_report_sources(messages: List[Dict[str, Any]]) -> Dict[str, Any] | None:
+    """Read the Scheduler-assembled report input without asking an LLM to copy it."""
+
+    brief = _execution_context_brief(messages)
+    resolved = brief.get("resolved_inputs") if isinstance(brief, dict) else None
+    report_sources = (
+        resolved.get("report.sources") if isinstance(resolved, dict) else None
+    )
+    return report_sources if isinstance(report_sources, dict) else None
+
+
+def _validate_annual_leave_sources(
+    sources: List[Dict[str, Any]],
+    *,
+    scenario_contract_id: str,
+) -> None:
     """Fail closed when an annual-leave fan-in is incomplete or duplicated."""
 
-    logical_names = [
-        str(source.get("logical_name") or "")
-        for source in sources
-        if isinstance(source, dict)
-    ]
-    if not set(_ANNUAL_LEAVE_SOURCE_SCHEMAS).intersection(logical_names):
+    if scenario_contract_id != ANNUAL_LEAVE_REPORT_V1:
         return
     for logical_name, schema_ref in _ANNUAL_LEAVE_SOURCE_SCHEMAS.items():
         matches = [
@@ -216,7 +223,13 @@ class RemoteReportAgent(BaseRemoteAgent):
                     raise ValueError(
                         "report.sources must contain at least one upstream source"
                     )
-                _validate_annual_leave_sources(sources)
+                brief = _execution_context_brief(messages) or {}
+                _validate_annual_leave_sources(
+                    sources,
+                    scenario_contract_id=str(
+                        brief.get("scenario_contract_id") or ""
+                    ),
+                )
                 arguments = {
                     "data": sources,
                     "title": str(report_sources.get("title") or "分析报告"),

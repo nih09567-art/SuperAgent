@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
@@ -157,6 +160,85 @@ def test_concurrent_different_artifacts_cannot_both_succeed(
     assert (
         tmp_path / "final-report.md"
     ).read_text(encoding="utf-8") == expected_markdown
+
+
+def test_subprocess_exports_use_cross_process_atomic_claim(tmp_path):
+    project_root = str(__import__("pathlib").Path(__file__).resolve().parents[1])
+    start_path = tmp_path / "start.signal"
+    worker = r"""
+import json
+import sys
+import time
+from pathlib import Path
+
+from src.interface.artifact import Artifact
+from src.orchestration.markdown_artifact_exporter import export_markdown_artifact
+
+output_root, start_file, artifact_id, markdown = sys.argv[1:]
+while not Path(start_file).exists():
+    time.sleep(0.005)
+artifact = Artifact(
+    artifact_id=artifact_id,
+    version=1,
+    logical_name="report.markdown",
+    schema_ref="report.markdown@v1",
+    payload={"title": artifact_id, "markdown": markdown, "source_count": 1},
+    schema_valid=True,
+).with_checksum()
+try:
+    manifest = export_markdown_artifact(artifact, output_root)
+    outcome = {"status": "success", "artifact_id": manifest["artifact_id"]}
+except Exception as exc:
+    outcome = {"status": "error", "error_type": type(exc).__name__}
+print(json.dumps(outcome), flush=True)
+"""
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = project_root
+    processes = [
+        subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                worker,
+                str(tmp_path),
+                str(start_path),
+                artifact_id,
+                markdown,
+            ],
+            cwd=project_root,
+            env=environment,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        for artifact_id, markdown in (
+            ("process-artifact-1", "# process one"),
+            ("process-artifact-2", "# process two"),
+        )
+    ]
+    start_path.write_text("go", encoding="ascii")
+
+    outcomes = []
+    for process in processes:
+        stdout, stderr = process.communicate(timeout=20)
+        assert process.returncode == 0, stderr
+        outcomes.append(json.loads(stdout.strip().splitlines()[-1]))
+
+    assert [item["status"] for item in outcomes].count("success") == 1
+    failure = next(item for item in outcomes if item["status"] == "error")
+    assert failure["error_type"] == "FileExistsError"
+
+    manifest = json.loads(
+        (tmp_path / "export-manifest.json").read_text(encoding="utf-8")
+    )
+    winner = next(item for item in outcomes if item["status"] == "success")
+    assert manifest["artifact_id"] == winner["artifact_id"]
+    expected_markdown = {
+        "process-artifact-1": "# process one",
+        "process-artifact-2": "# process two",
+    }[winner["artifact_id"]]
+    assert (tmp_path / "final-report.md").read_text(encoding="utf-8") == expected_markdown
+    assert list(tmp_path.glob(".markdown-export-*.claim")) == []
 
 
 @pytest.mark.parametrize(

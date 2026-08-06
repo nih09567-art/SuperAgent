@@ -18,6 +18,7 @@ from copy import deepcopy
 from typing import Any, Dict, List, Optional
 
 from src.contracts.agent_contract import AgentContract
+from src.contracts.scenario_contract import ANNUAL_LEAVE_REPORT_V1
 from src.interface.task_graph import (
     CompletionCondition,
     TaskGraph,
@@ -287,6 +288,35 @@ _ANNUAL_LEAVE_AGENT_STEP_IDS = {
 _ANNUAL_LEAVE_REPORT_OUTPUTS = {"employee.info", "policy.info"}
 
 
+def trusted_scenario_contract_for_plan(
+    planning_steps: List[Dict[str, Any]] | None,
+    *,
+    user_query: str = "",
+) -> str | None:
+    """Return a platform-owned contract id for the fixed annual-leave demo."""
+
+    if not isinstance(planning_steps, list):
+        return None
+    query = str(user_query or "").lower()
+    if "王强" not in query or not any(
+        marker in query for marker in ("年假", "年休假", "带薪休假")
+    ):
+        return None
+    if len(planning_steps) != len(_ANNUAL_LEAVE_AGENT_STEP_IDS):
+        return None
+    agent_names = [
+        str(step.get("agent_name") or "")
+        for step in planning_steps
+        if isinstance(step, dict)
+    ]
+    if (
+        set(agent_names) != set(_ANNUAL_LEAVE_AGENT_STEP_IDS)
+        or len(set(agent_names)) != 3
+    ):
+        return None
+    return ANNUAL_LEAVE_REPORT_V1
+
+
 def canonicalize_annual_leave_plan(
     planning_steps: List[Dict[str, Any]] | None,
     *,
@@ -305,23 +335,13 @@ def canonicalize_annual_leave_plan(
     in normal validation.
     """
 
-    if not isinstance(planning_steps, list):
-        return planning_steps
-    query = str(user_query or "").lower()
-    if "王强" not in query or not any(
-        marker in query for marker in ("年假", "年休假", "带薪休假")
-    ):
-        return planning_steps
-    if len(planning_steps) != len(_ANNUAL_LEAVE_AGENT_STEP_IDS):
+    if trusted_scenario_contract_for_plan(
+        planning_steps,
+        user_query=user_query,
+    ) != ANNUAL_LEAVE_REPORT_V1:
         return planning_steps
 
-    agent_names = [
-        str(step.get("agent_name") or "")
-        for step in planning_steps
-        if isinstance(step, dict)
-    ]
-    if set(agent_names) != set(_ANNUAL_LEAVE_AGENT_STEP_IDS) or len(set(agent_names)) != 3:
-        return planning_steps
+    agent_names = [str(step.get("agent_name") or "") for step in planning_steps]
 
     aliases = dict(_ANNUAL_LEAVE_AGENT_STEP_IDS)
     for step, agent_name in zip(planning_steps, agent_names):
@@ -477,6 +497,7 @@ def plan_to_task_graph(
     agent_contracts: Optional[Dict[str, AgentContract | Dict[str, Any]]] = None,
     write_agents: Optional[set[str]] = None,
     subtasks: Optional[List[Dict[str, Any]]] = None,
+    trusted_scenario_contract_id: Optional[str] = None,
 ) -> TaskGraph:
     """Build (and validate) a :class:`TaskGraph` from ``planning_steps``.
 
@@ -495,6 +516,8 @@ def plan_to_task_graph(
             recover dependency edges the Planner drops for autonomous agents
             (see :func:`derive_step_dependencies`). Ignored when the plan
             already declares its own edges.
+        trusted_scenario_contract_id: platform-derived scenario contract. Raw
+            Planner fields with the same name are intentionally ignored.
 
     Returns:
         A validated :class:`TaskGraph` (raises ``TaskGraphValidationError`` if the
@@ -760,10 +783,7 @@ def plan_to_task_graph(
                         for source in binding["source_artifacts"]
                         if isinstance(source, dict)
                     ]
-                    # report.sources is also used by generic reports.  Apply
-                    # the fixed annual-leave evidence contract only when this
-                    # fan-in enters that vocabulary.
-                    if _ANNUAL_LEAVE_REPORT_OUTPUTS.intersection(source_outputs):
+                    if trusted_scenario_contract_id == ANNUAL_LEAVE_REPORT_V1:
                         missing = sorted(
                             output
                             for output in _ANNUAL_LEAVE_REPORT_OUTPUTS
@@ -852,6 +872,11 @@ def plan_to_task_graph(
             description=raw.get("description", ""),
             task_type=raw.get("task_type", ""),
             scenario_tags=raw.get("scenario_tags", []) or [],
+            scenario_contract_id=(
+                trusted_scenario_contract_id
+                if agent_name == "RemoteReportAgent"
+                else None
+            ),
             data_scope=raw.get("data_scope", ""),
             expected_schema_ref=(
                 raw.get("expected_schema_ref")

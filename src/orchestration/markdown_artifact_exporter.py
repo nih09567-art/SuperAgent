@@ -9,11 +9,13 @@ callers.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import tempfile
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +30,8 @@ DEFAULT_MANIFEST_FILENAME = "export-manifest.json"
 _SAFE_COMPONENT_RE = re.compile(r"[^0-9A-Za-z._-]+")
 _EXPORT_LOCKS_GUARD = threading.Lock()
 _EXPORT_LOCKS: dict[str, threading.Lock] = {}
+_EXPORT_CLAIM_TIMEOUT_SECONDS = 10.0
+_EXPORT_CLAIM_POLL_SECONDS = 0.01
 
 
 class MarkdownArtifactExportError(ValueError):
@@ -40,6 +44,48 @@ def _export_lock(destination_dir: Path) -> threading.Lock:
     key = os.path.normcase(str(destination_dir))
     with _EXPORT_LOCKS_GUARD:
         return _EXPORT_LOCKS.setdefault(key, threading.Lock())
+
+
+def _claim_path(
+    destination_dir: Path,
+    report_filename: str,
+    manifest_filename: str,
+) -> Path:
+    identity = hashlib.sha256(
+        f"{report_filename}\0{manifest_filename}".encode("utf-8")
+    ).hexdigest()[:16]
+    return destination_dir / f".markdown-export-{identity}.claim"
+
+
+def _acquire_export_claim(
+    claim_path: Path,
+    report_path: Path,
+    manifest_path: Path,
+) -> bool:
+    """Atomically claim an export across processes or wait for its result."""
+
+    deadline = time.monotonic() + _EXPORT_CLAIM_TIMEOUT_SECONDS
+    while True:
+        try:
+            fd = os.open(
+                claim_path,
+                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                0o600,
+            )
+        except FileExistsError:
+            if report_path.exists() and manifest_path.exists():
+                return False
+            if time.monotonic() >= deadline:
+                raise FileExistsError(
+                    f"timed out waiting for export claim in {claim_path.parent}"
+                )
+            time.sleep(_EXPORT_CLAIM_POLL_SECONDS)
+            continue
+        with os.fdopen(fd, "w", encoding="ascii") as handle:
+            handle.write(str(os.getpid()))
+            handle.flush()
+            os.fsync(handle.fileno())
+        return True
 
 
 def _safe_component(value: str, *, label: str) -> str:
@@ -154,6 +200,27 @@ def _existing_manifest_is_same(
     return all(current.get(key) == value for key, value in expected.items())
 
 
+def _existing_export_result(
+    *,
+    report_path: Path,
+    manifest_path: Path,
+    expected_manifest: dict[str, Any],
+    expected_markdown: bytes,
+) -> dict[str, Any] | None:
+    if not report_path.exists() and not manifest_path.exists():
+        return None
+    if (
+        report_path.exists()
+        and manifest_path.exists()
+        and _existing_manifest_is_same(manifest_path, expected_manifest)
+        and report_path.read_bytes() == expected_markdown
+    ):
+        return expected_manifest
+    raise FileExistsError(
+        f"refusing to overwrite existing export in {report_path.parent}"
+    )
+
+
 def export_markdown_artifact(
     artifact: Artifact,
     output_root: str | os.PathLike[str],
@@ -207,24 +274,53 @@ def export_markdown_artifact(
         "relative_path": relative_path,
     }
 
-    # The prototype runs one Python service process.  Serialize the complete
-    # check-and-write transaction for a destination so concurrent requests
-    # cannot both report success while replacing each other's Artifact pair.
+    markdown_bytes = payload["markdown"].encode("utf-8")
+    claim_path = _claim_path(
+        destination_dir,
+        safe_filename,
+        safe_manifest_filename,
+    )
+
+    # The in-process lock avoids needless polling between local threads.  The
+    # O_EXCL claim is the actual cross-process authority for the export pair.
     with _export_lock(destination_dir):
-        if report_path.exists() or manifest_path.exists():
-            if (
-                report_path.exists()
-                and manifest_path.exists()
-                and _existing_manifest_is_same(manifest_path, manifest)
-                and report_path.read_bytes() == payload["markdown"].encode("utf-8")
-            ):
-                return manifest
+        existing = _existing_export_result(
+            report_path=report_path,
+            manifest_path=manifest_path,
+            expected_manifest=manifest,
+            expected_markdown=markdown_bytes,
+        )
+        if existing is not None:
+            return existing
+
+        owns_claim = _acquire_export_claim(
+            claim_path,
+            report_path,
+            manifest_path,
+        )
+        if not owns_claim:
+            existing = _existing_export_result(
+                report_path=report_path,
+                manifest_path=manifest_path,
+                expected_manifest=manifest,
+                expected_markdown=markdown_bytes,
+            )
+            if existing is not None:
+                return existing
             raise FileExistsError(
                 f"refusing to overwrite existing export in {destination_dir}"
             )
 
-        _atomic_write(report_path, payload["markdown"].encode("utf-8"))
         try:
+            existing = _existing_export_result(
+                report_path=report_path,
+                manifest_path=manifest_path,
+                expected_manifest=manifest,
+                expected_markdown=markdown_bytes,
+            )
+            if existing is not None:
+                return existing
+            _atomic_write(report_path, markdown_bytes)
             _atomic_write(
                 manifest_path,
                 (json.dumps(manifest, ensure_ascii=False, indent=2) + "\n").encode(
@@ -235,6 +331,11 @@ def export_markdown_artifact(
             # A report without its manifest is not a valid completed export.
             # Leave it recoverable; a retry refuses to hide the partial state.
             raise
+        finally:
+            try:
+                claim_path.unlink()
+            except FileNotFoundError:
+                pass
     return manifest
 
 
