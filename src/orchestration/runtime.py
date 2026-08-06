@@ -807,6 +807,9 @@ def _make_real_execute_step(state: dict) -> ExecuteStep:
             "assigned_agent": selected_agent,
             "assigned_steps": [assigned_step],
             "task_profile": state.get("task_profile") or {},
+            "scenario_contract_id": str(
+                getattr(step, "scenario_contract_id", "") or ""
+            ),
             # Surfaced so an idempotency-aware tool/provider can dedupe an
             # external side effect (e.g. a message id / request key).
             "idempotency_key": (context.get("idempotency_key") if isinstance(context, dict) else None),
@@ -868,7 +871,14 @@ def _make_real_authorize_step(state: dict):
 
     async def _authorize_step(*, step, selected_agent, context) -> Any:
         from src.manager import agent_manager
-        from src.security.enforcement import enforce_agent_dispatch, enforce_tool_call
+        from src.security.enforcement import (
+            ApprovalRequiredError,
+            PermissionDeniedError,
+            enforce_agent_dispatch,
+            enforce_tool_call,
+        )
+        from src.security.context import SecurityContextBuilder
+        from src.security.policy import is_governance_administrator
         from src.security.remote_tool_gate import required_remote_tool_authorizations
 
         if not selected_agent:
@@ -890,20 +900,34 @@ def _make_real_authorize_step(state: dict):
         # levels.  Dispatch permission alone must not authorize all of them.
         # Resolve concrete resources from the server-owned TaskGraph step and
         # enforce each one before the scheduler claims an execution receipt.
+        is_admin = is_governance_administrator(
+            SecurityContextBuilder.subject_for_user(str(state.get("user_id") or ""))
+        )
+        requested_intents = list(getattr(step, "intents", []) or [])
         tool_authorizations = required_remote_tool_authorizations(
             agent_name=selected_agent,
-            intents=list(getattr(step, "intents", []) or []),
+            intents=requested_intents,
             task_profile=state.get("task_profile") or {},
             operation_mode=str(getattr(step, "operation_mode", "read")),
+            include_all_tools=is_admin,
         )
         authorized_manifest = []
         for authorization in tool_authorizations:
-            result = await enforce_tool_call(
-                agent=agent,
-                tool_name=authorization.tool_name,
-                arguments=authorization.arguments,
-                context=exec_ctx,
-            )
+            try:
+                result = await enforce_tool_call(
+                    agent=agent,
+                    tool_name=authorization.tool_name,
+                    arguments=authorization.arguments,
+                    context=exec_ctx,
+                )
+            except (PermissionDeniedError, ApprovalRequiredError):
+                # An administrator may enumerate every concrete tool, but
+                # denied/review-required entries remain absent from this
+                # request-scoped manifest. The requested TaskGraph intent is
+                # strict: its denial or pending approval must stop execution.
+                if not is_admin or authorization.arguments.get("intent") in requested_intents:
+                    raise
+                continue
             authorized_manifest.append(
                 {
                     "tool_name": authorization.tool_name,

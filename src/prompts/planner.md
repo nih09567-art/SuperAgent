@@ -272,6 +272,24 @@ For each step, you MUST specify the `inputs` field to map the agent's required p
 }
 ```
 
+**Annual-leave defense scenario (fixed three-step shape)**:
+When the user asks for the Wang Qiang annual-leave demonstration and a Markdown
+summary, produce exactly these three steps and no unrelated HR or course steps:
+
+```text
+hr_query      -> RemoteHRAssistantAgent -> employee.info@v1
+policy_query  -> RemoteKnowledgeAgent  -> policy.info@v2
+generate_report -> RemoteReportAgent   -> report.markdown@v1
+```
+
+- `hr_query` and `policy_query` have empty `depends_on` arrays.
+- `generate_report` depends on both upstream step IDs.
+- `generate_report` has exactly one `report.sources` InputMapping. Its
+  `source_artifacts` contains exactly `hr_query/employee.info` and
+  `policy_query/policy.info`, and its assembly schema is `report.sources@v1`.
+- Do not add salary, contact, identity-number, course-search, or unrelated
+  employee-information steps to this scenario.
+
 **Common Planning Errors to Avoid:**
 1. **Missing Data Source Step**: Creating InputMappings that reference agents not included in the steps array
 2. **Wrong Execution Order**: Placing a data-consuming step before the data-producing step

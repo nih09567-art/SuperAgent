@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>CoorAgent Web Studio</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260803-decision-history-1" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260806-frontend-sync-1" />
     <script src="/static/mermaid.min.js"></script>
   </head>
   <body>
@@ -40,8 +40,8 @@
 
       <main class="layout">
         <aside class="sidebar">
-          <button class="tab active" data-tab="run">Workflow</button>
-          <button class="tab" data-tab="chat">Chat</button>
+          <button class="tab active" data-tab="chat">Chat</button>
+          <button class="tab" data-tab="run">Workflow</button>
           <button class="tab" data-tab="agents">Agents</button>
           <button class="tab" data-tab="tools">Tools</button>
           <button class="tab" data-tab="workflows">Workflows</button>
@@ -50,7 +50,7 @@
         </aside>
 
         <section class="content">
-          <section class="panel active" id="panel-run">
+          <section class="panel" id="panel-run">
             <div class="panel-header">
               <h2>Workflow</h2>
               <p>发起任务并实时查看输出。</p>
@@ -106,7 +106,7 @@
                       title="New conversation"
                       aria-label="Start a new conversation"
                     ><span aria-hidden="true">+</span></button>
-                    <textarea id="message" rows="2" placeholder="输入消息..."></textarea>
+                    <textarea id="message" rows="1" placeholder="输入消息..."></textarea>
                     <button
                       id="stopBtn"
                       class="chat-submit chat-stop"
@@ -244,7 +244,7 @@
             </div>
           </section>
 
-          <section class="panel" id="panel-chat">
+          <section class="panel active" id="panel-chat">
             <div class="panel-header chat-panel-header">
               <h2>Chat</h2>
             </div>
@@ -519,7 +519,7 @@
                   </div>
                 </div>
                 <div class="security-right">
-                  <div class="detail-card">
+                  <div class="detail-card" id="securityLastDeniedCard" hidden>
                     <h3>最近一次权限拒绝 / 场景错配详情</h3>
                     <div id="securityLastDenied" class="sec-last-denied">
                       <div class="sec-empty">暂无权限拒绝事件</div>
@@ -547,12 +547,29 @@
                     </div>
                   </div>
                   <div class="detail-card">
-                    <h3>工具权限矩阵</h3>
+                    <div class="sec-section-header">
+                      <h3>工具权限矩阵</h3>
+                      <button id="toggleToolAccessBtn" class="ghost sec-collapse-button" type="button"
+                        aria-expanded="true" aria-controls="toolAccessGrid">
+                        <span class="sec-collapse-label">收起</span>
+                        <span class="sec-collapse-icon" aria-hidden="true">⌃</span>
+                      </button>
+                    </div>
                     <div id="toolAccessGrid" class="sec-tool-grid"></div>
                   </div>
                   <div class="detail-card">
-                    <h3>安全策略</h3>
-                    <div id="policyList" class="sec-policies"></div>
+                    <button id="toggleAdvancedSecurityBtn" class="sec-advanced-toggle" type="button"
+                      aria-expanded="false" aria-controls="advancedSecurityContent">
+                      <span>高级/开发者信息</span>
+                      <span class="sec-advanced-toggle-meta">
+                        <span class="sec-collapse-label">展开</span>
+                        <span class="sec-collapse-icon" aria-hidden="true">⌄</span>
+                      </span>
+                    </button>
+                    <div id="advancedSecurityContent" class="sec-advanced-content" hidden>
+                      <h4>安全策略</h4>
+                      <div id="policyList" class="sec-policies"></div>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -562,7 +579,7 @@
       </main>
     </div>
 
-    <script src="/static/app.js?v=20260803-decision-history-1"></script>
-    <script src="/static/security.js?v=20260803-resume-dedupe-1"></script>
+    <script src="/static/app.js?v=20260806-frontend-sync-1"></script>
+    <script src="/static/security.js?v=20260804-security-collapsible-1"></script>
   </body>
 </html>

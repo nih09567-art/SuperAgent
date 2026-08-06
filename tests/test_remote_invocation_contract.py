@@ -209,6 +209,43 @@ def test_remote_agent_request_carries_platform_authorized_tool_manifest():
     assert request["security_context"]["authorized_remote_tools"] == manifest
 
 
+def test_legacy_remote_request_does_not_grant_admin_wildcard():
+    executor = RemoteExecutor()
+    agent = SimpleNamespace(
+        agent_name="RemoteKnowledgeAgent", prompt="", selected_tools=[]
+    )
+    context = ExecutionContext(
+        user_id="operator-42",
+        workflow_id="wf-1",
+        workflow_mode="production",
+    )
+
+    request = executor._build_request(
+        agent, [{"role": "user", "content": "query policy"}], context
+    )
+
+    assert request["context"]["authorized_remote_tools"] == []
+    assert request["security_context"]["authorized_remote_tools"] == []
+
+
+def test_legacy_remote_request_does_not_grant_unknown_user_wildcard():
+    executor = RemoteExecutor()
+    agent = SimpleNamespace(
+        agent_name="RemoteKnowledgeAgent", prompt="", selected_tools=[]
+    )
+    context = ExecutionContext(
+        user_id="not-a-configured-user",
+        workflow_id="wf-1",
+        workflow_mode="production",
+    )
+
+    request = executor._build_request(
+        agent, [{"role": "user", "content": "query policy"}], context
+    )
+
+    assert request["context"]["authorized_remote_tools"] == []
+
+
 def test_remote_agent_side_effect_disables_internal_retries():
     async def scenario():
         captured = {}

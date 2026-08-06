@@ -441,6 +441,10 @@ def load_production_task_graph(
         return False, "no_snapshot"
     current_steps = _normalize_planning_steps(
         cache.get_planning_steps(workflow_id))
+    if not current_steps:
+        reason = "current planning steps unavailable (replan required)"
+        state["task_graph_rejection_reason"] = reason
+        return False, reason
     # Authoritative gate: re-derive the TaskGraph from the CURRENT planning
     # steps and deep-compare against the approved snapshot (plus version +
     # content-hash integrity). Only inject the approved graph on an exact match;
@@ -874,6 +878,15 @@ async def run_agent_workflow(
                 reason = "Workflow preparation failed"
             logger.warning(
                 "S-ABAC workflow preparation blocked execution: %s", exc)
+            if task_id:
+                task_logger_loader = getattr(TaskLogger, "load", None)
+                reserved_task = (
+                    task_logger_loader(task_id)
+                    if callable(task_logger_loader)
+                    else None
+                )
+                if reserved_task is not None:
+                    reserved_task.log_workflow_terminal("FAILED", error=error_text)
             yield {
                 "event": "workflow_error",
                 "data": {
@@ -1198,9 +1211,20 @@ async def _process_workflow(
                 task_id=task_id, workflow_id=workflow_id, user_query=user_query)
             task_logger.set_execution_phase(execution_phase)  # 设置执行阶段
     else:
-        task_logger = TaskLogger(
-            task_id=task_id, workflow_id=workflow_id, user_query=user_query)
-        task_logger.set_execution_phase(execution_phase)  # 设置执行阶段
+        task_logger_loader = getattr(TaskLogger, "load", None)
+        existing_logger = (
+            task_logger_loader(task_id) if callable(task_logger_loader) else None
+        )
+        if existing_logger and existing_logger.status == "reserved":
+            task_logger = existing_logger
+            task_logger.activate_reserved_execution()
+            task_logger.set_execution_phase(execution_phase)
+        elif existing_logger:
+            raise RuntimeError(f"task id already exists: {task_id}")
+        else:
+            task_logger = TaskLogger(
+                task_id=task_id, workflow_id=workflow_id, user_query=user_query)
+            task_logger.set_execution_phase(execution_phase)  # 设置执行阶段
 
     def _reset_resume_evidence(target_state: dict[str, Any]) -> None:
         """Drop stale terminal evidence and keep only pre-resume step evidence."""
@@ -1996,6 +2020,7 @@ async def _process_workflow(
         legacy_end_data = {
             "workflow_id": workflow_id,
             "task_id": task_id,
+            "status": "FAILED" if execution_failed else "SUCCEEDED",
             "messages": [{
                 "role": "user",
                 "content": "workflow failed" if execution_failed else "workflow completed",
@@ -2006,10 +2031,6 @@ async def _process_workflow(
                 else None
             ),
         }
-        # Preserve the successful legacy event shape while making failures
-        # observable to callers that need to distinguish a failed execution.
-        if execution_failed:
-            legacy_end_data["status"] = "failed"
         yield {
             "event": "end_of_workflow",
             "data": legacy_end_data,
@@ -2100,11 +2121,27 @@ async def _process_workflow(
                     yield event_data
                 return
 
+        from src.orchestration.failure_mapper import (
+            make_failure,
+            public_execution_reason,
+        )
+
+        public_reason = public_execution_reason(e) or (
+            f"工作流节点 {current_node or 'system'} 发生未分类内部错误；"
+            f"请使用任务编号 {task_id} 查看服务端日志。"
+        )
+        public_failure = make_failure(
+            "INTERNAL_STEP_ERROR",
+            step_id=str(current_node or "system"),
+            message=public_reason,
+            action=f"请使用任务编号 {task_id} 查看服务端日志并修复具体原因后重试。",
+        )
         yield {
             "event": "error",
             "data": {
                 "workflow_id": workflow_id,
                 "task_id": task_id,
-                "error": str(e),
+                "error": public_reason,
+                "failure": public_failure.model_dump(mode="json"),
             },
         }

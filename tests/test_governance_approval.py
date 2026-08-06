@@ -85,6 +85,9 @@ def test_write_authorization_pauses_before_receipt_claim():
 
     assert result.terminal_status == WorkflowStatus.APPROVAL_REQUIRED
     assert result["write-1"].metrics["approval_required"] is True
+    assert result["write-1"].failure.category == "permission"
+    assert result["write-1"].failure.message == "该资源或操作风险要求人工审批后才能执行。"
+    assert "安全页审批" in result["write-1"].failure.action
     assert executor_calls == []
     assert receipt_store._receipts == {}
 

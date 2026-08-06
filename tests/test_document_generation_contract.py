@@ -11,6 +11,7 @@ import pytest
 import mock_remote_tool_skill as tool_server
 from mock_remote_tool_skill import _parse_optional_amount, app
 from remote_agents.document_generator_agent import RemoteDocumentGeneratorAgent
+from remote_agents.document_generator_agent import _resolved_upstream_content
 from remote_agents.email_dispatch_agent import RemoteEmailDispatchAgent
 from remote_agents.report_agent import RemoteReportAgent
 
@@ -68,6 +69,34 @@ def test_high_sensitivity_record_query_rejects_missing_employee_scope(
     response = TestClient(app).post(
         "/tool",
         json={"tool": tool_name, "arguments": {}},
+    )
+
+    assert response.status_code == 200
+    result = response.json()["result"]
+    assert result["status"] == "failed"
+    assert result["error"] == "employee_id or employee_name is required"
+    assert "records" not in result
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "loader_name"),
+    [
+        ("query_leave_record", "_load_leave_applications"),
+        ("query_travel_record", "_load_travel_applications"),
+    ],
+)
+def test_administrator_marker_cannot_query_unscoped_records(
+    monkeypatch, tool_name, loader_name
+) -> None:
+    records = [{"employee_id": "E001", "employee_name": "李娜"}]
+    monkeypatch.setattr(tool_server, loader_name, lambda: records)
+
+    response = TestClient(app).post(
+        "/tool",
+        json={
+            "tool": tool_name,
+            "arguments": {"__trusted_administrator": True},
+        },
     )
 
     assert response.status_code == 200
@@ -298,3 +327,27 @@ def test_explanation_document_uses_profile_contract_and_upstream_report() -> Non
     assert arguments["template_name"] == "explanation_document"
     assert arguments["data"]["title"] == "生成年假制度说明文档"
     assert "员工年假按工龄分档执行" in arguments["data"]["content"]
+
+
+def test_document_agent_reads_markdown_from_assembled_document_content():
+    brief = {
+        "resolved_inputs": {
+            "document.content": {
+                "title": "年假制度说明",
+                "instruction": "生成 Word 文档",
+                "sources": [
+                    {
+                        "logical_name": "report.markdown",
+                        "schema_ref": "report.markdown@v1",
+                        "payload": {
+                            "title": "年假制度摘要",
+                            "markdown": "# 公司年假制度\n员工依法享有年假。",
+                            "source_count": 1,
+                        },
+                    }
+                ],
+            }
+        }
+    }
+
+    assert _resolved_upstream_content(brief) == "# 公司年假制度\n员工依法享有年假。"

@@ -26,6 +26,52 @@ _SALARY_INTENT_TERMS = (
 )
 _EXECUTION_CONTEXT_PREFIX = "EXECUTION_CONTEXT"
 
+# ``remote_person_info_tool`` returns a large internal HR row.  The annual-
+# leave workflow only needs these five business fields.  Keep the source
+# vocabulary here because ``person_info_sample.json`` and the remote tool use
+# these names; do not pass through the row and hope that a downstream LLM will
+# remove sensitive data later.
+_EMPLOYEE_INFO_FIELDS = (
+    "adtEmpeNm",       # 姓名
+    "empeStdsc",       # 在职状态
+    "holdposInstNm",   # 工作单位
+    "tcoPostNm",       # 岗位
+    "pcsTrdYrlmt",     # 累计工龄
+)
+_EMPLOYEE_INFO_ALIASES = {
+    "adtEmpeNm": ("adtEmpeNm", "name"),
+    "empeStdsc": ("empeStdsc", "employment_status", "status"),
+    "holdposInstNm": ("holdposInstNm", "work_unit", "department"),
+    "tcoPostNm": ("tcoPostNm", "position"),
+    "pcsTrdYrlmt": ("pcsTrdYrlmt", "service_years", "work_years"),
+}
+
+
+def _project_employee_info(record: Any) -> Dict[str, Any]:
+    """Project one remote HR row onto the non-sensitive employee contract."""
+
+    if not isinstance(record, dict):
+        return {}
+    projected: Dict[str, Any] = {}
+    for field in _EMPLOYEE_INFO_FIELDS:
+        value = next(
+            (record.get(alias) for alias in _EMPLOYEE_INFO_ALIASES[field]
+             if alias in record),
+            None,
+        )
+        if value is None or value == "":
+            continue
+        if field == "pcsTrdYrlmt" and isinstance(value, str):
+            try:
+                numeric = float(value.strip())
+                value = int(numeric) if numeric.is_integer() else numeric
+            except ValueError:
+                # Preserve the value so the versioned Schema rejects a
+                # malformed service-year field instead of silently changing it.
+                pass
+        projected[field] = value
+    return projected
+
 
 def _salary_requested(messages: List[Dict[str, Any]]) -> bool:
     """Detect salary intent from the current execution brief or latest user turn.
@@ -168,9 +214,16 @@ class RemoteHRAssistantAgent(BaseRemoteAgent):
                 else:
                     person_list = []
 
-                results["person_info"] = person_list
-                results["person_info_raw"] = person_result  # Keep raw result for reference
-                logger.info(f"[{self.name}] Person info retrieved: {len(person_list)} records")
+                projected_people = [
+                    projected
+                    for item in person_list
+                    if (projected := _project_employee_info(item))
+                ]
+                results["person_info"] = projected_people
+                logger.info(
+                    f"[{self.name}] Person info retrieved: "
+                    f"{len(projected_people)} minimized records"
+                )
 
             except Exception as e:
                 logger.error(f"[{self.name}] Person info query failed: {e}")
@@ -237,8 +290,6 @@ class RemoteHRAssistantAgent(BaseRemoteAgent):
                 "records": results["person_info"],
                 "matched_count": len(results["person_info"]),
             }
-            if isinstance(person_query, str):
-                employee_info["query"] = person_query
             outputs["employee.info"] = employee_info
         if "salary_info" in results:
             outputs["employee.salary"] = {

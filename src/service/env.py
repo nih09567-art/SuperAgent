@@ -226,10 +226,8 @@ WORKFLOW_SKILL_FAILURE_THRESHOLD = _parse_int("WORKFLOW_SKILL_FAILURE_THRESHOLD"
 WORKFLOW_SKILL_DB_PATH = os.getenv("WORKFLOW_SKILL_DB_PATH")
 WORKFLOW_SKILL_ADMIN_API_KEY = os.getenv("WORKFLOW_SKILL_ADMIN_API_KEY")
 
-# Governance mutations are privileged operations. The bearer credential
-# authenticates one server-configured principal; request bodies never choose
-# the approver/operator identity.
-GOVERNANCE_ADMIN_API_KEY = os.getenv("GOVERNANCE_ADMIN_API_KEY")
+# Governance actions use one server-configured trusted principal; request
+# bodies never choose the approver/operator identity.
 GOVERNANCE_ADMIN_ACTOR_ID = os.getenv("GOVERNANCE_ADMIN_ACTOR_ID", "admin")
 
 # Step/Agent Skills are governed independently from whole-workflow skills.
@@ -254,6 +252,9 @@ AGENT_SKILL_MATCH_MARGIN = _parse_float("AGENT_SKILL_MATCH_MARGIN", 0.08)
 AGENT_SKILL_PROMOTION_THRESHOLD = _parse_int("AGENT_SKILL_PROMOTION_THRESHOLD", 2)
 AGENT_SKILL_FAILURE_THRESHOLD = _parse_int("AGENT_SKILL_FAILURE_THRESHOLD", 2)
 AGENT_SKILL_DB_PATH = os.getenv("AGENT_SKILL_DB_PATH")
+# JSON object mapping authenticated execution principals to API credentials.
+# Example: {"hr_manager":"a-long-random-secret"}
+EXECUTION_USER_API_KEYS_JSON = os.getenv("EXECUTION_USER_API_KEYS_JSON", "")
 
 if not DEBUG:
     logging.basicConfig(

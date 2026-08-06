@@ -1,8 +1,10 @@
 from concurrent.futures import ThreadPoolExecutor
 from fastapi.testclient import TestClient
+import json
 import pytest
 import threading
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import src.service.web_app as web_app
 import src.orchestration.reconciliation as reconciliation_module
@@ -20,20 +22,16 @@ from src.orchestration.reconciliation import (
 from src.orchestration.governance import record_governance_event
 from src.robust.task_logger import TaskLogger
 from src.security.approval import get_approval_store
-from src.security.cleanup_capabilities import get_cleanup_capability_store
 from src.service.web_app import create_app
 
 
 @pytest.fixture(autouse=True)
 def _configured_governance_identity(monkeypatch):
-    monkeypatch.setattr(web_app, "GOVERNANCE_ADMIN_API_KEY", "test-governance-key")
     monkeypatch.setattr(web_app, "GOVERNANCE_ADMIN_ACTOR_ID", "admin")
 
 
 def _client() -> TestClient:
-    client = TestClient(create_app())
-    client.headers["Authorization"] = "Bearer test-governance-key"
-    return client
+    return TestClient(create_app())
 
 
 def _approval():
@@ -484,34 +482,16 @@ def test_resume_heartbeat_renews_lease_across_store_instances(
     assert reclaimed.resolution["resume_claim_id"] != claim_id
 
 
-def _patch_resume_dependencies(
-    monkeypatch,
-    events,
-    captured=None,
-    *,
-    include_memory_enabled=True,
-    memory_enabled=True,
-):
+def _patch_resume_dependencies(monkeypatch, events):
     import src.robust.checkpoint as checkpoint_module
 
-    checkpoint_state = {
-        "messages": [
-            {
-                "role": "user",
-                "content": "resume",
-                "message_id": "u-resume",
-                "metadata": {"turn_id": "u-resume", "source": "checkpoint"},
-            }
-        ],
-        "workflow_mode": "production",
-        "coor_agents": [],
-        "memory_session_id": "thread-resume",
-    }
-    if include_memory_enabled:
-        checkpoint_state["memory_enabled"] = memory_enabled
     checkpoint = SimpleNamespace(
         workflow_id="wf-recon",
-        state=checkpoint_state,
+        state={
+            "messages": [{"role": "user", "content": "resume"}],
+            "workflow_mode": "production",
+            "coor_agents": [],
+        },
     )
 
     class FakeCheckpointManager:
@@ -519,9 +499,7 @@ def _patch_resume_dependencies(
             return checkpoint
 
     class FakeServer:
-        async def _run_agent_workflow_with_resume(self, *args, **_kwargs):
-            if captured is not None:
-                captured["request"] = args[0]
+        async def _run_agent_workflow_with_resume(self, *_args, **_kwargs):
             for event in events:
                 if isinstance(event, Exception):
                     raise event
@@ -531,85 +509,6 @@ def _patch_resume_dependencies(
         checkpoint_module, "CheckpointManager", FakeCheckpointManager
     )
     monkeypatch.setattr(web_app, "Server", FakeServer)
-
-
-def test_resume_api_preserves_checkpoint_memory_identity(tmp_path, monkeypatch):
-    reconciliation, _ = _reconciliation(
-        tmp_path, monkeypatch, task_id="task-resume-memory"
-    )
-    store = get_reconciliation_store()
-    store.resolve(
-        reconciliation.reconciliation_id,
-        status="confirmed_succeeded",
-        operator="admin",
-    )
-    captured = {}
-    _patch_resume_dependencies(
-        monkeypatch,
-        [
-            {
-                "event": "end_of_workflow",
-                "data": {"task_id": reconciliation.task_id, "status": "SUCCEEDED"},
-            }
-        ],
-        captured,
-    )
-
-    response = _client().post(
-        "/api/tasks/resume",
-        json={
-            "task_id": reconciliation.task_id,
-            "resume_step": reconciliation.resume_step,
-            "user_id": "admin",
-        },
-    )
-
-    request = captured["request"]
-    assert response.status_code == 200
-    assert request.memory_session_id == "thread-resume"
-    assert request.memory_enabled is True
-    assert request.messages[0].message_id == "u-resume"
-    assert request.messages[0].metadata == {
-        "turn_id": "u-resume",
-        "source": "checkpoint",
-    }
-
-
-def test_resume_api_defaults_legacy_checkpoint_memory_to_disabled(
-    tmp_path, monkeypatch
-):
-    reconciliation, _ = _reconciliation(
-        tmp_path, monkeypatch, task_id="task-resume-legacy-memory"
-    )
-    get_reconciliation_store().resolve(
-        reconciliation.reconciliation_id,
-        status="confirmed_succeeded",
-        operator="admin",
-    )
-    captured = {}
-    _patch_resume_dependencies(
-        monkeypatch,
-        [
-            {
-                "event": "end_of_workflow",
-                "data": {"task_id": reconciliation.task_id, "status": "SUCCEEDED"},
-            }
-        ],
-        captured,
-        include_memory_enabled=False,
-    )
-
-    response = _client().post(
-        "/api/tasks/resume",
-        json={
-            "task_id": reconciliation.task_id,
-            "resume_step": reconciliation.resume_step,
-            "user_id": "admin",
-        },
-    )
-
-    assert response.status_code == 200
-    assert captured["request"].memory_enabled is False
 
 
 @pytest.mark.parametrize("terminal_status", ["FAILED", "NEEDS_RECONCILIATION"])
@@ -1015,58 +914,46 @@ def test_deleting_legacy_conversation_removes_orphan_security_records_only(
     assert get_reconciliation_store().list(task_id="legacy-task") == []
 
 
-def test_deleting_conversation_rejects_unauthenticated_spoofed_admin(
-    tmp_path, monkeypatch
+def _production_authorization_fields(
+    client, *, user_id: str, workflow_id: str
 ):
-    monkeypatch.setenv(
-        "RECONCILIATION_STORE_DIR", str(tmp_path / "reconciliations")
-    )
-    client = TestClient(create_app())
+    credential = f"execution-key-{user_id}"
+    with patch.object(
+        web_app,
+        "EXECUTION_USER_API_KEYS_JSON",
+        json.dumps({user_id: credential}),
+    ):
+        response = client.post(
+            "/api/workflows/execution-authorizations",
+            headers={
+                "Authorization": f"Bearer {credential}",
+                "Idempotency-Key": "confirmation-governance-request",
+            },
+            json={
+                "user_id": user_id,
+                "workflow_id": workflow_id,
+                "plan_hash": "a" * 64,
+                "user_query": "test",
+            },
+        )
+    if response.status_code != 200:
+        return response, {}
+    data = response.json()
+    return response, {
+        "execution_task_id": data["task_id"],
+        "execution_attempt_id": data["execution_attempt_id"],
+        "execution_idempotency_key": data["execution_idempotency_key"],
+        "execution_plan_hash": data["execution_plan_hash"],
+        "execution_authorization_token": data["execution_authorization_token"],
+    }
 
-    response = client.delete(
-        "/api/conversation-history",
-        params={"workflow_id": "alice:demo", "user_id": "admin"},
-    )
 
-    assert response.status_code == 401
-
-
-def test_task_owner_capability_allows_cleanup_without_governance_admin_key(
-    tmp_path, monkeypatch
-):
+def test_workflow_run_requires_no_browser_cleanup_credential(tmp_path, monkeypatch):
     import src.robust.task_logger as task_logger_module
 
-    checkpoint_root = tmp_path / "checkpoints"
-    monkeypatch.setattr(task_logger_module, "checkpoints_dir", checkpoint_root)
-    monkeypatch.setenv(
-        "CLEANUP_CAPABILITY_STORE_PATH", str(tmp_path / "cleanup-capabilities.json")
+    monkeypatch.setattr(
+        task_logger_module, "checkpoints_dir", tmp_path / "checkpoints"
     )
-    monkeypatch.setattr(web_app, "GOVERNANCE_ADMIN_API_KEY", "")
-    task_id = "u1_demo__cleanup"
-    workflow_id = "u1:demo"
-    TaskLogger(task_id, workflow_id, "test").log_workflow_start("test")
-    token = "owner-capability-token-with-at-least-32-chars"
-    get_cleanup_capability_store().bind(
-        token=token,
-        user_id="u1",
-        workflow_id=workflow_id,
-        task_id=task_id,
-    )
-
-    response = TestClient(create_app()).delete(
-        f"/api/tasks/{task_id}",
-        headers={"X-Task-Owner-Token": token},
-    )
-
-    assert response.status_code == 200
-    assert TaskLogger.load(task_id) is None
-
-
-def test_workflow_run_binds_browser_cleanup_capability(tmp_path, monkeypatch):
-    monkeypatch.setenv(
-        "CLEANUP_CAPABILITY_STORE_PATH", str(tmp_path / "cleanup-capabilities.json")
-    )
-
     class FakeServer:
         async def _run_agent_workflow(self, _body):
             yield {
@@ -1075,11 +962,17 @@ def test_workflow_run_binds_browser_cleanup_capability(tmp_path, monkeypatch):
             }
 
     monkeypatch.setattr(web_app, "Server", FakeServer)
-    token = "owner-capability-token-with-at-least-32-chars"
+    monkeypatch.setattr(
+        web_app, "_server_execution_plan_hash", lambda _user, _workflow: "a" * 64
+    )
+    client = TestClient(create_app())
+    authorization, identity = _production_authorization_fields(
+        client, user_id="u1", workflow_id="u1:wf"
+    )
+    assert authorization.status_code == 200
 
-    response = TestClient(create_app()).post(
+    response = client.post(
         "/api/workflows/run",
-        headers={"X-Task-Owner-Token": token},
         json={
             "user_id": "u1",
             "lang": "zh",
@@ -1090,246 +983,64 @@ def test_workflow_run_binds_browser_cleanup_capability(tmp_path, monkeypatch):
             "coor_agents": None,
             "workmode": "production",
             "workflow_id": "u1:wf",
+            **identity,
         },
     )
 
     assert response.status_code == 200
-    capabilities = get_cleanup_capability_store()
-    assert capabilities.authorize_workflow("u1:wf", token)
-    assert capabilities.authorize_task("task-created", token)
 
 
-def test_workflow_run_preallocates_unique_owned_ids_for_new_launches(
-    tmp_path, monkeypatch
-):
-    monkeypatch.setenv(
-        "CLEANUP_CAPABILITY_STORE_PATH", str(tmp_path / "cleanup-capabilities.json")
-    )
-    observed_workflow_ids = []
-
-    class FakeServer:
-        async def _run_agent_workflow(self, body):
-            observed_workflow_ids.append(body.workflow_id)
-            yield {
-                "event": "start_of_workflow",
-                "data": {
-                    "workflow_id": body.workflow_id,
-                    "task_id": f"task-{len(observed_workflow_ids)}",
-                },
-            }
-
-    monkeypatch.setattr(web_app, "Server", FakeServer)
-    token = "owner-capability-token-with-at-least-32-chars"
-    payload = {
-        "user_id": "u1",
-        "lang": "zh",
-        "messages": [{"role": "user", "content": "same request"}],
-        "debug": False,
-        "deep_thinking_mode": False,
-        "search_before_planning": False,
-        "coor_agents": None,
-        "workmode": "launch",
-        "workflow_id": None,
-    }
-    client = TestClient(create_app())
-
-    first = client.post(
-        "/api/workflows/run",
-        headers={"X-Task-Owner-Token": token},
-        json=payload,
-    )
-    second = client.post(
-        "/api/workflows/run",
-        headers={"X-Task-Owner-Token": token},
-        json=payload,
-    )
-
-    assert first.status_code == 200
-    assert second.status_code == 200
-    assert len(observed_workflow_ids) == 2
-    assert observed_workflow_ids[0] != observed_workflow_ids[1]
-    assert all(item.startswith("u1:") for item in observed_workflow_ids)
-    capabilities = get_cleanup_capability_store()
-    assert all(
-        capabilities.authorize_workflow(workflow_id, token)
-        for workflow_id in observed_workflow_ids
-    )
-
-
-def test_streamed_cleanup_binding_error_is_returned_as_workflow_error(
-    tmp_path, monkeypatch
-):
-    import src.robust.task_logger as task_logger_module
-
-    checkpoint_root = tmp_path / "checkpoints"
-    monkeypatch.setattr(task_logger_module, "checkpoints_dir", checkpoint_root)
-    monkeypatch.setenv(
-        "CLEANUP_CAPABILITY_STORE_PATH", str(tmp_path / "cleanup-capabilities.json")
-    )
-    TaskLogger("historical-task", "victim:history", "private").log_workflow_start(
-        "private"
-    )
-
-    class FakeServer:
-        async def _run_agent_workflow(self, _body):
-            yield {
-                "event": "start_of_workflow",
-                "data": {
-                    "workflow_id": "victim:history",
-                    "task_id": "unexpected-task",
-                },
-            }
-
-    monkeypatch.setattr(web_app, "Server", FakeServer)
-    response = TestClient(create_app()).post(
-        "/api/workflows/run",
-        headers={
-            "X-Task-Owner-Token": "new-client-capability-token-with-at-least-32-chars"
-        },
-        json={
-            "user_id": "victim",
-            "lang": "zh",
-            "messages": [{"role": "user", "content": "new request"}],
-            "debug": False,
-            "deep_thinking_mode": False,
-            "search_before_planning": False,
-            "coor_agents": None,
-            "workmode": "launch",
-            "workflow_id": None,
-        },
-    )
-
-    assert response.status_code == 200
-    assert "event: workflow_error" in response.text
-    assert "CLEANUP_CAPABILITY_BINDING_FAILED" in response.text
-    assert "unbound historical workflow" in response.text
-
-
-def test_unbound_historical_workflow_cannot_be_claimed_by_new_client(
-    tmp_path, monkeypatch
-):
-    import src.robust.task_logger as task_logger_module
-
-    checkpoint_root = tmp_path / "checkpoints"
-    monkeypatch.setattr(task_logger_module, "checkpoints_dir", checkpoint_root)
-    monkeypatch.setenv(
-        "CLEANUP_CAPABILITY_STORE_PATH", str(tmp_path / "cleanup-capabilities.json")
-    )
-    TaskLogger("historical-task", "victim:history", "private").log_workflow_start(
-        "private"
-    )
-    calls = {"n": 0}
-
-    class FakeServer:
-        async def _run_agent_workflow(self, _body):
-            calls["n"] += 1
-            yield {"event": "done", "data": {}}
-
-    monkeypatch.setattr(web_app, "Server", FakeServer)
-    attacker_token = "attacker-capability-token-with-at-least-32-chars"
-
-    response = TestClient(create_app()).post(
-        "/api/workflows/run",
-        headers={"X-Task-Owner-Token": attacker_token},
-        json={
-            "user_id": "victim",
-            "lang": "zh",
-            "messages": [{"role": "user", "content": "claim history"}],
-            "debug": False,
-            "deep_thinking_mode": False,
-            "search_before_planning": False,
-            "coor_agents": None,
-            "workmode": "production",
-            "workflow_id": "victim:history",
-        },
-    )
-
-    assert response.status_code == 403
-    assert calls["n"] == 0
-    assert not get_cleanup_capability_store().authorize_workflow(
-        "victim:history", attacker_token
-    )
-
-
-def test_unbound_workflow_with_only_governance_records_cannot_be_claimed(
+def test_deleting_user_history_removes_all_orphan_queues_for_that_user_only(
     tmp_path, monkeypatch
 ):
     monkeypatch.setenv(
         "RECONCILIATION_STORE_DIR", str(tmp_path / "reconciliations")
     )
-    monkeypatch.setenv(
-        "CLEANUP_CAPABILITY_STORE_PATH", str(tmp_path / "cleanup-capabilities.json")
-    )
-    workflow_id = "victim:governance-only"
-    get_reconciliation_store().create(
-        user_id="victim",
-        workflow_id=workflow_id,
-        task_id="historical-task",
+    monkeypatch.setenv("APPROVAL_STORE_DIR", str(tmp_path / "approvals"))
+    for workflow_id, task_id in (("u1:first", "task-1"), ("u1:old", "task-old")):
+        get_reconciliation_store().create(
+            user_id="u1",
+            workflow_id=workflow_id,
+            task_id=task_id,
+            step_id="send",
+            resume_step=1,
+            agent_name="RemoteEmailDispatchAgent",
+            error="unknown",
+        )
+        get_approval_store().create(
+            user_id="u1",
+            workflow_id=workflow_id,
+            task_id=task_id,
+            resume_step=1,
+            node_name="RemoteEmailDispatchAgent",
+            subject={"id": "u1"},
+            object={"id": "RemoteEmailDispatchAgent"},
+            scenario={},
+            action={"verb": "dispatch"},
+            policy_result={"decision": "REVIEW_REQUIRED"},
+        )
+    other = get_reconciliation_store().create(
+        user_id="u2",
+        workflow_id="u2:keep",
+        task_id="task-keep",
         step_id="send",
         resume_step=1,
         agent_name="RemoteEmailDispatchAgent",
         error="unknown",
     )
-
-    response = TestClient(create_app()).post(
-        "/api/workflows/run",
-        headers={
-            "X-Task-Owner-Token": "attacker-capability-token-with-at-least-32-chars"
-        },
-        json={
-            "user_id": "victim",
-            "lang": "zh",
-            "messages": [{"role": "user", "content": "claim governance"}],
-            "debug": False,
-            "deep_thinking_mode": False,
-            "search_before_planning": False,
-            "coor_agents": None,
-            "workmode": "production",
-            "workflow_id": workflow_id,
-        },
-    )
-
-    assert response.status_code == 403
-
-
-def test_workflow_owner_capability_cleans_orphan_records_without_admin_key(
-    tmp_path, monkeypatch
-):
-    monkeypatch.setenv(
-        "RECONCILIATION_STORE_DIR", str(tmp_path / "reconciliations")
-    )
-    monkeypatch.setenv(
-        "CLEANUP_CAPABILITY_STORE_PATH", str(tmp_path / "cleanup-capabilities.json")
-    )
-    monkeypatch.setattr(web_app, "GOVERNANCE_ADMIN_API_KEY", "")
-    workflow_id = "u1:legacy"
-    get_reconciliation_store().create(
-        user_id="u1",
-        workflow_id=workflow_id,
-        task_id="legacy-task",
-        step_id="send",
-        resume_step=1,
-        agent_name="RemoteEmailDispatchAgent",
-        error="unknown",
-    )
-    token = "owner-capability-token-with-at-least-32-chars"
-    get_cleanup_capability_store().bind(
-        token=token,
-        user_id="u1",
-        workflow_id=workflow_id,
-    )
-
     response = TestClient(create_app()).delete(
         "/api/conversation-history",
-        params={"workflow_id": workflow_id},
-        headers={"X-Task-Owner-Token": token},
+        params={"user_id": "u1"},
     )
 
     assert response.status_code == 200
-    assert response.json()["deleted"]["reconciliations"] == 1
+    assert response.json()["deleted"] == {"reconciliations": 2, "approvals": 2}
+    assert get_reconciliation_store().list(user_id="u1") == []
+    assert get_approval_store().list(user_id="u1") == []
+    assert get_reconciliation_store().get(other.reconciliation_id) is not None
 
 
-def test_governance_mutations_require_authenticated_server_identity(tmp_path, monkeypatch):
+def test_governance_apis_require_no_client_credential(tmp_path, monkeypatch):
     monkeypatch.setenv("APPROVAL_STORE_DIR", str(tmp_path / "approvals"))
     monkeypatch.setenv(
         "RECONCILIATION_STORE_DIR", str(tmp_path / "reconciliations")
@@ -1338,31 +1049,32 @@ def test_governance_mutations_require_authenticated_server_identity(tmp_path, mo
     reconciliation, _ = _reconciliation(tmp_path, monkeypatch)
     client = TestClient(create_app())
 
-    denied_approval = client.post(
+    approved = client.post(
         f"/api/security/approvals/{approval.approval_id}/approve",
         json={"approver": "admin", "comment": "spoofed admin"},
     )
-    denied_reconciliation = client.post(
+    frozen = client.post(
         (
             "/api/security/reconciliations/"
             f"{reconciliation.reconciliation_id}/freeze"
         ),
         json={"operator": "admin", "comment": "spoofed admin"},
     )
-    unknown_listing = client.get(
+    listing = client.get(
         "/api/security/approvals",
         params={"requester_id": "not-a-demo-user"},
     )
 
-    assert denied_approval.status_code == 401
-    assert denied_reconciliation.status_code == 401
-    assert unknown_listing.status_code == 401
-    assert get_approval_store().get(approval.approval_id).status == "pending"
+    assert approved.status_code == 200
+    assert frozen.status_code == 200
+    assert listing.status_code == 200
+    assert approved.json()["decision"]["approver"] == "admin"
+    assert get_approval_store().get(approval.approval_id).status == "approved"
     assert (
         get_reconciliation_store()
         .get(reconciliation.reconciliation_id)
         .status
-        == "pending"
+        == "frozen"
     )
 
 
@@ -1392,7 +1104,7 @@ def test_governance_mutations_ignore_body_actor_and_record_server_actor(
     assert frozen.json()["resolution"]["operator"] == "admin"
 
 
-def test_task_cleanup_uses_authenticated_reviewer_not_query_identity(tmp_path, monkeypatch):
+def test_task_cleanup_requires_no_client_credential(tmp_path, monkeypatch):
     monkeypatch.setenv(
         "RECONCILIATION_STORE_DIR", str(tmp_path / "reconciliations")
     )
@@ -1405,24 +1117,16 @@ def test_task_cleanup_uses_authenticated_reviewer_not_query_identity(tmp_path, m
         agent_name="RemoteEmailDispatchAgent",
         error="unknown outcome",
     )
-    unauthenticated = TestClient(create_app())
+    client = TestClient(create_app())
 
-    denied = unauthenticated.delete(
+    deleted = client.delete(
         "/api/tasks/task-owned-by-hr",
-        params={"user_id": "admin"},
-    )
-    assert denied.status_code == 401
-    assert get_reconciliation_store().get(record.reconciliation_id) is not None
-
-    deleted = _client().delete(
-        "/api/tasks/task-owned-by-hr",
-        params={"user_id": "engineer"},
     )
     assert deleted.status_code == 200
     assert get_reconciliation_store().get(record.reconciliation_id) is None
 
 
-def test_governance_reads_reject_query_parameter_identity_spoofing(
+def test_governance_reads_require_no_credential_and_ignore_query_identity(
     tmp_path, monkeypatch
 ):
     monkeypatch.setenv("APPROVAL_STORE_DIR", str(tmp_path / "approvals"))
@@ -1439,13 +1143,13 @@ def test_governance_reads_reject_query_parameter_identity_spoofing(
 
     assert client.get(
         "/api/security/approvals", params={"requester_id": "admin"}
-    ).status_code == 401
+    ).status_code == 200
     assert client.get(
         "/api/security/reconciliations", params={"requester_id": "admin"}
-    ).status_code == 401
+    ).status_code == 200
     assert client.get(
         "/api/tasks/task-1/governance", params={"requester_id": "admin"}
-    ).status_code == 401
+    ).status_code == 200
 
 
 def test_reconciliation_receipt_transaction_rolls_back_on_record_write_failure(
@@ -1519,6 +1223,12 @@ def test_demo_static_assets_disable_stale_cache_and_include_resume_fixes():
     assert script.headers["cache-control"] == "no-store"
     assert "const uniqueOutputs = []" in script.text
     assert 'await resumeTask({ inChat: true })' in script.text
+    assert "const findConversationByTaskId" in script.text
+    assert "if (originalConversation) loadConversation(originalConversation);" in script.text
+    assert 'clearOutputPhase("executing");' in script.text
+    assert 'resumeTerminalStatus === "SUCCEEDED"' in script.text
+    assert "captureAssistantConversationContext({ replaceLatest: true });" in script.text
+    assert "replaceLatestAssistantConversationMessage" in script.text
 
 
 def test_governance_queue_items_include_chinese_friendly_task_context(

@@ -11,6 +11,7 @@ from src.orchestration.failure_mapper import (
     failure_from_exception,
     failure_from_step_result,
     make_failure,
+    public_policy_reason,
 )
 
 
@@ -184,6 +185,50 @@ def test_failure_from_step_result_does_not_publish_remote_details():
     assert "employee_salary" not in dumped
     assert "private" not in dumped
     assert failure.agent_id == "hr-agent"
+
+
+def test_known_remote_validation_failure_has_concrete_chinese_reason():
+    failure = failure_from_step_result(
+        "travel_step",
+        "Tool query_travel_record failed: employee_id or employee_name is required",
+        {"attempts": 1, "selected_agent": "office-agent"},
+    )
+
+    assert failure.code == "AGENT_EXECUTION_FAILED"
+    assert failure.message == "员工查询缺少员工姓名或员工编号，执行器无法确定查询对象。"
+
+
+def test_unknown_remote_failure_still_does_not_leak_raw_text():
+    failure = failure_from_step_result(
+        "step_1",
+        "provider token=secret and salary=1000",
+        {"attempts": 1, "selected_agent": "remote-agent"},
+    )
+
+    assert failure.message == "The Agent could not complete this step."
+    assert "secret" not in failure.model_dump_json()
+    assert "salary" not in failure.model_dump_json()
+
+
+@pytest.mark.parametrize(
+    ("reason", "expected"),
+    [
+        (
+            "Subject grants ['read'] missing required grants ['salary.read']",
+            "当前用户缺少该资源要求的授权项。",
+        ),
+        (
+            "Operation mode send not in allowed modes ['read']",
+            "当前步骤的操作模式不在该资源允许的模式范围内。",
+        ),
+        (
+            "Operation requires human approval",
+            "该资源或操作风险要求人工审批后才能执行。",
+        ),
+    ],
+)
+def test_policy_denial_reason_is_specific_chinese(reason, expected):
+    assert public_policy_reason({"policy_result": {"reason": reason}}) == expected
 
 
 def test_adapter_retryable_verdict_upgrades_business_failure():

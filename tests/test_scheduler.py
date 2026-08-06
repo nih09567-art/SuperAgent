@@ -566,6 +566,23 @@ def test_nested_provider_id_is_available_without_normalized_artifact():
     assert _external_operation_id(exec_result, None) == "mail-after-error"
 
 
+def test_meeting_manager_provider_id_is_available_from_agent_envelope():
+    from src.orchestration.scheduler import _external_operation_id
+
+    exec_result = ExecuteResult(
+        status=ExecutionStatus.SUCCESS,
+        result={
+            "status": "success",
+            "meeting_info": {
+                "status": "success",
+                "meeting": {"id": "meeting-0042"},
+            },
+        },
+    )
+
+    assert _external_operation_id(exec_result, None) == "meeting-0042"
+
+
 def test_dispatch_permission_denial_is_not_retried_or_misclassified():
     from src.security.enforcement import PermissionDeniedError
 

@@ -136,10 +136,29 @@ def test_web_routes_reconciliation_to_security_queue():
         Path(__file__).resolve().parents[1] / "web" / "security.js"
     ).read_text(encoding="utf-8")
     assert 'secFetch("/api/security/reconciliations"' in security_source
-    assert "headers: governanceAuthHeaders(false)" in security_source
+    assert "sessionStorage" not in security_source
+    assert '"Authorization"' not in security_source
     assert "requester_id=" not in security_source
     for decision in ("retry", "succeeded", "freeze", "terminate"):
         assert f'data-decision="{decision}"' in security_source
+
+
+def test_security_details_use_expected_collapsed_visibility():
+    index = INDEX_HTML.read_text(encoding="utf-8")
+    security_source = (
+        Path(__file__).resolve().parents[1] / "web" / "security.js"
+    ).read_text(encoding="utf-8")
+
+    assert 'id="securityLastDeniedCard" hidden' in index
+    assert 'id="toggleToolAccessBtn"' in index
+    assert 'aria-controls="toolAccessGrid"' in index
+    assert 'id="toggleAdvancedSecurityBtn"' in index
+    assert 'id="advancedSecurityContent" class="sec-advanced-content" hidden' in index
+    assert "高级/开发者信息" in index
+    assert 'bindSecurityCollapseButton("toggleToolAccessBtn", "toolAccessGrid", false)' in security_source
+    assert '"advancedSecurityContent",\n        true' in security_source
+    assert "if (card) card.hidden = true" in security_source
+    assert "if (card) card.hidden = false" in security_source
 
 
 def test_clear_conversation_cascades_backend_history_before_local_storage():
@@ -147,8 +166,10 @@ def test_clear_conversation_cascades_backend_history_before_local_storage():
 
     assert 'fetch(`/api/tasks/${encodeURIComponent(taskId)}`' in source
     assert 'fetch(`/api/conversation-history?${query}`' in source
-    assert "headers: window.getGovernanceAuthHeaders(false)" in source
-    assert "conversation.decisions.map((decision) => decision.workflowId)" in source
+    assert "new URLSearchParams({ user_id: userId })" in source
+    assert "X-Task-Owner-Token" not in source
+    assert "getTaskCleanupHeaders" not in source
+    assert '"Authorization"' not in source[source.index("const loadTaskGovernance"):]
     assert "conversation.decisions.flatMap((decision)" in source
     assert "Array.isArray(decision.taskIds) ? decision.taskIds : []" in source
     fetch_index = source.index('fetch(`/api/conversation-history?${query}`')
@@ -170,6 +191,13 @@ def test_decision_console_selects_conversation_and_keeps_five_rounds():
     assert "const rememberRoutingDecision = (eventData)" in source
     assert "const renderDecisionHistoryControls = ({" in source
     assert "decisions: activeConversationDecisions.map" in source
+    decision_controls = source[
+        source.index("const renderDecisionHistoryControls = ({"):
+        source.index("const renderDecisionDetailControls")
+    ]
+    assert "|| conversations[0]" not in decision_controls
+    assert "hideDecisionConsole();" in decision_controls
+    assert "请选择对话" in decision_controls
 
 
 def test_routing_decision_is_saved_before_history_console_renders():

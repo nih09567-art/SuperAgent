@@ -1,14 +1,14 @@
 import asyncio
+import hashlib
 import hmac
 import json
+import math
+import secrets
 import shutil
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, AsyncGenerator, Optional
-from uuid import uuid4
-
-import math
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
@@ -37,10 +37,6 @@ from src.orchestration.completion import (
 )
 from src.orchestration.reconciliation import get_reconciliation_store
 from src.security.approval import get_approval_store
-from src.security.cleanup_capabilities import (
-    CleanupCapabilityError,
-    get_cleanup_capability_store,
-)
 from config.s_abac_demo_users import get_demo_user, list_demo_users, get_user_available_agents
 from config.s_abac_config import (
     AGENT_SECURITY_ATTRIBUTES,
@@ -58,8 +54,8 @@ from src.service.env import (
     SCHEDULER_RETRY_JITTER_RATIO,
     USE_MCP_TOOLS,
     WORKFLOW_SKILL_ADMIN_API_KEY,
-    GOVERNANCE_ADMIN_API_KEY,
     GOVERNANCE_ADMIN_ACTOR_ID,
+    EXECUTION_USER_API_KEYS_JSON,
 )
 from src.memory import get_memory_manager
 from src.memory.store import SecretDetectedError
@@ -183,6 +179,15 @@ class ReconciliationDecisionRequest(BaseModel):
     outputs: dict[str, Any] = Field(default_factory=dict)
 
 
+class ExecutionAuthorizationRequest(BaseModel):
+    # Retained for older clients only. Authorization always uses the
+    # server-authenticated principal, never this caller-controlled value.
+    user_id: Optional[str] = Field(default=None, max_length=128)
+    workflow_id: str = Field(min_length=1, max_length=256)
+    plan_hash: str = Field(min_length=64, max_length=64)
+    user_query: str = Field(default="", max_length=4000)
+
+
 def _governance_actor_profile(actor_id: str) -> dict[str, Any]:
     """Resolve a declared demo actor and fail closed for unknown identities."""
 
@@ -214,128 +219,81 @@ def _require_governance_reviewer(actor_id: str) -> dict[str, Any]:
     return profile
 
 
-def _authenticate_governance_operator(
-    authorization: Optional[str] = Header(default=None),
-) -> str:
-    """Return the server-owned governance principal for a valid credential."""
+def _trusted_governance_operator() -> str:
+    """Return the server-owned trusted principal for governance actions."""
 
-    configured = str(GOVERNANCE_ADMIN_API_KEY or "")
-    if not configured:
-        raise HTTPException(
-            status_code=503,
-            detail="governance mutation credential is not configured",
-        )
-    scheme, separator, supplied = (authorization or "").partition(" ")
-    if (
-        not separator
-        or scheme.casefold() != "bearer"
-        or not hmac.compare_digest(supplied, configured)
-    ):
-        raise HTTPException(
-            status_code=401,
-            detail="governance mutation authentication failed",
-        )
     actor_id = str(GOVERNANCE_ADMIN_ACTOR_ID or "").strip()
     _require_governance_reviewer(actor_id)
     return actor_id
 
 
-def _authorize_runtime_cleanup(
-    *,
-    task_id: str = "",
-    workflow_id: str = "",
-    owner_token: str = "",
-    authorization: str = "",
-) -> str:
-    """Accept a resource-owner capability or a governance-admin credential."""
+def _execution_user_credentials() -> dict[str, str]:
+    """Load the server-owned user-to-API-key map and reject unsafe config."""
 
-    capabilities = get_cleanup_capability_store()
-    if task_id and capabilities.authorize_task(task_id, owner_token):
-        return "task_owner"
-    if workflow_id and capabilities.authorize_workflow(workflow_id, owner_token):
-        return "workflow_owner"
-    if authorization:
-        return _authenticate_governance_operator(authorization)
-    raise HTTPException(
-        status_code=401,
-        detail="runtime cleanup authentication failed",
-    )
-
-
-def _bind_runtime_cleanup_capability(
-    *,
-    token: str,
-    user_id: str,
-    workflow_id: str,
-    task_id: str = "",
-    trusted_new_task_id: str = "",
-) -> None:
-    if not token or not workflow_id:
-        return
-    try:
-        get_cleanup_capability_store().bind(
-            token=token,
-            user_id=user_id,
-            workflow_id=workflow_id,
-            task_id=task_id,
-            allow_new_workflow=not _workflow_has_persisted_records(
-                workflow_id,
-                excluding_task_id=trusted_new_task_id,
-            ),
-        )
-    except CleanupCapabilityError as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
-
-
-def _workflow_has_persisted_records(
-    workflow_id: str, *, excluding_task_id: str = ""
-) -> bool:
-    """Whether a workflow predates the requesting cleanup capability."""
-
-    excluded = str(excluding_task_id or "")
-    for task in TaskLogger.list_tasks(workflow_id=workflow_id):
-        if str(task.get("task_id") or "") != excluded:
-            return True
-    for approval in get_approval_store().list(workflow_id=workflow_id):
-        if str(approval.get("task_id") or "") != excluded:
-            return True
-    for reconciliation in get_reconciliation_store().list():
-        if (
-            str(reconciliation.get("workflow_id") or "") == workflow_id
-            and str(reconciliation.get("task_id") or "") != excluded
-        ):
-            return True
-    return False
-
-
-def _task_record_owner_ids(task_id: str) -> set[str]:
-    """Collect trusted owners from persisted task and governance records."""
-
-    owners: set[str] = set()
-    task = TaskLogger.load(task_id)
-    if task is not None:
-        owner, _ = _parse_workflow_id(str(task.workflow_id or ""))
-        if owner:
-            owners.add(owner)
-    for item in get_approval_store().list(task_id=task_id):
-        if item.get("user_id"):
-            owners.add(str(item["user_id"]))
-    for item in get_reconciliation_store().list(task_id=task_id):
-        if item.get("user_id"):
-            owners.add(str(item["user_id"]))
-    return owners
-
-
-def _authorize_task_cleanup(task_id: str, actor_id: str) -> None:
-    profile = _governance_actor_profile(actor_id)
-    if _is_governance_reviewer(profile):
-        return
-    owners = _task_record_owner_ids(task_id)
-    if not owners or str(actor_id) not in owners:
+    raw_configuration = str(EXECUTION_USER_API_KEYS_JSON or "").strip()
+    if not raw_configuration:
         raise HTTPException(
-            status_code=403,
-            detail="task does not belong to the selected user",
+            status_code=503,
+            detail="production execution credentials are not configured",
         )
+    try:
+        configured = json.loads(raw_configuration)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="production execution credentials are invalid",
+        ) from exc
+    if not isinstance(configured, dict) or not configured:
+        raise HTTPException(
+            status_code=503,
+            detail="production execution credentials are not configured",
+        )
+
+    credentials: dict[str, str] = {}
+    seen_keys: set[str] = set()
+    for raw_user_id, raw_api_key in configured.items():
+        user_id = str(raw_user_id or "").strip()
+        api_key = raw_api_key if isinstance(raw_api_key, str) else ""
+        if (
+            not user_id
+            or len(user_id) > 128
+            or ":" in user_id
+            or len(api_key) < 16
+            or api_key in seen_keys
+        ):
+            raise HTTPException(
+                status_code=503,
+                detail="production execution credentials are invalid",
+            )
+        credentials[user_id] = api_key
+        seen_keys.add(api_key)
+    return credentials
+
+
+def _authenticate_execution_user(
+    authorization: Optional[str] = Header(default=None),
+) -> tuple[str, str]:
+    """Resolve a production execution principal from a server-owned API key."""
+
+    scheme, separator, supplied = (authorization or "").partition(" ")
+    if not separator or scheme.casefold() != "bearer" or not supplied:
+        raise HTTPException(
+            status_code=401,
+            detail="production execution authentication failed",
+        )
+    credentials = _execution_user_credentials()
+    matches = [
+        user_id
+        for user_id, api_key in credentials.items()
+        if hmac.compare_digest(supplied, api_key)
+    ]
+    if len(matches) != 1:
+        raise HTTPException(
+            status_code=401,
+            detail="production execution authentication failed",
+        )
+    principal = matches[0]
+    return principal, credentials[principal]
 
 
 def _static_resource_precheck(
@@ -409,8 +367,9 @@ def _static_resource_precheck(
         )
 
     eligible = not blockers
-    bypass_review = _is_governance_reviewer(profile)
-    review_required = eligible and not bypass_review and bool(
+    # Governance administrators have broad roster access, but mandatory
+    # approval remains part of S-ABAC for high-risk or irreversible resources.
+    review_required = eligible and bool(
         attrs.get("requires_approval") or attrs.get("irreversible")
     )
     decision = (
@@ -488,9 +447,111 @@ def _finalize_disconnected_task(task_id: Optional[str], reason: str) -> None:
     if not task_id:
         return
     task_log = TaskLogger.load(task_id)
-    if task_log is None or task_log.status != "running":
+    if task_log is None or task_log.status not in {"running", "reserved"}:
         return
     task_log.log_workflow_terminal("FAILED", error=reason)
+
+
+def _production_execution_digest(
+    user_id: str,
+    workflow_id: str,
+    plan_hash: str,
+    confirmation_request_id: str,
+) -> str:
+    identity = "\0".join((
+        str(user_id),
+        str(workflow_id),
+        str(plan_hash),
+        str(confirmation_request_id),
+    ))
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
+
+
+def _production_task_id(
+    user_id: str,
+    workflow_id: str,
+    plan_hash: str,
+    confirmation_request_id: str,
+) -> str:
+    digest = _production_execution_digest(
+        user_id, workflow_id, plan_hash, confirmation_request_id
+    )
+    return f"exec-{digest[:32]}"
+
+
+def _production_idempotency_key(
+    user_id: str,
+    workflow_id: str,
+    plan_hash: str,
+    confirmation_request_id: str,
+) -> str:
+    digest = _production_execution_digest(
+        user_id, workflow_id, plan_hash, confirmation_request_id
+    )
+    return f"production:{digest}"
+
+
+def _normalize_confirmation_request_id(value: str) -> str:
+    request_id = str(value or "").strip()
+    if not 8 <= len(request_id) <= 128 or any(
+        character not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
+        for character in request_id
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="Idempotency-Key must be 8-128 URL-safe characters",
+        )
+    return request_id
+
+
+def _production_authorization_token(
+    execution_api_key: str, task_id: str, attempt_id: str
+) -> str:
+    """Derive a stable short-lived capability for idempotent response replay."""
+
+    payload = "\0".join((task_id, attempt_id)).encode("utf-8")
+    return hmac.new(
+        execution_api_key.encode("utf-8"), payload, hashlib.sha256
+    ).hexdigest()
+
+
+def _canonical_execution_plan_hash(
+    workflow_id: str, steps: list[dict[str, Any]]
+) -> str:
+    canonical = {
+        "workflowId": workflow_id,
+        "steps": [
+            {
+                "title": step.get("title") or "",
+                "description": step.get("description") or "",
+                "agent_name": step.get("agent_name") or "",
+                "note": step.get("note") or "",
+            }
+            for step in steps
+        ],
+    }
+    encoded = json.dumps(
+        canonical, ensure_ascii=False, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _server_execution_plan_hash(user_id: str, workflow_id: str) -> str:
+    workflow_cache._load_workflow(user_id)
+    try:
+        raw_steps = workflow_cache.get_planning_steps(workflow_id)
+    except KeyError:
+        return ""
+    steps = _normalize_workflow_steps(raw_steps)
+    if not steps:
+        return ""
+    return _canonical_execution_plan_hash(workflow_id, steps)
+
+
+def _public_task_log(task_log: TaskLogger) -> dict[str, Any]:
+    data = task_log.to_dict()
+    data.pop("execution_authorization_token_hash", None)
+    return data
 
 
 def _delete_task_runtime_records(task_id: str) -> dict[str, int]:
@@ -819,63 +880,286 @@ def create_app() -> FastAPI:
             },
         }
 
+    def _authenticated_principal(request: Request) -> str:
+        """Resolve the authenticated subject supplied by the auth layer.
+
+        The workflow payload is untrusted input and must never select the
+        authorization subject. Deployments may populate ``request.state`` in
+        middleware; the explicit header is useful for the simple local
+        gateway and is still independent of the JSON body.
+        """
+
+        principal = getattr(request.state, "authenticated_user_id", None)
+        principal = principal or request.headers.get("X-Authenticated-User")
+        principal = str(principal or "").strip()
+        if not principal:
+            raise HTTPException(status_code=401, detail="authenticated user required")
+        return principal
+
+    @app.post("/api/workflows/execution-authorizations")
+    async def create_execution_authorization(
+        body: ExecutionAuthorizationRequest,
+        authenticated_user: tuple[str, str] = Depends(_authenticate_execution_user),
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+    ):
+        principal, execution_api_key = authenticated_user
+        confirmation_request_id = _normalize_confirmation_request_id(idempotency_key)
+        plan_hash = body.plan_hash.strip().lower()
+        if any(character not in "0123456789abcdef" for character in plan_hash):
+            raise HTTPException(status_code=422, detail="plan_hash must be a SHA-256 hex digest")
+        workflow_owner, _ = _parse_workflow_id(body.workflow_id)
+        if not hmac.compare_digest(workflow_owner, principal):
+            raise HTTPException(
+                status_code=403,
+                detail="workflow does not belong to the authenticated user",
+            )
+        server_plan_hash = _server_execution_plan_hash(
+            principal, body.workflow_id
+        )
+        if not server_plan_hash:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "EXECUTION_PLAN_NOT_FOUND",
+                    "message": "The confirmed plan is not available on the server.",
+                },
+            )
+        if not hmac.compare_digest(plan_hash, server_plan_hash):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "EXECUTION_PLAN_CHANGED",
+                    "message": "The displayed plan no longer matches the server plan. Regenerate or reload it before confirming.",
+                    "server_plan_hash": server_plan_hash,
+                },
+            )
+
+        task_id = _production_task_id(
+            principal,
+            body.workflow_id,
+            plan_hash,
+            confirmation_request_id,
+        )
+        attempt_id = f"attempt-{secrets.token_hex(16)}"
+        execution_idempotency_key = _production_idempotency_key(
+            principal,
+            body.workflow_id,
+            plan_hash,
+            confirmation_request_id,
+        )
+        authorization_token = _production_authorization_token(
+            execution_api_key, task_id, attempt_id
+        )
+        token_hash = TaskLogger.hash_execution_authorization_token(
+            authorization_token
+        )
+        reserved, task = TaskLogger.reserve_execution(
+            task_id=task_id,
+            workflow_id=body.workflow_id,
+            user_query=body.user_query,
+            attempt_id=attempt_id,
+            idempotency_key=execution_idempotency_key,
+            plan_hash=plan_hash,
+            user_id=principal,
+            confirmation_request_id=confirmation_request_id,
+            authorization_token_hash=token_hash,
+        )
+        if not reserved and task is not None:
+            attempt_id = task.execution_attempt_id
+            execution_idempotency_key = task.execution_idempotency_key
+            authorization_token = _production_authorization_token(
+                execution_api_key, task_id, attempt_id
+            )
+            token_hash = TaskLogger.hash_execution_authorization_token(
+                authorization_token
+            )
+            reserved, task, refresh_failure = (
+                TaskLogger.refresh_unclaimed_execution_authorization(
+                    task_id=task_id,
+                    workflow_id=body.workflow_id,
+                    plan_hash=plan_hash,
+                    user_id=principal,
+                    confirmation_request_id=confirmation_request_id,
+                    authorization_token_hash=token_hash,
+                )
+            )
+            if not reserved and refresh_failure == "EXECUTION_CONFIRMATION_MISMATCH":
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": refresh_failure,
+                        "message": "The confirmation request does not match its server record.",
+                    },
+                )
+        if not reserved:
+            existing = _public_task_log(task) if task is not None else {}
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "EXECUTION_CONFIRMATION_ALREADY_USED",
+                    "message": "This confirmation attempt has expired, started, or completed. Confirm again to create a new attempt.",
+                    "task_id": task_id,
+                    "status": existing.get("status", "unknown"),
+                    "workflow_id": existing.get("workflow_id", body.workflow_id),
+                    "execution_attempt_id": existing.get("execution_attempt_id", ""),
+                    "execution_plan_hash": existing.get("execution_plan_hash", ""),
+                    "reservation_failure_code": existing.get(
+                        "reservation_failure_code", ""
+                    ),
+                },
+            )
+        return {
+            "task_id": task_id,
+            "execution_attempt_id": attempt_id,
+            "execution_idempotency_key": execution_idempotency_key,
+            "execution_plan_hash": plan_hash,
+            "confirmation_request_id": confirmation_request_id,
+            "execution_authorization_token": authorization_token,
+            "reservation_expires_at": task.reservation_expires_at if task else "",
+        }
+
     @app.post("/api/workflows/run")
     async def run_workflow(request: Request, body: AgentRequest):
+        execution_task_id: Optional[str] = None
+        response_headers = {"Cache-Control": "no-cache", "Connection": "keep-alive"}
+        if str(getattr(body.workmode, "value", body.workmode)) == "production":
+            required_identity = (
+                body.execution_task_id,
+                body.execution_authorization_token,
+                body.execution_attempt_id,
+                body.execution_idempotency_key,
+                body.execution_plan_hash,
+                body.workflow_id,
+            )
+            if not all(required_identity):
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "production execution requires a server-issued task_id, "
+                        "authorization_token, attempt_id, idempotency_key, "
+                        "workflow_id, and plan_hash"
+                    ),
+                )
+            execution_task_id = str(body.execution_task_id)
+            valid_task_id = (
+                len(execution_task_id) == 37
+                and execution_task_id.startswith("exec-")
+                and all(
+                    character in "0123456789abcdef"
+                    for character in execution_task_id[5:]
+                )
+            )
+            if not valid_task_id:
+                raise HTTPException(
+                    status_code=403,
+                    detail={
+                        "code": "EXECUTION_TASK_ID_MISMATCH",
+                        "message": "Task ID does not match the server execution identity.",
+                    },
+                )
+            reserved_task = TaskLogger.load(execution_task_id)
+            if reserved_task is None:
+                raise HTTPException(
+                    status_code=403,
+                    detail={
+                        "code": "EXECUTION_AUTHORIZATION_NOT_FOUND",
+                        "message": "The server execution identity does not exist.",
+                    },
+                )
+            expected_task_id = _production_task_id(
+                reserved_task.execution_user_id,
+                reserved_task.workflow_id,
+                reserved_task.execution_plan_hash,
+                reserved_task.execution_confirmation_request_id,
+            )
+            server_identity_matches = (
+                bool(reserved_task.execution_user_id)
+                and bool(reserved_task.execution_confirmation_request_id)
+                and hmac.compare_digest(execution_task_id, expected_task_id)
+            )
+            client_identity_matches = (
+                hmac.compare_digest(
+                    str(body.execution_attempt_id),
+                    reserved_task.execution_attempt_id,
+                )
+                and hmac.compare_digest(
+                    str(body.execution_idempotency_key),
+                    reserved_task.execution_idempotency_key,
+                )
+                and hmac.compare_digest(
+                    str(body.workflow_id), reserved_task.workflow_id
+                )
+                and hmac.compare_digest(
+                    str(body.execution_plan_hash).lower(),
+                    reserved_task.execution_plan_hash,
+                )
+            )
+            if not server_identity_matches or not client_identity_matches:
+                raise HTTPException(
+                    status_code=403,
+                    detail={
+                        "code": "EXECUTION_IDENTITY_MISMATCH",
+                        "message": "Client execution identity does not match the server reservation.",
+                        "task_id": execution_task_id,
+                    },
+                )
+            claimed, task, failure_code = TaskLogger.claim_execution_authorization(
+                task_id=execution_task_id,
+                authorization_token=str(body.execution_authorization_token),
+                user_id=reserved_task.execution_user_id,
+                workflow_id=reserved_task.workflow_id,
+                plan_hash=reserved_task.execution_plan_hash,
+            )
+            if not claimed:
+                existing_data = _public_task_log(task) if task is not None else {}
+                status_code = 403 if failure_code == "EXECUTION_AUTHORIZATION_MISMATCH" else 409
+                raise HTTPException(
+                    status_code=status_code,
+                    detail={
+                        "code": failure_code,
+                        "message": "The server-issued production execution authorization is missing, expired, mismatched, or already used.",
+                        "task_id": execution_task_id,
+                        "status": existing_data.get("status", "unknown"),
+                        "workflow_id": existing_data.get("workflow_id", body.workflow_id),
+                        "execution_attempt_id": existing_data.get("execution_attempt_id", ""),
+                        "execution_plan_hash": existing_data.get("execution_plan_hash", ""),
+                        "reservation_failure_code": existing_data.get(
+                            "reservation_failure_code", ""
+                        ),
+                    },
+                )
+            body.execution_attempt_id = task.execution_attempt_id
+            body.execution_idempotency_key = task.execution_idempotency_key
+            body.execution_plan_hash = task.execution_plan_hash
+            body.execution_task_id = task.task_id
+            body.user_id = task.execution_user_id
+            body.workflow_id = task.workflow_id
+            body.execution_authorization_token = None
+            response_headers.update({
+                "X-Task-ID": task.task_id,
+                "X-Execution-Attempt-ID": task.execution_attempt_id,
+                "X-Execution-Plan-Hash": task.execution_plan_hash,
+            })
+        else:
+            body.execution_task_id = None
+            body.execution_authorization_token = None
+            authenticated_user_id = _authenticated_principal(request)
+            # Bind all downstream workflow state to the authenticated principal;
+            # a client-supplied body.user_id is retained only as inert input data.
+            try:
+                body = body.model_copy(update={"user_id": authenticated_user_id})
+            except AttributeError:
+                body = body.copy(update={"user_id": authenticated_user_id})
+
         server = Server()
-        cleanup_token = str(request.headers.get("X-Task-Owner-Token") or "")
-        if not body.workflow_id:
-            body.workflow_id = f"{body.user_id}:{uuid4().hex}"
-        _bind_runtime_cleanup_capability(
-            token=cleanup_token,
-            user_id=body.user_id,
-            workflow_id=body.workflow_id,
-        )
 
         async def event_stream() -> AsyncGenerator[str, None]:
-            active_task_id: Optional[str] = None
-            bound_records: set[tuple[str, str]] = set()
+            active_task_id: Optional[str] = execution_task_id
             disconnected = False
             try:
                 async for event in server._run_agent_workflow(body):
                     event_data = event.get("data") or {}
                     active_task_id = event_data.get("task_id") or active_task_id
-                    active_workflow_id = str(
-                        event_data.get("workflow_id") or body.workflow_id or ""
-                    )
-                    binding = (active_workflow_id, str(active_task_id or ""))
-                    if (
-                        cleanup_token
-                        and active_workflow_id
-                        and (body.workflow_id or active_task_id)
-                        and binding not in bound_records
-                    ):
-                        try:
-                            _bind_runtime_cleanup_capability(
-                                token=cleanup_token,
-                                user_id=body.user_id,
-                                workflow_id=active_workflow_id,
-                                task_id=str(active_task_id or ""),
-                                trusted_new_task_id=str(active_task_id or ""),
-                            )
-                        except HTTPException as exc:
-                            reason = str(exc.detail or "cleanup capability binding failed")
-                            _finalize_disconnected_task(
-                                active_task_id,
-                                f"cleanup capability binding failed: {reason}",
-                            )
-                            failure_event = {
-                                "event": "workflow_error",
-                                "data": {
-                                    "workflow_id": active_workflow_id,
-                                    "task_id": active_task_id,
-                                    "reason_code": "CLEANUP_CAPABILITY_BINDING_FAILED",
-                                    "reason": "Workflow ownership validation failed",
-                                    "error": reason,
-                                },
-                            }
-                            yield _sse_format("workflow_error", failure_event)
-                            return
-                        bound_records.add(binding)
                     if await request.is_disconnected():
                         disconnected = True
                         break
@@ -883,6 +1167,12 @@ def create_app() -> FastAPI:
                     yield _sse_format(event_type, event)
             except asyncio.CancelledError:
                 disconnected = True
+            except Exception:
+                _finalize_disconnected_task(
+                    active_task_id,
+                    "workflow stream failed before terminal completion",
+                )
+                raise
             finally:
                 if disconnected:
                     _finalize_disconnected_task(
@@ -893,7 +1183,7 @@ def create_app() -> FastAPI:
         return StreamingResponse(
             event_stream(),
             media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+            headers=response_headers,
         )
 
     @app.get("/api/memory/long-term")
@@ -1309,10 +1599,10 @@ def create_app() -> FastAPI:
     @app.get("/api/tasks/{task_id}/log")
     async def get_task_log(task_id: str):
         """Get the full structured log for a task execution."""
-        task_log = TaskLogger.load(task_id)
+        task_log = TaskLogger.expire_stale_reservation(task_id)
         if task_log is None:
             raise HTTPException(status_code=404, detail="Task log not found")
-        return task_log.to_dict()
+        return _public_task_log(task_log)
 
     @app.get("/api/tasks/{task_id}/checkpoints")
     async def list_task_checkpoints(task_id: str):
@@ -1326,7 +1616,6 @@ def create_app() -> FastAPI:
         task_id: str,
         event_type: Optional[str] = None,
         step_id: Optional[str] = None,
-        _operator: str = Depends(_authenticate_governance_operator),
     ):
         """Return the append-only governance timeline for one task."""
         return get_governance_event_store().list(
@@ -1534,19 +1823,10 @@ def create_app() -> FastAPI:
         )
 
     @app.delete("/api/tasks/{task_id}")
-    async def delete_task(
-        task_id: str,
-        authorization: Optional[str] = Header(default=None),
-        x_task_owner_token: Optional[str] = Header(default=None),
-    ):
+    async def delete_task(task_id: str):
         """
         Delete a task's operational history and Security queue records.
         """
-        _authorize_runtime_cleanup(
-            task_id=task_id,
-            owner_token=str(x_task_owner_token or ""),
-            authorization=str(authorization or ""),
-        )
         try:
             deleted = _delete_task_runtime_records(task_id)
             if not any(deleted.values()):
@@ -1554,7 +1834,6 @@ def create_app() -> FastAPI:
                     status_code=404,
                     detail=f"Task runtime records not found: {task_id}",
                 )
-            get_cleanup_capability_store().delete_task_binding(task_id)
             return {
                 "result": "success",
                 "task_id": task_id,
@@ -1568,9 +1847,8 @@ def create_app() -> FastAPI:
 
     @app.delete("/api/conversation-history")
     async def delete_conversation_history(
-        workflow_id: str,
-        authorization: Optional[str] = Header(default=None),
-        x_task_owner_token: Optional[str] = Header(default=None),
+        workflow_id: Optional[str] = None,
+        user_id: Optional[str] = None,
     ):
         """Remove orphan Security records for a deleted browser conversation.
 
@@ -1578,31 +1856,39 @@ def create_app() -> FastAPI:
         are deleted only through the exact ``/api/tasks/{task_id}`` endpoint.
         """
 
-        owner_id, _ = _parse_workflow_id(workflow_id)
-        if not owner_id:
-            raise HTTPException(status_code=400, detail="invalid workflow id")
-        _authorize_runtime_cleanup(
-            workflow_id=workflow_id,
-            owner_token=str(x_task_owner_token or ""),
-            authorization=str(authorization or ""),
+        normalized_workflow_id = str(workflow_id or "").strip()
+        normalized_user_id = str(user_id or "").strip()
+        if not normalized_workflow_id and not normalized_user_id:
+            raise HTTPException(
+                status_code=400,
+                detail="workflow_id or user_id is required",
+            )
+        if normalized_workflow_id:
+            owner_id, _ = _parse_workflow_id(normalized_workflow_id)
+            if normalized_user_id and owner_id != normalized_user_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail="workflow_id does not belong to user_id",
+                )
+
+        cleanup_scope = (
+            {"workflow_id": normalized_workflow_id}
+            if normalized_workflow_id
+            else {"user_id": normalized_user_id}
         )
 
         # Older browser history entries did not persist exact task ids. Remove
         # their workflow-scoped queue cards, but do not guess which task logs
         # the user intended to delete.
         totals = {
-            "reconciliations": get_reconciliation_store().delete(
-                workflow_id=workflow_id,
-            ),
-            "approvals": get_approval_store().delete(
-                workflow_id=workflow_id,
-            ),
+            "reconciliations": get_reconciliation_store().delete(**cleanup_scope),
+            "approvals": get_approval_store().delete(**cleanup_scope),
         }
-        get_cleanup_capability_store().delete_workflow_binding(workflow_id)
 
         return {
             "result": "success",
-            "workflow_id": workflow_id,
+            "workflow_id": normalized_workflow_id or None,
+            "user_id": normalized_user_id or None,
             "deleted_tasks": 0,
             "deleted": totals,
             "business_outputs_preserved": True,
@@ -1793,7 +2079,6 @@ def create_app() -> FastAPI:
         workflow_id: Optional[str] = None,
         task_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        _operator: str = Depends(_authenticate_governance_operator),
     ):
         return _enrich_governance_queue_items(
             get_approval_store().list(
@@ -1808,7 +2093,7 @@ def create_app() -> FastAPI:
     async def approve_security_request(
         approval_id: str,
         body: ApprovalDecisionRequest,
-        operator: str = Depends(_authenticate_governance_operator),
+        operator: str = Depends(_trusted_governance_operator),
     ):
         try:
             approval = get_approval_store().approve(
@@ -1851,7 +2136,7 @@ def create_app() -> FastAPI:
     async def reject_security_request(
         approval_id: str,
         body: ApprovalDecisionRequest,
-        operator: str = Depends(_authenticate_governance_operator),
+        operator: str = Depends(_trusted_governance_operator),
     ):
         try:
             approval = get_approval_store().reject(
@@ -1885,7 +2170,7 @@ def create_app() -> FastAPI:
         status: Optional[str] = None,
         task_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        _operator: str = Depends(_authenticate_governance_operator),
+        _operator: str = Depends(_trusted_governance_operator),
     ):
         """List uncertain side effects that require an explicit human verdict."""
         store = get_reconciliation_store()
@@ -1946,7 +2231,7 @@ def create_app() -> FastAPI:
     async def retry_reconciliation(
         reconciliation_id: str,
         body: ReconciliationDecisionRequest,
-        operator: str = Depends(_authenticate_governance_operator),
+        operator: str = Depends(_trusted_governance_operator),
     ):
         """Confirm no external effect occurred and release the receipt for retry."""
         reconciliation = _load_reconciliation(reconciliation_id)
@@ -2002,7 +2287,7 @@ def create_app() -> FastAPI:
     async def confirm_reconciliation_succeeded(
         reconciliation_id: str,
         body: ReconciliationDecisionRequest,
-        operator: str = Depends(_authenticate_governance_operator),
+        operator: str = Depends(_trusted_governance_operator),
     ):
         """Confirm the external operation succeeded and complete its receipt."""
         reconciliation = _load_reconciliation(reconciliation_id)
@@ -2062,7 +2347,7 @@ def create_app() -> FastAPI:
     async def freeze_reconciliation(
         reconciliation_id: str,
         body: ReconciliationDecisionRequest,
-        operator: str = Depends(_authenticate_governance_operator),
+        operator: str = Depends(_trusted_governance_operator),
     ):
         try:
             reconciliation = get_reconciliation_store().freeze(
@@ -2095,7 +2380,7 @@ def create_app() -> FastAPI:
     async def terminate_reconciliation(
         reconciliation_id: str,
         body: ReconciliationDecisionRequest,
-        operator: str = Depends(_authenticate_governance_operator),
+        operator: str = Depends(_trusted_governance_operator),
     ):
         try:
             reconciliation = get_reconciliation_store().resolve(

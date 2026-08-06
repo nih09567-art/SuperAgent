@@ -83,12 +83,33 @@ class TaskStep(BaseModel):
     # for a human/operator; it is never executed blindly as an ordinary retry.
     compensation_action: Optional[Dict[str, Any]] = None
     preferred_resource_id: Optional[str] = None
+    # Platform-owned marker selecting a scenario-specific validation contract.
+    # Planner-authored values are discarded by the plan converter.
+    scenario_contract_id: Optional[str] = None
+    # Trusted resource metadata: whether successful execution changes an
+    # external system and therefore requires an idempotency/provider receipt.
+    external_side_effect: bool = False
 
     model_config = ConfigDict(extra="allow")
 
     @property
     def is_read_only(self) -> bool:
         return str(self.operation_mode).lower() == "read"
+
+    @property
+    def requires_external_receipt(self) -> bool:
+        mode = str(self.operation_mode).lower()
+        return mode in {
+            "write",
+            "send",
+            "execute",
+            "export",
+            "create",
+            "update",
+            "delete",
+            "submit",
+            "approve",
+        } or bool(self.external_side_effect)
 
 
 class TaskSpec(BaseModel):

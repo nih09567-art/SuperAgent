@@ -62,7 +62,7 @@ def test_basic_employee_query_does_not_call_salary_tool():
     assert [name for name, _arguments in calls] == ["remote_person_info_tool"]
     assert result["status"] == "success"
     assert result["outputs"]["employee.info"]["records"] == [
-        {"idvId": "employee-1", "name": "王强", "department": "营业部"}
+        {"adtEmpeNm": "王强", "holdposInstNm": "营业部"}
     ]
     assert "employee.salary" not in result["outputs"]
 

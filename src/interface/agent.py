@@ -168,6 +168,13 @@ class AgentRequest(BaseModel):
     resolved_request: Optional[str] = None
     current_request_entities: Dict[str, Any] = Field(default_factory=dict)
     context_references: List[Dict[str, Any]] = Field(default_factory=list)
+    # Production execution identity. The web service uses these fields to
+    # reserve one durable task for one explicit confirmation attempt.
+    execution_attempt_id: Optional[str] = Field(default=None, max_length=128)
+    execution_idempotency_key: Optional[str] = Field(default=None, max_length=256)
+    execution_plan_hash: Optional[str] = Field(default=None, max_length=128)
+    execution_task_id: Optional[str] = Field(default=None, max_length=128)
+    execution_authorization_token: Optional[str] = Field(default=None, max_length=256)
 
 
 class listAgentRequest(BaseModel):

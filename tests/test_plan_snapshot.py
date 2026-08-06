@@ -232,6 +232,52 @@ def test_verify_rejects_modified_operation_mode(tmp_path):
     assert tg is None and "task_graph mismatch" in reason
 
 
+def test_verify_accepts_operation_mode_provenance_only_drift(tmp_path):
+    """Diagnostic derivation text must not invalidate an executable graph."""
+    snap = _saved_snapshot(tmp_path)
+    snap["task_graph"]["steps"][0]["operation_mode_source"] = (
+        "older_trusted_derivation"
+    )
+    snap["task_graph"]["steps"][0]["operation_mode_reason"] = (
+        "same read mode derived through an older trusted path"
+    )
+    _reseal(snap)
+
+    tg, reason = _verify(snap)
+
+    assert tg is not None and reason == "ok"
+    assert tg["steps"][0]["operation_mode"] == "read"
+
+
+def test_administrator_must_reapprove_current_operation_mode_change(tmp_path):
+    snap = _saved_snapshot(tmp_path, steps=[_STEPS[0]])
+    changed_steps = [dict(_STEPS[0], operation_mode="send")]
+
+    rejected, reason = verify_snapshot_for_execution(
+        snap,
+        workflow_id="wf-1",
+        user_id="u1",
+        planning_steps=changed_steps,
+    )
+
+    assert rejected is None
+    assert "task_graph mismatch" in reason
+
+
+def test_administrator_cannot_replace_real_plan_with_empty_graph(tmp_path):
+    snap = _saved_snapshot(tmp_path, steps=[_STEPS[0]])
+
+    rejected, reason = verify_snapshot_for_execution(
+        snap,
+        workflow_id="wf-1",
+        user_id="u1",
+        planning_steps=[],
+    )
+
+    assert rejected is None
+    assert "task_graph mismatch" in reason
+
+
 def test_verify_rejects_modified_preferred_resource_id(tmp_path):
     snap = _saved_snapshot(tmp_path)
     snap["task_graph"]["steps"][0]["preferred_resource_id"] = "EvilAgent"

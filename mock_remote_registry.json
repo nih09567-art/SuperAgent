@@ -172,6 +172,11 @@
         "description": "Remote agent to query credit risk DB for business & risk metrics. This agent autonomously extracts company information from previous steps in the conversation.",
         "llm_type": "basic",
         "prompt": "remote business risk agent",
+        "contract_version": "1.0",
+        "produces": ["risk.records"],
+        "output_schema_refs": {
+          "risk.records": "structured_agent_result@v1"
+        },
         "selected_tools": [
           {
             "name": "remote_credit_risk_db_tool",

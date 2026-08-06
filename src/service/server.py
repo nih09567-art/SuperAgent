@@ -421,6 +421,7 @@ class Server:
                 }
                 for item in incoming_messages
             ],
+            task_id=request.execution_task_id,
         )
         assistant_buffers: Dict[str, str] = {}
         visible_remote_buffers: Dict[str, str] = {}

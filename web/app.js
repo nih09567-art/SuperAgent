@@ -6,22 +6,37 @@ const readinessHint = document.getElementById("readinessHint");
 const tabs = document.querySelectorAll(".tab");
 const panels = document.querySelectorAll(".panel");
 
-const TASK_OWNER_TOKEN_KEY = "superagentTaskOwnerCapability";
-const getTaskOwnerToken = () => {
-  let token = window.localStorage.getItem(TASK_OWNER_TOKEN_KEY) || "";
-  if (!token) {
-    const bytes = new Uint8Array(32);
-    window.crypto.getRandomValues(bytes);
-    token = Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("");
-    window.localStorage.setItem(TASK_OWNER_TOKEN_KEY, token);
-  }
-  return token;
+const jsonRequestHeaders = { "Content-Type": "application/json" };
+
+const EXECUTION_API_KEY_PREFIX = "superagentExecutionApiKey";
+const getExecutionApiKeyStorageKey = (userId) => (
+  `${EXECUTION_API_KEY_PREFIX}:${encodeURIComponent(String(userId || "").trim())}`
+);
+const clearExecutionApiKey = (userId) => {
+  window.sessionStorage.removeItem(getExecutionApiKeyStorageKey(userId));
 };
-const getTaskCleanupHeaders = (includeJson = false) => ({
-  ...(includeJson ? { "Content-Type": "application/json" } : {}),
-  "X-Task-Owner-Token": getTaskOwnerToken(),
-});
-window.getTaskCleanupHeaders = getTaskCleanupHeaders;
+const getExecutionAuthorizationHeaders = (userId, confirmationRequestId) => {
+  const storageKey = getExecutionApiKeyStorageKey(userId);
+  let credential = window.sessionStorage.getItem(storageKey) || "";
+  if (!credential) {
+    credential = window.prompt(
+      "\u8bf7\u8f93\u5165\u5f53\u524d\u7528\u6237\u7684\u751f\u4ea7\u6267\u884c\u51ed\u636e\uff1a",
+      ""
+    ) || "";
+    if (!credential) throw new Error("Production execution credential is required");
+    window.sessionStorage.setItem(storageKey, credential);
+  }
+  return {
+    "Authorization": `Bearer ${credential}`,
+    "Idempotency-Key": confirmationRequestId,
+  };
+};
+const createConfirmationRequestId = () => {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  const bytes = new Uint8Array(24);
+  globalThis.crypto.getRandomValues(bytes);
+  return `confirm-${Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("")}`;
+};
 
 const responseError = async (response, fallback) => {
   let detail = "";
@@ -180,7 +195,7 @@ const initializeChatPanelLayout = () => {
   newButton.innerHTML = '<span aria-hidden="true">+</span>';
   const chatMessage = document.createElement("textarea");
   chatMessage.id = "chatMessage";
-  chatMessage.rows = 2;
+  chatMessage.rows = 1;
   chatMessage.placeholder = "输入消息...";
   const chatStop = document.createElement("button");
   chatStop.id = "chatStopBtn";
@@ -209,7 +224,7 @@ const initializeChatPanelLayout = () => {
 
   const resizeMirrorMessage = () => {
     chatMessage.style.height = "auto";
-    chatMessage.style.height = `${Math.min(chatMessage.scrollHeight, 160)}px`;
+    chatMessage.style.height = `${Math.min(chatMessage.scrollHeight, 120)}px`;
   };
 
   const syncConfig = () => {
@@ -243,8 +258,9 @@ const initializeChatPanelLayout = () => {
     newButton.disabled = newConversationBtn?.disabled || false;
     chatRun.disabled = runBtn.disabled;
     chatStop.disabled = stopBtn.disabled;
-    chatRun.style.display = runBtn.disabled ? "none" : "";
-    chatStop.style.display = stopBtn.disabled ? "none" : "";
+    const isRunning = !stopBtn.disabled;
+    chatRun.style.display = isRunning ? "none" : "";
+    chatStop.style.display = isRunning ? "" : "none";
   };
   const schedule = () => {
     if (mirrorFrame !== null) return;
@@ -382,6 +398,12 @@ let activeConversationMessages = [];
 let activeConversationTranscript = [];
 let activeConversationId = null;
 let activeConversationCreatedAt = null;
+let activePendingPlan = null;
+let runningConversationId = null;
+let viewedConversationId = null;
+let runningConversationNodes = null;
+let activeConversationRuntime = null;
+let conversationRuntimeSequence = 0;
 let activeConversationTaskIds = new Set();
 let activeConversationDecisions = [];
 let coordinatorBuffer = "";
@@ -412,7 +434,11 @@ const CONVERSATION_TRANSCRIPT_LIMIT = 100;
 const CONVERSATION_MESSAGE_CHAR_LIMIT = 12000;
 const DECISION_HISTORY_LIMIT = 5;
 
-mermaid.initialize({ startOnLoad: false, theme: "default" });
+mermaid.initialize({
+  startOnLoad: false,
+  theme: "default",
+  flowchart: { htmlLabels: false },
+});
 
 const scrollChatToLatest = () => {
   if (!chatConversation) return;
@@ -439,6 +465,8 @@ const ensureChatLifecycle = () => {
   planSection.className = "chat-lifecycle-section chat-plan-card hidden";
   const planTitle = document.createElement("h4");
   planTitle.textContent = "计划卡片";
+  const recoveryNotice = document.createElement("div");
+  recoveryNotice.className = "chat-plan-recovery-notice hidden";
   const planContent = document.createElement("div");
   planContent.className = "chat-plan-content";
   const planActions = document.createElement("div");
@@ -475,7 +503,7 @@ const ensureChatLifecycle = () => {
   revisionHint.className = "chat-plan-revision-hint";
   revisionActions.append(applyRevisionButton, cancelRevisionButton);
   revisionForm.append(revisionLabel, revisionActions, revisionHint);
-  planSection.append(planTitle, planContent, planActions, revisionForm);
+  planSection.append(planTitle, recoveryNotice, planContent, planActions, revisionForm);
 
   const progressSection = document.createElement("section");
   progressSection.className = "chat-lifecycle-section chat-execution-progress hidden";
@@ -507,6 +535,7 @@ const ensureChatLifecycle = () => {
   currentChatLifecycle = {
     answerElement: answerOutput,
     planSection,
+    recoveryNotice,
     planContent,
     planActions,
     confirmPlanButton,
@@ -529,11 +558,36 @@ const ensureChatLifecycle = () => {
     revisionForm.classList.remove("hidden");
     revisionHint.textContent = "";
     revisionInput.focus();
+    if (activePendingPlan) {
+      activePendingPlan = {
+        ...activePendingPlan,
+        revisionOpen: true,
+        revisionText: revisionInput.value,
+      };
+      saveActiveConversation();
+    }
     scrollChatToLatest();
   });
   cancelRevisionButton.addEventListener("click", () => {
     revisionForm.classList.add("hidden");
     revisionHint.textContent = "";
+    if (activePendingPlan) {
+      activePendingPlan = {
+        ...activePendingPlan,
+        revisionOpen: false,
+        revisionText: "",
+      };
+      saveActiveConversation();
+    }
+  });
+  revisionInput.addEventListener("input", () => {
+    if (!activePendingPlan) return;
+    activePendingPlan = {
+      ...activePendingPlan,
+      revisionOpen: true,
+      revisionText: revisionInput.value,
+    };
+    saveActiveConversation();
   });
   applyRevisionButton.addEventListener("click", applyChatPlanRevision);
   return currentChatLifecycle;
@@ -545,6 +599,8 @@ const renderChatPlanCard = (steps) => {
   if (!lifecycle) return;
   lifecycle.planSection.classList.remove("hidden");
   lifecycle.planActions.classList.remove("hidden");
+  lifecycle.recoveryNotice.classList.add("hidden");
+  lifecycle.recoveryNotice.textContent = "";
   lifecycle.confirmPlanButton.textContent = "确认执行";
   const planBusy = executionInProgress || plannerOnlyMode || Boolean(currentAbortController);
   lifecycle.confirmPlanButton.disabled = planBusy;
@@ -576,7 +632,16 @@ const setChatPlanActionsDisabled = (disabled) => {
 };
 
 async function confirmChatPlanExecution() {
-  if (executionInProgress || currentAbortController || !planSteps.length) return;
+  if (["recovery_pending", "recovery_unknown"].includes(activePendingPlan?.status)) {
+    await resolvePendingExecution(activePendingPlan);
+    return;
+  }
+  if (
+    executionInProgress
+    || currentAbortController
+    || !planSteps.length
+    || activePendingPlan?.status !== "awaiting_confirmation"
+  ) return;
   const lifecycle = currentChatLifecycle;
   if (lifecycle) {
     lifecycle.revisionForm.classList.add("hidden");
@@ -584,15 +649,6 @@ async function confirmChatPlanExecution() {
   }
   setChatPlanActionsDisabled(true);
   await runExecution();
-  if (!lifecycle) return;
-  if (currentRunHasError) {
-    lifecycle.confirmPlanButton.textContent = "重新执行";
-    setChatPlanActionsDisabled(false);
-  } else {
-    lifecycle.confirmPlanButton.textContent = "已执行";
-    lifecycle.confirmPlanButton.disabled = true;
-    lifecycle.modifyPlanButton.disabled = true;
-  }
 }
 
 async function applyChatPlanRevision() {
@@ -605,11 +661,21 @@ async function applyChatPlanRevision() {
     return;
   }
   lifecycle.revisionHint.textContent = "正在重新生成计划...";
+  activePendingPlan = {
+    steps: planSteps.map((step) => normalizeStep(step)),
+    workflowId: workflowIdInput?.value.trim() || "",
+    status: "revising",
+    revisionOpen: true,
+    revisionText: instruction,
+  };
+  saveActiveConversation();
+  const runtime = beginConversationRuntime("revising");
   setChatPlanActionsDisabled(true);
   runBtn.disabled = true;
   userIdInput.disabled = true;
   if (newConversationBtn) newConversationBtn.disabled = true;
-  await runPlannerUpdate(instruction, true);
+  await runPlannerUpdate(instruction, true, runtime);
+  if (!isCurrentConversationRuntime(runtime)) return;
   runBtn.disabled = false;
   userIdInput.disabled = false;
   if (newConversationBtn) newConversationBtn.disabled = false;
@@ -618,12 +684,29 @@ async function applyChatPlanRevision() {
     lifecycle.revisionHint.textContent = "计划已更新，请确认执行。";
     lifecycle.revisionForm.classList.add("hidden");
     renderChatPlanCard(planSteps);
+    activePendingPlan = {
+      steps: planSteps.map((step) => normalizeStep(step)),
+      workflowId: workflowIdInput?.value.trim() || "",
+      status: "awaiting_confirmation",
+      revisionOpen: false,
+      revisionText: "",
+    };
+    saveActiveConversation();
     setStatus("Plan ready", true);
   } else {
     lifecycle.revisionHint.textContent = "计划修改失败，请调整修改要求后重试。";
+    activePendingPlan = {
+      steps: planSteps.map((step) => normalizeStep(step)),
+      workflowId: workflowIdInput?.value.trim() || "",
+      status: "awaiting_confirmation",
+      revisionOpen: true,
+      revisionText: instruction,
+    };
+    saveActiveConversation();
   }
   setChatPlanActionsDisabled(false);
   scrollChatToLatest();
+  finishConversationRuntime(runtime);
 }
 
 const updateChatExecutionProgress = (status, detail = "") => {
@@ -811,6 +894,28 @@ const createConversationMessageId = (role = "message") => {
   return `${activeConversationId || "conversation"}:${role}:${randomId}`;
 };
 
+const applyConversationMessageMetadata = (message, metadata = {}) => {
+  if (Array.isArray(metadata.results) && metadata.results.length) {
+    message.results = metadata.results
+      .filter((result) => result && String(result.content || "").trim())
+      .map((result) => ({
+        agentName: String(result.agentName || "assistant"),
+        content: String(result.content).slice(0, CONVERSATION_MESSAGE_CHAR_LIMIT),
+      }));
+  }
+  if (Array.isArray(metadata.planSteps) && metadata.planSteps.length) {
+    message.planSteps = metadata.planSteps.map((step) => normalizeStep(step));
+  }
+  if (metadata.outcomeStatus) {
+    message.outcomeStatus = String(metadata.outcomeStatus).slice(0, 64);
+  }
+  if (metadata.outcomeMessage) {
+    message.outcomeMessage = String(metadata.outcomeMessage)
+      .slice(0, CONVERSATION_MESSAGE_CHAR_LIMIT);
+  }
+  return message;
+};
+
 const appendActiveConversationMessage = (role, content, metadata = {}) => {
   const normalized = String(content || "").trim();
   if (!normalized) return;
@@ -824,29 +929,58 @@ const appendActiveConversationMessage = (role, content, metadata = {}) => {
   }
   activeConversationMessages.push(message);
   activeConversationMessages = activeConversationMessages.slice(-ACTIVE_CONVERSATION_LIMIT);
-  const transcriptMessage = { ...message };
-  if (Array.isArray(metadata.results) && metadata.results.length) {
-    transcriptMessage.results = metadata.results.map((result) => ({
-      agentName: String(result.agentName || "assistant"),
-      content: String(result.content || "").slice(0, CONVERSATION_MESSAGE_CHAR_LIMIT),
-    }));
-  }
+  const transcriptMessage = applyConversationMessageMetadata({ ...message }, metadata);
   activeConversationTranscript.push(transcriptMessage);
   activeConversationTranscript = activeConversationTranscript.slice(-CONVERSATION_TRANSCRIPT_LIMIT);
   saveActiveConversation();
 };
 
-const captureAssistantConversationContext = () => {
-  if (latestFinalResultText) {
-    appendActiveConversationMessage("assistant", latestFinalResultText);
-    return;
+const replaceLatestAssistantConversationMessage = (content, metadata = {}) => {
+  const normalized = String(content || "").trim();
+  if (!normalized) return false;
+  const lastUserIndex = activeConversationTranscript.findLastIndex(
+    (message) => message.role === "user"
+  );
+  let assistantIndex = -1;
+  for (let index = activeConversationTranscript.length - 1; index > lastUserIndex; index -= 1) {
+    if (activeConversationTranscript[index]?.role === "assistant") {
+      assistantIndex = index;
+      break;
+    }
   }
+  if (assistantIndex < 0) return false;
+  const replacement = {
+    role: "assistant",
+    content: normalized.slice(0, CONVERSATION_MESSAGE_CHAR_LIMIT),
+  };
+  applyConversationMessageMetadata(replacement, metadata);
+  activeConversationTranscript.splice(assistantIndex, 1, replacement);
+  activeConversationMessages = activeConversationTranscript
+    .slice(-ACTIVE_CONVERSATION_LIMIT)
+    .map((message) => ({ role: message.role, content: message.content }));
+  saveActiveConversation();
+  return true;
+};
+
+const captureAssistantConversationContext = ({
+  replaceLatest = false,
+  outcomeStatus = "",
+  outcomeMessage = "",
+} = {}) => {
   const structuredResults = executionStepCards
     .map((card) => {
       const content = String(card.content || "").trim();
       return content ? { agentName: card.agentName || "assistant", content } : null;
     })
-    .filter(Boolean);
+    .filter(Boolean)
+    .flatMap((result) => {
+      const values = parseJsonSequence(result.content);
+      if (!values || values.length < 2) return [result];
+      return values.map((value) => ({
+        agentName: String(value?.tool || result.agentName),
+        content: JSON.stringify(value),
+      }));
+    });
   const artifactResults = structuredResults
     .filter((result) => (
       /(report|document|research|knowledge)/i.test(result.agentName)
@@ -875,15 +1009,263 @@ const captureAssistantConversationContext = () => {
   }
   const cardResults = structuredResults.map((result) => `[${result.agentName}]\n${result.content}`);
   const fallback = executionOutput ? executionOutput.innerText.trim() : "";
-  appendActiveConversationMessage(
-    "assistant",
-    cardResults.join("\n\n") || fallback,
-    { results: structuredResults }
+  const unavailableFinalResult = latestFinalResultText === "工作流未产生可展示的最终结果。";
+  const normalizedOutcomeStatus = String(outcomeStatus || "").toLowerCase();
+  const resumeSucceeded = ["succeeded", "completed"].includes(normalizedOutcomeStatus);
+  const resultText = (
+    (!unavailableFinalResult ? latestFinalResultText : "")
+    || cardResults.join("\n\n")
+    || latestFinalResultText
+    || fallback
+    || (replaceLatest && resumeSucceeded ? "任务已恢复并执行成功。" : "")
   );
+  const content = [outcomeMessage, resultText].filter(Boolean).join("\n\n")
+    || (outcomeStatus ? "执行结束，请查看执行状态。" : "执行完成。");
+  const metadata = {
+    results: structuredResults,
+    planSteps,
+    outcomeStatus,
+    outcomeMessage,
+  };
+  if (replaceLatest && replaceLatestAssistantConversationMessage(content, metadata)) return;
+  appendActiveConversationMessage("assistant", content, metadata);
 };
 
 const getChatHistoryKey = (userId) => `${CHAT_HISTORY_KEY_PREFIX}:${encodeURIComponent(userId)}`;
 const getLegacyChatHistoryKey = (userId) => `${LEGACY_CHAT_HISTORY_KEY_PREFIX}:${encodeURIComponent(userId)}`;
+
+const normalizePendingPlan = (pendingPlan) => {
+  if (!pendingPlan || typeof pendingPlan !== "object") return null;
+  const steps = Array.isArray(pendingPlan.steps)
+    ? pendingPlan.steps.map((step) => normalizeStep(step))
+    : [];
+  const workflowId = String(pendingPlan.workflowId || "").trim();
+  if (!steps.length || !workflowId) return null;
+  const interruptedFrom = ["executing", "revising"].includes(pendingPlan.interruptedFrom)
+    ? pendingPlan.interruptedFrom
+    : "";
+  return {
+    steps,
+    workflowId,
+    status: String(pendingPlan.status || "awaiting_confirmation"),
+    revisionOpen: Boolean(pendingPlan.revisionOpen),
+    revisionText: String(pendingPlan.revisionText || "")
+      .slice(0, CONVERSATION_MESSAGE_CHAR_LIMIT),
+    interruptedFrom,
+    taskId: String(pendingPlan.taskId || "").slice(0, 128),
+    attemptId: String(pendingPlan.attemptId || "").slice(0, 128),
+    idempotencyKey: String(pendingPlan.idempotencyKey || "").slice(0, 256),
+    confirmationRequestId: String(pendingPlan.confirmationRequestId || "").slice(0, 128),
+    planHash: String(pendingPlan.planHash || "").slice(0, 128),
+    recoveryMessage: String(pendingPlan.recoveryMessage || "")
+      .slice(0, CONVERSATION_MESSAGE_CHAR_LIMIT),
+    serverStatus: String(pendingPlan.serverStatus || "").slice(0, 64),
+  };
+};
+
+const recoverInterruptedPendingPlan = (pendingPlan) => {
+  const normalized = normalizePendingPlan(pendingPlan);
+  if (!normalized) return { pendingPlan: null, recovered: false, needsResolution: false };
+  if (normalized.status === "revising") {
+    return {
+      pendingPlan: {
+        ...normalized,
+        interruptedFrom: "revising",
+        status: "awaiting_confirmation",
+      },
+      recovered: true,
+      needsResolution: false,
+    };
+  }
+  if (normalized.status === "executing") {
+    return {
+      pendingPlan: {
+        ...normalized,
+        interruptedFrom: "executing",
+        status: "recovery_checking",
+        recoveryMessage: "正在查询上次生产任务的服务端状态。",
+      },
+      recovered: true,
+      needsResolution: true,
+    };
+  }
+  const needsResolution = ["recovery_checking", "recovery_pending"].includes(normalized.status)
+    || (normalized.status === "recovery_unknown" && Boolean(normalized.taskId));
+  return { pendingPlan: normalized, recovered: false, needsResolution };
+};
+
+const persistRecoveredPendingPlan = (userId, conversationId, pendingPlan) => {
+  if (!userId || !conversationId || !pendingPlan) return;
+  const conversations = loadChatHistory(userId);
+  const conversation = conversations.find((item) => item.id === conversationId);
+  if (!conversation) return;
+  conversation.pendingPlan = normalizePendingPlan(pendingPlan);
+  persistChatHistory(userId, conversations);
+};
+
+const computeExecutionPlanHash = async (workflowId, steps) => {
+  const canonicalPlan = JSON.stringify({
+    workflowId: String(workflowId || ""),
+    steps: steps.map((step) => {
+      const normalized = normalizeStep(step);
+      return {
+        title: normalized.title,
+        description: normalized.description,
+        agent_name: normalized.agent_name,
+        note: normalized.note,
+      };
+    }),
+  });
+  if (!globalThis.crypto?.subtle) {
+    throw new Error("Web Crypto SHA-256 is unavailable; production execution requires a secure browser context");
+  }
+  const digest = await globalThis.crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(canonicalPlan)
+  );
+  return Array.from(new Uint8Array(digest))
+    .map((value) => value.toString(16).padStart(2, "0"))
+    .join("");
+};
+
+const createExecutionIdentity = async (
+  userId,
+  workflowId,
+  steps,
+  userQuery,
+  confirmationRequestId
+) => {
+  const planHash = await computeExecutionPlanHash(workflowId, steps);
+  const response = await fetch("/api/workflows/execution-authorizations", {
+    method: "POST",
+    headers: getExecutionAuthorizationHeaders(userId, confirmationRequestId),
+    body: JSON.stringify({
+      workflow_id: workflowId,
+      plan_hash: planHash,
+      user_query: String(userQuery || ""),
+    }),
+  });
+  const responseBody = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    if (response.status === 401) clearExecutionApiKey(userId);
+    const detail = responseBody.detail || responseBody;
+    const message = detail.message || detail.code || `HTTP ${response.status}`;
+    const error = new Error(`Execution authorization failed: ${message}`);
+    error.status = response.status;
+    error.code = detail.code || "";
+    error.detail = detail;
+    throw error;
+  }
+  const identity = {
+    taskId: String(responseBody.task_id || ""),
+    attemptId: String(responseBody.execution_attempt_id || ""),
+    idempotencyKey: String(responseBody.execution_idempotency_key || ""),
+    planHash: String(responseBody.execution_plan_hash || ""),
+    authorizationToken: String(responseBody.execution_authorization_token || ""),
+    confirmationRequestId: String(responseBody.confirmation_request_id || ""),
+  };
+  if (!identity.taskId || !identity.attemptId || !identity.idempotencyKey
+    || identity.planHash !== planHash || !identity.authorizationToken
+    || identity.confirmationRequestId !== confirmationRequestId) {
+    throw new Error("Execution authorization response is incomplete or does not match the confirmed plan");
+  }
+  return {
+    ...identity,
+  };
+};
+
+const applyPendingExecutionRecoveryState = (conversationId, pendingPlan, updates) => {
+  if (!conversationId || conversationId !== activeConversationId || !activePendingPlan) return false;
+  if (
+    pendingPlan.attemptId
+    && activePendingPlan.attemptId
+    && pendingPlan.attemptId !== activePendingPlan.attemptId
+  ) return false;
+  activePendingPlan = normalizePendingPlan({ ...activePendingPlan, ...updates });
+  saveActiveConversation();
+  renderPendingPlanForCurrentAnswer(activePendingPlan, true);
+  updateConfirmExecuteState();
+  return true;
+};
+
+const resolvePendingExecution = async (pendingPlan = activePendingPlan) => {
+  const normalized = normalizePendingPlan(pendingPlan);
+  const conversationId = activeConversationId;
+  if (!normalized || normalized.interruptedFrom !== "executing") return false;
+  if (!normalized.taskId) {
+    return applyPendingExecutionRecoveryState(conversationId, normalized, {
+      status: "recovery_unknown",
+      recoveryMessage: "该记录没有保存 Task ID，无法确认原任务是否产生过业务副作用。请先在 Task History 中人工核对，系统已禁止直接重新执行。",
+    });
+  }
+
+  applyPendingExecutionRecoveryState(conversationId, normalized, {
+    status: "recovery_checking",
+    recoveryMessage: "正在查询上次生产任务的服务端状态。",
+  });
+  try {
+    const response = await fetch(`/api/tasks/${encodeURIComponent(normalized.taskId)}/log`);
+    if (!response.ok) throw new Error(`Task status query returned HTTP ${response.status}`);
+    const task = await response.json();
+    const identityMatches = (
+      String(task.task_id || "") === normalized.taskId
+      && String(task.workflow_id || "") === normalized.workflowId
+      && String(task.execution_phase || "") === "execution"
+      && Boolean(normalized.attemptId)
+      && String(task.execution_attempt_id || "") === normalized.attemptId
+      && Boolean(normalized.planHash)
+      && String(task.execution_plan_hash || "") === normalized.planHash
+    );
+    if (!identityMatches) {
+      return applyPendingExecutionRecoveryState(conversationId, normalized, {
+        status: "recovery_blocked",
+        serverStatus: String(task.status || "unknown"),
+        recoveryMessage: "服务端任务身份与当前会话的工作流、执行尝试或计划哈希不一致。为避免重复副作用，已禁止执行，请人工核对 Task History。",
+      });
+    }
+
+    const serverStatus = String(task.status || "unknown").toUpperCase();
+    if (
+      serverStatus === "FAILED"
+      && String(task.reservation_failure_code || "") === "RESERVATION_EXPIRED"
+    ) {
+      return applyPendingExecutionRecoveryState(conversationId, normalized, {
+        status: "awaiting_confirmation",
+        interruptedFrom: "",
+        serverStatus,
+        taskId: "",
+        attemptId: "",
+        idempotencyKey: "",
+        confirmationRequestId: "",
+        recoveryMessage: "上次执行授权在工作流启动前已过期，未开始生产执行。请人工确认后重试。",
+      });
+    }
+    if (["RUNNING", "RESERVED"].includes(serverStatus)) {
+      return applyPendingExecutionRecoveryState(conversationId, normalized, {
+        status: "recovery_pending",
+        serverStatus,
+        recoveryMessage: "原任务仍在服务端运行或等待启动。系统不会创建新的执行任务，可稍后再次检查状态。",
+      });
+    }
+    if (["COMPLETED", "SUCCEEDED"].includes(serverStatus)) {
+      return applyPendingExecutionRecoveryState(conversationId, normalized, {
+        status: "recovery_completed",
+        serverStatus,
+        recoveryMessage: "原任务已在服务端完成。为防止重复业务操作，本计划不能再次执行。",
+      });
+    }
+    return applyPendingExecutionRecoveryState(conversationId, normalized, {
+      status: "recovery_blocked",
+      serverStatus,
+      recoveryMessage: `原任务服务端状态为 ${serverStatus}。失败或断连不代表外部副作用已回滚，请先人工核对 Task History，系统已禁止直接重新执行。`,
+    });
+  } catch (error) {
+    return applyPendingExecutionRecoveryState(conversationId, normalized, {
+      status: "recovery_unknown",
+      recoveryMessage: `暂时无法确认原任务状态：${error.message || error}。系统不会在状态未知时重新执行。`,
+    });
+  }
+};
 
 const cloneDecisionEventData = (value) => {
   if (!value || typeof value !== "object") return {};
@@ -932,7 +1314,6 @@ const normalizeStoredDecision = (decision, fallbackRound = 1) => {
     eventData,
   };
 };
-
 const normalizeStoredConversation = (conversation) => {
   if (!conversation || typeof conversation !== "object") return null;
   const conversationId = String(
@@ -949,15 +1330,7 @@ const normalizeStoredConversation = (conversation) => {
             ? String(message.message_id)
             : `${conversationId}:message:${index + 1}`,
         };
-        if (Array.isArray(message.results)) {
-          normalizedMessage.results = message.results
-            .filter((result) => result && String(result.content || "").trim())
-            .map((result) => ({
-              agentName: String(result.agentName || "assistant"),
-              content: String(result.content).slice(0, CONVERSATION_MESSAGE_CHAR_LIMIT),
-            }));
-        }
-        return normalizedMessage;
+        return applyConversationMessageMetadata(normalizedMessage, message);
       })
       .slice(-CONVERSATION_TRANSCRIPT_LIMIT)
     : [];
@@ -998,6 +1371,7 @@ const normalizeStoredConversation = (conversation) => {
       ? conversation.contextReferences.map((item) => ({ ...item }))
       : [],
     decisions,
+    pendingPlan: normalizePendingPlan(conversation.pendingPlan),
     messages,
   };
 };
@@ -1073,6 +1447,7 @@ const saveActiveConversation = () => {
       taskIds: [...decision.taskIds],
       eventData: cloneDecisionEventData(decision.eventData),
     })),
+    pendingPlan: normalizePendingPlan(activePendingPlan),
     messages: activeConversationTranscript.map((message) => ({ ...message })),
   });
   persistChatHistory(userId, conversations);
@@ -1112,7 +1487,7 @@ const renderChatHistory = () => {
     const item = document.createElement("button");
     item.type = "button";
     item.className = "conversation-history-item";
-    if (conversation.id === activeConversationId) item.classList.add("active");
+    if (conversation.id === (viewedConversationId || activeConversationId)) item.classList.add("active");
     const content = document.createElement("span");
     content.className = "conversation-history-content";
     content.textContent = conversation.title;
@@ -1144,29 +1519,61 @@ const renderLoadedAssistantMessage = (message) => {
   const results = Array.isArray(message?.results) && message.results.length
     ? message.results
     : parseHistoricalAgentResults(content);
-  if (!results.length || !answerOutput) {
+  const storedPlanSteps = Array.isArray(message?.planSteps) ? message.planSteps : [];
+  const outcomeStatus = String(message?.outcomeStatus || "").toLowerCase();
+  const outcomeMessage = String(message?.outcomeMessage || "").trim();
+  const hasLifecycle = storedPlanSteps.length || results.length || outcomeStatus;
+  if (!answerOutput) return;
+  if (!hasLifecycle) {
     showAssistantText(content);
     return;
   }
-  answerOutput.replaceChildren();
-  answerOutput.classList.remove("is-empty");
-  answerOutput.removeAttribute("data-empty-text");
-  const fragment = document.createDocumentFragment();
-  results.forEach((result, index) => {
-    renderStepCardInto({
-      id: index + 1,
-      total: results.length,
-      agentName: result.agentName,
-      displayName: result.agentName,
-      status: "done",
-      content: result.content,
-      startTime: null,
-      endTime: null,
-      summary: "历史执行结果",
-    }, fragment);
-  });
-  answerOutput.appendChild(fragment);
-  currentChatLifecycle = null;
+
+  const lifecycle = ensureChatLifecycle();
+  if (!lifecycle) return;
+  if (storedPlanSteps.length) {
+    renderChatPlanCard(storedPlanSteps);
+    lifecycle.planActions.classList.add("hidden");
+    lifecycle.revisionForm.classList.add("hidden");
+  }
+  if (outcomeStatus) {
+    const succeeded = ["succeeded", "completed"].includes(outcomeStatus);
+    updateChatExecutionProgress(
+      succeeded ? "completed" : "error",
+      outcomeMessage || (succeeded ? "执行已完成。" : "执行失败，请查看执行日志。")
+    );
+  }
+
+  const resultText = outcomeMessage && content.startsWith(outcomeMessage)
+    ? content.slice(outcomeMessage.length).trim()
+    : content;
+  if (results.length || resultText) {
+    lifecycle.resultSection.classList.remove("hidden");
+    lifecycle.resultTitle.textContent = outcomeStatus
+      && !["succeeded", "completed"].includes(outcomeStatus)
+      ? "执行输出（失败前）"
+      : "最终结果";
+    lifecycle.resultContent.replaceChildren();
+    if (results.length) {
+      const fragment = document.createDocumentFragment();
+      results.forEach((result, index) => {
+        renderStepCardInto({
+          id: index + 1,
+          total: results.length,
+          agentName: result.agentName,
+          displayName: result.agentName,
+          status: "done",
+          content: result.content,
+          startTime: null,
+          endTime: null,
+          summary: "历史执行结果",
+        }, fragment);
+      });
+      lifecycle.resultContent.appendChild(fragment);
+    } else {
+      lifecycle.resultContent.appendChild(formatResult(resultText));
+    }
+  }
 };
 
 const renderLoadedConversation = (messages) => {
@@ -1188,12 +1595,154 @@ const renderLoadedConversation = (messages) => {
   scrollChatToLatest();
 };
 
+const renderPendingPlanForCurrentAnswer = (pendingPlan, interactive = true) => {
+  const normalized = normalizePendingPlan(pendingPlan);
+  if (!normalized || !answerOutput) return false;
+  renderChatPlanCard(normalized.steps);
+  const lifecycle = currentChatLifecycle;
+  if (!lifecycle) return false;
+  lifecycle.planActions.classList.remove("hidden");
+  const interruptedRevision = normalized.interruptedFrom === "revising";
+  const recoveryStatus = String(normalized.status || "").startsWith("recovery_");
+  const recoveryCanCheck = ["recovery_pending", "recovery_unknown"].includes(normalized.status);
+  const confirmLabels = {
+    executing: "执行中...",
+    recovery_checking: "正在恢复...",
+    recovery_pending: "检查任务状态",
+    recovery_unknown: "重新检查状态",
+    recovery_completed: "任务已完成",
+    recovery_blocked: "已禁止重复执行",
+  };
+  lifecycle.confirmPlanButton.textContent = confirmLabels[normalized.status] || "确认执行";
+  if (recoveryStatus || interruptedRevision || normalized.recoveryMessage) {
+    lifecycle.recoveryNotice.textContent = normalized.recoveryMessage || (
+      interruptedRevision
+        ? "上次计划修改被中断，可继续修改或执行原计划。"
+        : "正在恢复上次生产任务状态。"
+    );
+    lifecycle.recoveryNotice.classList.remove("hidden");
+  }
+  lifecycle.revisionInput.value = normalized.revisionText;
+  lifecycle.revisionForm.classList.toggle("hidden", recoveryStatus || !normalized.revisionOpen);
+  setChatPlanActionsDisabled(true);
+  if (interactive && normalized.status === "awaiting_confirmation") {
+    setChatPlanActionsDisabled(false);
+  } else if (interactive && recoveryCanCheck) {
+    lifecycle.confirmPlanButton.disabled = false;
+  }
+  return true;
+};
+
+const isConversationRuntimeActive = () => Boolean(activeConversationRuntime);
+
+const isCurrentConversationRuntime = (runtime) => Boolean(
+  runtime
+  && activeConversationRuntime
+  && runtime.id === activeConversationRuntime.id
+);
+
+const beginConversationRuntime = (kind = "workflow") => {
+  if (!activeConversationId) saveActiveConversation();
+  const runtime = {
+    id: `${Date.now()}-${++conversationRuntimeSequence}`,
+    conversationId: activeConversationId,
+    userId: activeConversationUserId || userIdInput.value.trim(),
+    kind,
+    controller: null,
+    stopRequested: false,
+    taskId: "",
+    terminalReceived: false,
+    terminalStatus: "",
+    recoveryRequired: false,
+  };
+  activeConversationRuntime = runtime;
+  runningConversationId = activeConversationId;
+  viewedConversationId = activeConversationId;
+  runningConversationNodes = null;
+  renderChatHistory();
+  return runtime;
+};
+
+const attachConversationRuntimeController = (runtime, controller) => {
+  if (!isCurrentConversationRuntime(runtime)) return false;
+  runtime.controller = controller;
+  currentAbortController = controller;
+  return true;
+};
+
+const renderConversationPreview = (conversation) => {
+  if (!chatConversation) return;
+  if (!runningConversationNodes) {
+    runningConversationNodes = Array.from(chatConversation.childNodes);
+  }
+
+  const liveAnswerOutput = answerOutput;
+  const liveLifecycle = currentChatLifecycle;
+  const livePlanSteps = planSteps;
+  const liveExecutionStepCards = executionStepCards;
+
+  answerOutput = null;
+  currentChatLifecycle = null;
+  planSteps = [];
+  executionStepCards = [];
+  renderLoadedConversation(conversation.messages);
+  renderPendingPlanForCurrentAnswer(conversation.pendingPlan, false);
+
+  answerOutput = liveAnswerOutput;
+  currentChatLifecycle = liveLifecycle;
+  planSteps = livePlanSteps;
+  executionStepCards = liveExecutionStepCards;
+  scrollChatToLatest();
+};
+
+const restoreRunningConversationView = () => {
+  if (!chatConversation || !runningConversationNodes) return;
+  chatConversation.replaceChildren(...runningConversationNodes);
+  runningConversationNodes = null;
+  scrollChatToLatest();
+};
+
+const finishConversationRuntime = (runtime = activeConversationRuntime) => {
+  if (!isCurrentConversationRuntime(runtime)) return false;
+  const completedConversationId = runtime.conversationId;
+  const requestedConversationId = viewedConversationId;
+  if (currentAbortController === runtime.controller) currentAbortController = null;
+  activeConversationRuntime = null;
+  runningConversationId = null;
+  runningConversationNodes = null;
+
+  if (requestedConversationId && requestedConversationId !== completedConversationId) {
+    const conversation = loadChatHistory(activeConversationUserId)
+      .find((item) => item.id === requestedConversationId);
+    if (conversation) {
+      loadConversation(conversation);
+      return true;
+    }
+  }
+  viewedConversationId = activeConversationId;
+  renderChatHistory();
+  return true;
+};
+
 const loadConversation = (conversation) => {
-  if (currentAbortController || executionInProgress || !conversation) return false;
+  if (!conversation) return false;
   const normalized = normalizeStoredConversation(conversation);
   if (!normalized) return false;
+
+  if (isConversationRuntimeActive()) {
+    viewedConversationId = normalized.id;
+    if (normalized.id === runningConversationId) {
+      restoreRunningConversationView();
+    } else {
+      renderConversationPreview(normalized);
+    }
+    renderChatHistory();
+    return true;
+  }
+
   activeConversationUserId = userIdInput.value.trim();
   activeConversationId = normalized.id;
+  viewedConversationId = normalized.id;
   activeConversationCreatedAt = normalized.createdAt;
   activeConversationTaskIds = new Set(normalized.taskIds || []);
   activeConversationDecisions = (normalized.decisions || []).map((decision) => ({
@@ -1230,14 +1779,31 @@ const loadConversation = (conversation) => {
   currentContextReferences = Array.isArray(normalized.contextReferences)
     ? normalized.contextReferences.map((item) => ({ ...item }))
     : [];
+  const recoveredPlan = recoverInterruptedPendingPlan(normalized.pendingPlan);
+  activePendingPlan = recoveredPlan.pendingPlan;
+  if (recoveredPlan.recovered) {
+    persistRecoveredPendingPlan(activeConversationUserId, normalized.id, activePendingPlan);
+  }
   originalUserQuery = currentResolvedRequest || currentRequestQuery || originalUserQuery;
-  workflowIdInput.value = normalized.workflowId || "";
+  workflowIdInput.value = activePendingPlan?.workflowId || normalized.workflowId || "";
   messageInput.value = "";
   resizeMessageInput();
   clearOutput();
   resetSummary();
   resetPlan();
   renderLoadedConversation(activeConversationTranscript);
+  if (activePendingPlan) {
+    planSteps = activePendingPlan.steps.map((step) => normalizeStep(step));
+    renderPlanSummary(planSteps);
+    renderPlanEditor();
+    renderPendingPlanForCurrentAnswer(activePendingPlan, true);
+    showPlanHint("Planning completed. Waiting for confirmation.");
+    showPlanValidationHint("Plan ready. Choose Confirm execution or Modify plan.");
+    updateConfirmExecuteState();
+    if (recoveredPlan.needsResolution) {
+      void resolvePendingExecution(activePendingPlan);
+    }
+  }
   setStatus("Conversation loaded", true);
   renderChatHistory();
   return true;
@@ -1248,12 +1814,6 @@ const clearChatHistory = async () => {
   const conversations = userId ? loadChatHistory(userId) : [];
   if (!userId || !conversations.length) return;
   if (!window.confirm(`确定清空用户 ${userId} 的最近对话吗？`)) return;
-  const workflowIds = [...new Set(conversations.flatMap((conversation) => [
-    conversation.workflowId,
-    ...(Array.isArray(conversation.decisions)
-      ? conversation.decisions.map((decision) => decision.workflowId)
-      : []),
-  ]).map((value) => String(value || "").trim()).filter(Boolean))];
   const taskIds = [...new Set(conversations.flatMap((conversation) => [
     ...(Array.isArray(conversation.taskIds) ? conversation.taskIds : []),
     ...(Array.isArray(conversation.decisions)
@@ -1266,24 +1826,20 @@ const clearChatHistory = async () => {
     await Promise.all(taskIds.map(async (taskId) => {
       const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}`, {
         method: "DELETE",
-        headers: window.getTaskCleanupHeaders(false),
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok && response.status !== 404) {
         throw new Error(data.detail || `清理任务 ${taskId} 失败（HTTP ${response.status}）`);
       }
     }));
-    await Promise.all(workflowIds.map(async (workflowId) => {
-      const query = new URLSearchParams({ workflow_id: workflowId });
-      const response = await fetch(`/api/conversation-history?${query}`, {
-        method: "DELETE",
-        headers: window.getTaskCleanupHeaders(false),
-      });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(data.detail || `清理 ${workflowId} 失败（HTTP ${response.status}）`);
-      }
-    }));
+    const query = new URLSearchParams({ user_id: userId });
+    const response = await fetch(`/api/conversation-history?${query}`, {
+      method: "DELETE",
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(data.detail || `清理用户 ${userId} 的关联记录失败（HTTP ${response.status}）`);
+    }
   } catch (err) {
     window.alert(`对话没有删除：后端关联记录清理失败。${err.message}`);
     return;
@@ -1306,7 +1862,9 @@ const resetActiveConversation = (userId = userIdInput.value.trim()) => {
   activeConversationMessages = [];
   activeConversationTranscript = [];
   activeConversationId = null;
+  viewedConversationId = null;
   activeConversationCreatedAt = null;
+  activePendingPlan = null;
   activeConversationTaskIds = new Set();
   instructionHistory = [];
   originalUserQuery = "";
@@ -1493,24 +2051,30 @@ const showPlanValidationHint = (text, isError = false) => {
 };
 
 const updateConfirmExecuteState = () => {
+  const recoveryLocked = Boolean(
+    activePendingPlan?.interruptedFrom === "executing"
+    && String(activePendingPlan?.status || "").startsWith("recovery_")
+  );
   if (confirmExecuteBtn) {
     const hasPlan = planSteps.length > 0;
     const hasWorkflowId = workflowIdInput && workflowIdInput.value.trim();
-    confirmExecuteBtn.disabled = executionInProgress || !(hasPlan && hasWorkflowId);
-    confirmExecuteBtn.textContent = executionInProgress ? "Executing..." : "Confirm execution";
+    confirmExecuteBtn.disabled = recoveryLocked || executionInProgress || !(hasPlan && hasWorkflowId);
+    confirmExecuteBtn.textContent = recoveryLocked
+      ? "Recovery required"
+      : (executionInProgress ? "Executing..." : "Confirm execution");
   }
   if (nlPlanEditBtn) {
-    nlPlanEditBtn.disabled = executionInProgress;
+    nlPlanEditBtn.disabled = recoveryLocked || executionInProgress;
   }
   if (validatePlanBtn) {
     validatePlanBtn.disabled = executionInProgress;
   }
   const hasPlan = planSteps.length > 0;
   if (retryPlanBtn) {
-    retryPlanBtn.disabled = executionInProgress || !instructionHistory.length;
+    retryPlanBtn.disabled = recoveryLocked || executionInProgress || !instructionHistory.length;
   }
   if (addPlanStepBtn) {
-    addPlanStepBtn.disabled = executionInProgress;
+    addPlanStepBtn.disabled = recoveryLocked || executionInProgress;
   }
 };
 
@@ -1810,7 +2374,7 @@ const validatePlanSteps = () => {
   return errors;
 };
 
-const runPlannerUpdate = async (instruction, appendHistory = true) => {
+const runPlannerUpdate = async (instruction, appendHistory = true, runtime = null) => {
   const userId = userIdInput.value.trim();
   if (!userId) {
     showPlanNlHint("User ID required.", true);
@@ -1868,11 +2432,12 @@ const runPlannerUpdate = async (instruction, appendHistory = true) => {
   };
 
   plannerOnlyController = new AbortController();
+  if (runtime) attachConversationRuntimeController(runtime, plannerOnlyController);
   schedulePlannerTimeout();
   try {
     const response = await fetch("/api/workflows/run", {
       method: "POST",
-      headers: window.getTaskCleanupHeaders(true),
+      headers: jsonRequestHeaders,
       body: JSON.stringify(payload),
       signal: plannerOnlyController.signal,
     });
@@ -2264,10 +2829,7 @@ const renderFinalResult = (data = {}) => {
   lifecycle.resultSection.classList.remove("hidden");
   lifecycle.resultTitle.textContent = "最终结果";
   lifecycle.resultContent.replaceChildren();
-  const content = document.createElement("pre");
-  content.className = "chat-final-result-content-text";
-  content.textContent = latestFinalResultText;
-  lifecycle.resultContent.appendChild(content);
+  lifecycle.resultContent.appendChild(formatResult(latestFinalResultText));
   scrollChatToLatest();
 };
 
@@ -2452,32 +3014,151 @@ const renderWorkflowFailureSummaryInto = (summary, parent) => {
 
 // Result Formatting
 
-const formatResult = (rawContent) => {
-  const wrap = document.createElement("div");
-  wrap.className = "step-result";
+const RESULT_GROUP_LABELS = {
+  RemoteHRAssistantAgent: "员工与薪资查询",
+  RemoteDocumentGeneratorAgent: "收入证明文档",
+  RemoteEmailDispatchAgent: "邮件发送结果",
+  "employee.info": "员工基本信息",
+  "employee.salary": "薪资信息",
+};
 
-  let parsed = null;
-  try { parsed = JSON.parse(rawContent); } catch (e) { /* not JSON */ }
+const getResultGroupLabel = (name) => RESULT_GROUP_LABELS[name] || name || "执行结果";
 
-  // Unwrap {tool, result} wrapper
-  if (parsed && parsed.result !== undefined) {
-    parsed = parsed.result;
+const parseJsonSequence = (rawContent) => {
+  if (typeof rawContent !== "string") return [rawContent];
+  const text = rawContent.trim();
+  if (!text) return null;
+
+  try {
+    return [JSON.parse(text)];
+  } catch (error) {
+    // Continue with adjacent JSON values such as {...}{...}{...}.
   }
 
-  if (parsed && Array.isArray(parsed) && parsed.length > 0 && typeof parsed[0] === "object") {
-    wrap.appendChild(buildResultTable(parsed));
-    return wrap;
+  const values = [];
+  let start = -1;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (start < 0) {
+      if (/\s/.test(char)) continue;
+      if (char !== "{" && char !== "[") return null;
+      start = index;
+      depth = 1;
+      continue;
+    }
+
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (char === '"') {
+      inString = true;
+      continue;
+    }
+    if (char === "{" || char === "[") depth += 1;
+    if (char === "}" || char === "]") depth -= 1;
+    if (depth < 0) return null;
+    if (depth === 0) {
+      try {
+        values.push(JSON.parse(text.slice(start, index + 1)));
+      } catch (error) {
+        return null;
+      }
+      start = -1;
+    }
   }
 
-  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-    wrap.appendChild(buildKeyValueList(parsed, 0));
-    return wrap;
+  return start < 0 && values.length ? values : null;
+};
+
+const buildResultGroup = (title, value) => {
+  const section = document.createElement("section");
+  section.className = "step-result-group";
+  if (title) {
+    const heading = document.createElement("h5");
+    heading.className = "step-result-group-title";
+    heading.textContent = getResultGroupLabel(title);
+    section.appendChild(heading);
+  }
+  section.appendChild(buildStructuredResult(value));
+  return section;
+};
+
+const buildStructuredResult = (rawValue) => {
+  let value = rawValue;
+  if (typeof value === "string") {
+    const parsed = parseJsonSequence(value);
+    if (parsed?.length === 1) value = parsed[0];
+  }
+
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    if (Object.prototype.hasOwnProperty.call(value, "tool")
+        && Object.prototype.hasOwnProperty.call(value, "result")) {
+      return buildResultGroup(String(value.tool || "执行结果"), value.result);
+    }
+    if (value.outputs && typeof value.outputs === "object" && !Array.isArray(value.outputs)) {
+      const groups = document.createElement("div");
+      groups.className = "step-result-groups";
+      Object.entries(value.outputs).forEach(([name, output]) => {
+        groups.appendChild(buildResultGroup(name, output));
+      });
+      return groups;
+    }
+    if (Object.prototype.hasOwnProperty.call(value, "result")) {
+      return buildStructuredResult(value.result);
+    }
+    if (Array.isArray(value.records)) {
+      if (value.records.length && typeof value.records[0] === "object") {
+        return buildResultTable(value.records);
+      }
+      const empty = document.createElement("div");
+      empty.className = "step-result-empty";
+      empty.textContent = "未查询到记录";
+      return empty;
+    }
+    return buildKeyValueList(value, 0);
+  }
+
+  if (Array.isArray(value) && value.length && typeof value[0] === "object") {
+    return buildResultTable(value);
   }
 
   const pre = document.createElement("pre");
   pre.className = "step-result-pre";
-  pre.textContent = parsed ? JSON.stringify(parsed, null, 2) : rawContent;
-  wrap.appendChild(pre);
+  pre.textContent = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+  return pre;
+};
+
+const formatResult = (rawContent) => {
+  const wrap = document.createElement("div");
+  wrap.className = "step-result";
+  const values = parseJsonSequence(rawContent);
+
+  if (values?.length > 1) {
+    const groups = document.createElement("div");
+    groups.className = "step-result-groups";
+    values.forEach((value, index) => {
+      const title = value && typeof value === "object" ? value.tool : `结果 ${index + 1}`;
+      const content = value && typeof value === "object"
+        && Object.prototype.hasOwnProperty.call(value, "result")
+        ? value.result
+        : value;
+      groups.appendChild(buildResultGroup(title, content));
+    });
+    wrap.appendChild(groups);
+  } else {
+    wrap.appendChild(buildStructuredResult(values?.[0] ?? rawContent));
+  }
   return wrap;
 };
 
@@ -2679,6 +3360,28 @@ const getDecisionConsoleConversations = () => {
   return conversations.filter((conversation) => conversation.decisions?.length);
 };
 
+const findConversationByTaskId = (userId, taskId, workflowId = "") => {
+  const normalizedTaskId = String(taskId || "").trim();
+  const normalizedWorkflowId = String(workflowId || "").trim();
+  if (!userId || (!normalizedTaskId && !normalizedWorkflowId)) return null;
+  return loadChatHistory(userId).find((conversation) => (
+    (normalizedTaskId && conversation.taskIds.includes(normalizedTaskId))
+    || (normalizedTaskId && conversation.decisions.some(
+      (decision) => decision.taskIds.includes(normalizedTaskId)
+    ))
+    || (normalizedWorkflowId && conversation.workflowId === normalizedWorkflowId)
+  )) || null;
+};
+
+const hideDecisionConsole = () => {
+  if (mainAgentDecisionCard) mainAgentDecisionCard.style.display = "none";
+  if (decisionDetailTabs) decisionDetailTabs.replaceChildren();
+  if (decisionDetailPanel) {
+    decisionDetailPanel.classList.remove("open");
+    decisionDetailPanel.replaceChildren();
+  }
+};
+
 const decisionConversationLabel = (conversation) => {
   const title = String(conversation.title || "未命名对话").trim();
   const time = formatConversationTime(conversation.updatedAt);
@@ -2759,17 +3462,38 @@ const renderDecisionHistoryControls = ({
   if (!decisionConversationSelect || !decisionRoundSelect) return null;
   const conversations = getDecisionConsoleConversations();
   if (!conversations.length) {
+    selectedDecisionConversationId = null;
+    selectedDecisionId = null;
     decisionConversationSelect.innerHTML = '<option value="">暂无历史决策</option>';
     decisionRoundSelect.innerHTML = '<option value="">暂无决策轮次</option>';
     decisionConversationSelect.disabled = true;
     decisionRoundSelect.disabled = true;
     if (decisionHistoryMeta) decisionHistoryMeta.textContent = "每个对话最多保存五轮决策。";
+    hideDecisionConsole();
     return null;
   }
 
   const selectedConversation = conversations.find((item) => item.id === conversationId)
-    || conversations.find((item) => item.id === activeConversationId)
-    || conversations[0];
+    || (activeConversationId
+      ? conversations.find((item) => item.id === activeConversationId)
+      : null);
+  if (!selectedConversation) {
+    decisionConversationSelect.innerHTML = [
+      '<option value="">请选择对话</option>',
+      ...conversations.map((conversation) => (
+        `<option value="${escapeHtml(conversation.id)}">${escapeHtml(decisionConversationLabel(conversation))}</option>`
+      )),
+    ].join("");
+    decisionConversationSelect.value = "";
+    decisionConversationSelect.disabled = false;
+    decisionRoundSelect.innerHTML = '<option value="">请先选择对话</option>';
+    decisionRoundSelect.disabled = true;
+    if (decisionHistoryMeta) decisionHistoryMeta.textContent = "点击左侧对话后显示对应决策。";
+    selectedDecisionConversationId = null;
+    selectedDecisionId = null;
+    hideDecisionConsole();
+    return null;
+  }
   selectedDecisionConversationId = selectedConversation.id;
   decisionConversationSelect.disabled = false;
   decisionConversationSelect.innerHTML = conversations.map((conversation) => (
@@ -3354,6 +4078,17 @@ const parseSse = (buffer, onEvent) => {
 };
 
 const handleEvent = (eventName, payload) => {
+  const eventTaskId = String(payload?.data?.task_id || "").trim();
+  if (currentRunContext === "executing" && eventTaskId && activeConversationRuntime) {
+    activeConversationRuntime.taskId = eventTaskId;
+    if (activePendingPlan && activePendingPlan.taskId !== eventTaskId) {
+      activePendingPlan = normalizePendingPlan({
+        ...activePendingPlan,
+        taskId: eventTaskId,
+      });
+      saveActiveConversation();
+    }
+  }
   const observedTaskId = payload?.data?.task_id || payload?.task_id;
   if (observedTaskId) {
     activeConversationTaskIds.add(String(observedTaskId));
@@ -3783,6 +4518,10 @@ const handleEvent = (eventName, payload) => {
     const workflowData = payload.data || {};
     const rawStatus = workflowData.status || "";
     const status = String(rawStatus).toUpperCase();
+    if (currentRunContext === "executing" && activeConversationRuntime) {
+      activeConversationRuntime.terminalReceived = true;
+      activeConversationRuntime.terminalStatus = status || "COMPLETED";
+    }
     if (plannerOnlyMode) {
       if (!plannerOnlyStepsUpdated) {
         showPlanNlHint("Planner completed, but no executable steps were generated. Please refine the instruction and try again.", true);
@@ -3923,6 +4662,17 @@ const runWorkflow = async () => {
     return;
   }
   if (runBtn.disabled || executionInProgress || currentAbortController) return;
+  if (
+    activePendingPlan?.interruptedFrom === "executing"
+    && String(activePendingPlan?.status || "").startsWith("recovery_")
+  ) {
+    setStatus("Recovery required", false);
+    showPlanValidationHint(
+      "Resolve the previous production task in Task History or start a new conversation before planning another task.",
+      true
+    );
+    return;
+  }
   const userId = userIdInput.value.trim();
   if (!userId) {
     setStatus("User ID required", false);
@@ -3949,8 +4699,10 @@ const runWorkflow = async () => {
     : null;
 
   activeConversationUserId = userId;
+  activePendingPlan = null;
   appendActiveConversationMessage("user", message);
   showCurrentChatTurn(message);
+  const runtime = beginConversationRuntime("planning");
   messageInput.value = "";
   resizeMessageInput();
 
@@ -4011,14 +4763,15 @@ const runWorkflow = async () => {
     memory_session_id: activeConversationId,
   };
 
-  currentAbortController = new AbortController();
+  const controller = new AbortController();
+  attachConversationRuntimeController(runtime, controller);
   let planningStreamCompleted = false;
   try {
     const response = await fetch("/api/workflows/run", {
       method: "POST",
-      headers: window.getTaskCleanupHeaders(true),
+      headers: jsonRequestHeaders,
       body: JSON.stringify(payload),
-      signal: currentAbortController.signal,
+      signal: controller.signal,
     });
 
     if (!response.ok) {
@@ -4047,6 +4800,7 @@ const runWorkflow = async () => {
       showSummaryHint("Workflow error.", true);
     }
   } finally {
+    if (!isCurrentConversationRuntime(runtime)) return;
     const planReady = planningStreamCompleted
       && !currentRunHasError
       && !clarificationPending
@@ -4055,13 +4809,22 @@ const runWorkflow = async () => {
       && Boolean(workflowIdInput?.value.trim());
     currentRunContext = null;
     stopBtn.disabled = true;
-    currentAbortController = null;
     runBtn.disabled = false;
     userIdInput.disabled = false;
     if (newConversationBtn) newConversationBtn.disabled = false;
-    if (planReady) {
+    if (runtime.stopRequested) {
+      setStatus("Stopped", false);
+    } else if (planReady) {
       pendingClarificationContext = null;
       clarificationPending = false;
+      activePendingPlan = {
+        steps: planSteps.map((step) => normalizeStep(step)),
+        workflowId: workflowIdInput?.value.trim() || "",
+        status: "awaiting_confirmation",
+        revisionOpen: false,
+        revisionText: "",
+      };
+      saveActiveConversation();
       showPlanHint("Planning completed. Waiting for confirmation.");
       showPlanValidationHint("Plan ready. Choose Confirm execution or Modify plan.");
       setStatus("Plan ready", true);
@@ -4077,10 +4840,22 @@ const runWorkflow = async () => {
     }
     if (clarificationPending) document.getElementById("chatMessage")?.focus();
     updateConfirmExecuteState();
+    finishConversationRuntime(runtime);
   }
 };
 
 const runExecution = async () => {
+  const recoveryLocked = Boolean(
+    activePendingPlan?.interruptedFrom === "executing"
+    && String(activePendingPlan?.status || "").startsWith("recovery_")
+  );
+  if (recoveryLocked) {
+    showPlanValidationHint(
+      "The previous production task must be verified in Task History before another execution can start.",
+      true
+    );
+    return;
+  }
   const userId = userIdInput.value.trim();
   if (!userId) {
     setStatus("User ID required", false);
@@ -4096,6 +4871,86 @@ const runExecution = async () => {
     showPlanValidationHint("Plan is empty, so execution cannot start.", true);
     return;
   }
+
+  const confirmationRequestId = activePendingPlan?.confirmationRequestId
+    || createConfirmationRequestId();
+  activePendingPlan = normalizePendingPlan({
+    ...(activePendingPlan || {}),
+    steps: planSteps.map((step) => normalizeStep(step)),
+    workflowId,
+    status: "awaiting_confirmation",
+    confirmationRequestId,
+  });
+  saveActiveConversation();
+
+  let executionIdentity;
+  try {
+    executionIdentity = await createExecutionIdentity(
+      userId,
+      workflowId,
+      planSteps,
+      currentResolvedRequest || currentRequestQuery || originalUserQuery,
+      confirmationRequestId
+    );
+  } catch (error) {
+    const reservationExpired = error?.code === "RESERVATION_EXPIRED"
+      || error?.detail?.reservation_failure_code === "RESERVATION_EXPIRED";
+    const confirmationAlreadyUsed = (
+      error?.code === "EXECUTION_CONFIRMATION_ALREADY_USED"
+      && !reservationExpired
+    );
+    if (reservationExpired) {
+      activePendingPlan = normalizePendingPlan({
+        ...activePendingPlan,
+        confirmationRequestId: "",
+        taskId: "",
+        attemptId: "",
+        idempotencyKey: "",
+      });
+      saveActiveConversation();
+    } else if (confirmationAlreadyUsed) {
+      activePendingPlan = normalizePendingPlan({
+        ...activePendingPlan,
+        status: "recovery_checking",
+        interruptedFrom: "executing",
+        taskId: String(error.detail?.task_id || ""),
+        attemptId: String(error.detail?.execution_attempt_id || ""),
+        planHash: String(error.detail?.execution_plan_hash || ""),
+        recoveryMessage: "This confirmation has already started or finished. Checking the original task before allowing another execution.",
+      });
+      saveActiveConversation();
+    }
+    showPlanValidationHint(`Unable to create execution identity: ${error.message || error}`, true);
+    if (currentChatLifecycle && !confirmationAlreadyUsed) {
+      currentChatLifecycle.confirmPlanButton.textContent = "确认执行";
+    }
+    if (confirmationAlreadyUsed) {
+      renderPendingPlanForCurrentAnswer(activePendingPlan, true);
+      setStatus("Recovery required", false);
+      void resolvePendingExecution(activePendingPlan);
+    } else {
+      setChatPlanActionsDisabled(false);
+      setStatus("Plan ready", true);
+    }
+    return;
+  }
+  activePendingPlan = {
+    steps: planSteps.map((step) => normalizeStep(step)),
+    workflowId,
+    status: "executing",
+    revisionOpen: false,
+    revisionText: "",
+    interruptedFrom: "executing",
+    taskId: executionIdentity.taskId,
+    attemptId: executionIdentity.attemptId,
+    idempotencyKey: executionIdentity.idempotencyKey,
+    confirmationRequestId: executionIdentity.confirmationRequestId,
+    planHash: executionIdentity.planHash,
+    recoveryMessage: "",
+    serverStatus: "",
+  };
+  saveActiveConversation();
+  const runtime = beginConversationRuntime("executing");
 
   setStatus("Executing", true);
   clearOutputPhase("executing");
@@ -4145,17 +5000,52 @@ const runExecution = async () => {
     workflow_id: workflowId,
     session_id: activeConversationId,
     memory_session_id: activeConversationId,
+    execution_attempt_id: executionIdentity.attemptId,
+    execution_idempotency_key: executionIdentity.idempotencyKey,
+    execution_plan_hash: executionIdentity.planHash,
+    execution_task_id: executionIdentity.taskId,
+    execution_authorization_token: executionIdentity.authorizationToken,
   };
 
-  currentAbortController = new AbortController();
+  const controller = new AbortController();
+  attachConversationRuntimeController(runtime, controller);
   let executionStreamCompleted = false;
   try {
     const response = await fetch("/api/workflows/run", {
       method: "POST",
-      headers: window.getTaskCleanupHeaders(true),
+      headers: jsonRequestHeaders,
       body: JSON.stringify(payload),
-      signal: currentAbortController.signal,
+      signal: controller.signal,
     });
+
+    const responseTaskId = String(response.headers.get("X-Task-ID") || "").trim();
+    if (responseTaskId) {
+      runtime.taskId = responseTaskId;
+      activePendingPlan = normalizePendingPlan({ ...activePendingPlan, taskId: responseTaskId });
+      saveActiveConversation();
+    }
+
+    if (response.status === 409) {
+      const duplicatePayload = await response.json().catch(() => ({}));
+      const duplicateDetail = duplicatePayload.detail || duplicatePayload;
+      runtime.taskId = String(duplicateDetail.task_id || runtime.taskId || "");
+      runtime.recoveryRequired = true;
+      runtime.recoveryMessage = "服务端已存在同一执行尝试，系统没有创建重复任务。请检查原任务状态。";
+      const existingPlanHash = String(duplicateDetail.execution_plan_hash || "");
+      const existingAttemptId = String(duplicateDetail.execution_attempt_id || "");
+      runtime.attemptId = existingPlanHash === executionIdentity.planHash
+        ? existingAttemptId
+        : "";
+      activePendingPlan = normalizePendingPlan({
+        ...activePendingPlan,
+        taskId: runtime.taskId,
+        attemptId: runtime.attemptId
+          ? runtime.attemptId
+          : activePendingPlan.attemptId,
+      });
+      saveActiveConversation();
+      return;
+    }
 
     if (!response.ok || !response.body) {
       throw new Error(`HTTP ${response.status}`);
@@ -4182,10 +5072,51 @@ const runExecution = async () => {
       setEmptyAnswerMessage("执行失败，请查看执行日志。");
     }
   } finally {
-    if (executionStreamCompleted && (latestFinalResultText || !currentRunHasError)) {
-      captureAssistantConversationContext();
-    } else if (currentRunHasError) {
-      appendActiveConversationMessage("assistant", "执行失败，请查看执行日志。");
+    if (!isCurrentConversationRuntime(runtime)) return;
+    const executionIdentityState = {
+      steps: planSteps.map((step) => normalizeStep(step)),
+      workflowId,
+      revisionOpen: false,
+      revisionText: "",
+      interruptedFrom: "executing",
+      taskId: runtime.taskId || activePendingPlan?.taskId || "",
+      attemptId: runtime.attemptId || activePendingPlan?.attemptId || executionIdentity.attemptId,
+      idempotencyKey: executionIdentity.idempotencyKey,
+      confirmationRequestId: executionIdentity.confirmationRequestId,
+      planHash: executionIdentity.planHash,
+    };
+    const terminalConfirmed = executionStreamCompleted && runtime.terminalReceived;
+    const terminalStatus = String(runtime.terminalStatus || "").toUpperCase();
+    const terminalSucceeded = terminalConfirmed
+      && ["SUCCEEDED", "COMPLETED"].includes(terminalStatus);
+    if (runtime.stopRequested || runtime.recoveryRequired || !terminalConfirmed) {
+      activePendingPlan = {
+        ...executionIdentityState,
+        status: "recovery_unknown",
+        recoveryMessage: runtime.recoveryMessage || (
+          runtime.stopRequested
+            ? "停止请求已发送，但外部业务副作用是否完成尚未确认。请检查服务端任务状态，系统已禁止直接重新执行。"
+            : "执行连接在收到可信终态前结束。请检查服务端任务状态，系统不会自动重新执行。"
+        ),
+        serverStatus: "",
+      };
+      saveActiveConversation();
+    } else if (!terminalSucceeded) {
+      activePendingPlan = {
+        ...executionIdentityState,
+        status: "recovery_blocked",
+        recoveryMessage: `原任务已返回 ${terminalStatus || "UNKNOWN"}。失败、拒绝或需核对状态不代表外部副作用已回滚，系统已禁止直接重新执行。`,
+        serverStatus: terminalStatus || "UNKNOWN",
+      };
+      saveActiveConversation();
+      captureAssistantConversationContext({
+        outcomeStatus: terminalStatus || "failed",
+        outcomeMessage: "执行未成功，请在 Task History 中核对原任务后再决定后续操作。",
+      });
+    } else if (latestFinalResultText || !currentRunHasError) {
+      activePendingPlan = null;
+      captureAssistantConversationContext({ outcomeStatus: "succeeded" });
+      saveActiveConversation();
     }
     currentRunContext = null;
     executionInProgress = false;
@@ -4193,8 +5124,9 @@ const runExecution = async () => {
     stopBtn.disabled = true;
     userIdInput.disabled = false;
     if (newConversationBtn) newConversationBtn.disabled = false;
-    currentAbortController = null;
+    if (activePendingPlan) renderPendingPlanForCurrentAnswer(activePendingPlan, true);
     updateConfirmExecuteState();
+    finishConversationRuntime(runtime);
   }
 };
 
@@ -4251,22 +5183,17 @@ if (validatePlanBtn) {
 }
 
 const stopWorkflow = () => {
-  if (currentAbortController) {
-    currentAbortController.abort();
-    currentAbortController = null;
-    executionInProgress = false;
-    runBtn.disabled = false;
-    stopBtn.disabled = true;
-    currentRunHasError = true;
-    setStatus("Stopped", false);
-    showSummaryHint("Workflow stopped.");
-    showPlanValidationHint("Execution stopped. You can run it again.", true);
-    setEmptyAnswerMessage("任务已停止。");
-    userIdInput.disabled = false;
-    if (newConversationBtn) newConversationBtn.disabled = false;
-    setChatPlanActionsDisabled(false);
-    updateConfirmExecuteState();
-  }
+  const runtime = activeConversationRuntime;
+  const controller = runtime?.controller || currentAbortController;
+  if (!runtime || !controller || runtime.stopRequested) return;
+  runtime.stopRequested = true;
+  currentRunHasError = true;
+  controller.abort();
+  stopBtn.disabled = true;
+  setStatus("Stopping", false);
+  showSummaryHint("Workflow stop requested. Waiting for cleanup.");
+  showPlanValidationHint("Stopping the current task. You can view another conversation while cleanup finishes.", true);
+  setEmptyAnswerMessage("正在停止任务...");
 };
 
 const createStateCard = (text, variant = "info") => {
@@ -5290,6 +6217,373 @@ const getWorkflowTimestamp = (workflow) => {
   return latest;
 };
 
+const getWorkflowGraphEntryName = (entry) => String(
+  entry?.name
+  || entry?.node_name
+  || entry?.config?.node_name
+  || ""
+).trim();
+
+const getWorkflowGraphTargets = (entry, graphEntries = []) => {
+  const nextTo = entry?.config?.next_to ?? entry?.next_to;
+  const targets = Array.isArray(nextTo) ? nextTo : (nextTo ? [nextTo] : []);
+  const entryIndex = graphEntries.indexOf(entry);
+  return targets.flatMap((target) => {
+    const targetName = String(target?.name || target?.node_name || target || "").trim();
+    if (!targetName || targetName === "FINISH") return [];
+    if (targetName !== "__end__") return [targetName];
+    const nextEntry = entryIndex >= 0 ? graphEntries[entryIndex + 1] : null;
+    const nextName = getWorkflowGraphEntryName(nextEntry);
+    return nextName ? [nextName] : [];
+  });
+};
+
+const getWorkflowNodeType = (node, graphEntry) => (
+  node?.type
+  || node?.config?.type
+  || graphEntry?.node_type
+  || graphEntry?.config?.node_type
+  || ""
+);
+
+const getWorkflowNodeDescription = (node) => (
+  String(node?.description || node?.config?.description || "").trim()
+);
+
+const WORKFLOW_DIAGRAM_STORAGE_PREFIX = "cooragent.workflowDiagram.v1";
+
+const openWorkflowDiagramPage = (detail, diagram, kind = "custom") => {
+  const workflowId = String(detail?.workflow_id || selectedWorkflowId || "").trim();
+  if (!workflowId || !diagram) return;
+  const payload = {
+    workflowId,
+    title: getWorkflowTaskName(detail) || workflowId,
+    kind,
+    diagramHtml: diagram.outerHTML,
+    savedAt: new Date().toISOString(),
+  };
+  try {
+    localStorage.setItem(`${WORKFLOW_DIAGRAM_STORAGE_PREFIX}:${workflowId}`, JSON.stringify(payload));
+  } catch (error) {
+    console.warn("Failed to prepare standalone workflow diagram:", error);
+    window.alert("无法准备流程图页面，请检查浏览器存储权限。");
+    return;
+  }
+  const url = `/static/workflow-diagram.html?workflow_id=${encodeURIComponent(workflowId)}`;
+  const popup = window.open(url, "_blank");
+  if (popup) {
+    popup.opener = null;
+  } else {
+    window.alert("浏览器阻止了新页面，请允许此网站打开弹出窗口。");
+  }
+};
+
+const makeWorkflowDiagramInteractive = (diagram, detail, kind = "custom") => {
+  if (!diagram) return;
+  diagram.tabIndex = 0;
+  diagram.setAttribute("role", "button");
+  diagram.setAttribute("aria-label", "在新页面查看当前流程图");
+  diagram.title = "在新页面查看流程图";
+  const openStandaloneView = () => openWorkflowDiagramPage(detail, diagram, kind);
+  diagram.addEventListener("click", () => {
+    if (window.getSelection()?.toString()) return;
+    openStandaloneView();
+  });
+  diagram.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    openStandaloneView();
+  });
+};
+
+const shortenWorkflowDescription = (description) => (
+  description.length > 50 ? `${description.slice(0, 50)}...` : description
+);
+
+const createWorkflowTextElement = (tagName, className, text) => {
+  const element = document.createElement(tagName);
+  element.className = className;
+  element.textContent = text;
+  return element;
+};
+
+const createWorkflowDownArrow = (modifier = "") => {
+  const arrow = document.createElement("div");
+  arrow.className = `workflow-architecture-down-arrow${modifier ? ` ${modifier}` : ""}`;
+  arrow.setAttribute("aria-hidden", "true");
+  return arrow;
+};
+
+const createWorkflowSystemNode = (node, index) => {
+  const block = document.createElement("article");
+  block.className = `workflow-architecture-system ${index === 0
+    ? "workflow-architecture-system-primary"
+    : "workflow-architecture-system-secondary"}`;
+
+  const title = document.createElement("div");
+  title.className = "workflow-architecture-system-title";
+  title.append(
+    createWorkflowTextElement("strong", "", node.name || node.label || "system"),
+    createWorkflowTextElement("span", "", "系统代理")
+  );
+  block.appendChild(title);
+
+  const description = getWorkflowNodeDescription(node);
+  if (description) {
+    block.appendChild(createWorkflowTextElement("p", "", description));
+  }
+  return block;
+};
+
+const createWorkflowInfoRow = (label, value) => {
+  const row = document.createElement("div");
+  row.className = "workflow-architecture-info-row";
+  row.append(
+    createWorkflowTextElement("b", "", label),
+    createWorkflowTextElement("code", "", value)
+  );
+  return row;
+};
+
+const createWorkflowExecutionNode = (node, graphEntry, index) => {
+  const block = document.createElement("article");
+  block.className = `workflow-architecture-agent workflow-architecture-agent-${(index % 3) + 1}`;
+  block.appendChild(createWorkflowTextElement(
+    "div",
+    "workflow-architecture-agent-name",
+    node.name || node.label || "agent"
+  ));
+  block.appendChild(createWorkflowTextElement("div", "workflow-architecture-agent-type", "执行代理"));
+
+  const description = getWorkflowNodeDescription(node);
+  if (description) {
+    block.appendChild(createWorkflowTextElement(
+      "p",
+      "workflow-architecture-agent-description",
+      shortenWorkflowDescription(description)
+    ));
+  }
+
+  const tools = Array.isArray(node?.config?.tools)
+    ? node.config.tools
+      .map((tool) => tool?.name || tool?.label || tool?.config?.name || "")
+      .filter(Boolean)
+    : [];
+  if (tools.length) {
+    block.appendChild(createWorkflowInfoRow("工具", tools.join(", ")));
+  }
+
+  const condition = graphEntry?.config?.condition;
+  if (typeof condition === "string" && condition.trim()) {
+    block.appendChild(createWorkflowInfoRow("条件", condition.trim()));
+  }
+  return block;
+};
+
+const getWorkflowNodes = (detail) => Object.entries(detail?.nodes || {})
+  .filter(([, node]) => node && typeof node === "object")
+  .map(([key, node]) => ({
+    ...node,
+    name: String(node.name || node.config?.name || key).trim(),
+  }));
+
+const getLinearWorkflowGraphOrder = (nodeEntries, graphEntries, graphByName) => {
+  if (!graphEntries.length) return { isLinear: true, orderedNames: [] };
+
+  const nodeNames = nodeEntries
+    .filter((node) => ["system_agent", "execution_agent"].includes(
+      getWorkflowNodeType(node, graphByName.get(node.name))
+    ))
+    .map((node) => node.name);
+  if (nodeNames.length <= 1) return { isLinear: true, orderedNames: nodeNames };
+
+  const nodeNameSet = new Set(nodeNames);
+  if (nodeNames.some((name) => !graphByName.has(name))) {
+    return { isLinear: false, orderedNames: [] };
+  }
+
+  const outgoing = new Map(nodeNames.map((name) => [name, []]));
+  const incomingCount = new Map(nodeNames.map((name) => [name, 0]));
+  for (const name of nodeNames) {
+    const targets = getWorkflowGraphTargets(graphByName.get(name), graphEntries);
+    if (targets.some((target) => !nodeNameSet.has(target)) || targets.length > 1) {
+      return { isLinear: false, orderedNames: [] };
+    }
+    outgoing.set(name, targets);
+    targets.forEach((target) => incomingCount.set(target, incomingCount.get(target) + 1));
+  }
+
+  if (Array.from(incomingCount.values()).some((count) => count > 1)) {
+    return { isLinear: false, orderedNames: [] };
+  }
+  const starts = nodeNames.filter((name) => incomingCount.get(name) === 0);
+  if (starts.length !== 1) return { isLinear: false, orderedNames: [] };
+
+  const orderedNames = [];
+  const visited = new Set();
+  let currentName = starts[0];
+  while (currentName) {
+    if (visited.has(currentName)) return { isLinear: false, orderedNames: [] };
+    visited.add(currentName);
+    orderedNames.push(currentName);
+    currentName = outgoing.get(currentName)?.[0] || "";
+  }
+  if (visited.size !== nodeNames.length) return { isLinear: false, orderedNames: [] };
+
+  let executionStageStarted = false;
+  for (const name of orderedNames) {
+    const type = getWorkflowNodeType(
+      nodeEntries.find((node) => node.name === name),
+      graphByName.get(name)
+    );
+    if (type === "execution_agent") executionStageStarted = true;
+    if (type === "system_agent" && executionStageStarted) {
+      return { isLinear: false, orderedNames: [] };
+    }
+  }
+  return { isLinear: true, orderedNames };
+};
+
+const getOrderedWorkflowNodes = (detail) => {
+  const allNodeEntries = getWorkflowNodes(detail);
+  const graphEntries = Array.isArray(detail?.graph) ? detail.graph : [];
+  const graphByName = new Map(
+    graphEntries
+      .map((entry) => [getWorkflowGraphEntryName(entry), entry])
+      .filter(([name]) => name)
+  );
+  const nodesByName = new Map(allNodeEntries.map((node) => [node.name, node]));
+  const nodeEntries = graphEntries.length
+    ? graphEntries.map((entry) => {
+      const name = getWorkflowGraphEntryName(entry);
+      return nodesByName.get(name) || {
+        name,
+        type: getWorkflowNodeType(null, entry),
+        config: entry?.config || {},
+      };
+    }).filter((node) => node.name)
+    : allNodeEntries;
+  const topology = getLinearWorkflowGraphOrder(nodeEntries, graphEntries, graphByName);
+  const systemNodes = nodeEntries.filter((node) => (
+    getWorkflowNodeType(node, graphByName.get(node.name)) === "system_agent"
+  ));
+  const executionNodes = nodeEntries.filter((node) => (
+    getWorkflowNodeType(node, graphByName.get(node.name)) === "execution_agent"
+  ));
+
+  const fallbackExecutionNames = Array.isArray(detail?.planning_steps)
+    ? detail.planning_steps.map((step) => step?.agent_name).filter(Boolean)
+    : [];
+  const orderedNames = topology.orderedNames.length ? topology.orderedNames : fallbackExecutionNames;
+  const orderIndex = new Map(orderedNames.map((name, index) => [name, index]));
+  const sortByTopology = (left, right) => {
+    const leftOrder = orderIndex.has(left.name) ? orderIndex.get(left.name) : Number.MAX_SAFE_INTEGER;
+    const rightOrder = orderIndex.has(right.name) ? orderIndex.get(right.name) : Number.MAX_SAFE_INTEGER;
+    return leftOrder - rightOrder;
+  };
+  systemNodes.sort(sortByTopology);
+  executionNodes.sort(sortByTopology);
+  const confirmationEntries = graphEntries.filter((entry) => {
+    const nextTo = entry?.config?.next_to ?? entry?.next_to;
+    return (Array.isArray(nextTo) ? nextTo : [nextTo]).some((target) => (
+      String(target?.name || target?.node_name || target || "").trim() === "__end__"
+    ));
+  });
+  const hasCommandConfirmation = confirmationEntries.length === 1;
+  const confirmationAfterName = hasCommandConfirmation
+    ? getWorkflowGraphEntryName(confirmationEntries[0])
+    : "";
+  const confirmationLayoutSupported = !confirmationEntries.length || (
+    hasCommandConfirmation
+    && systemNodes.length > 0
+    && confirmationAfterName === systemNodes[systemNodes.length - 1].name
+  );
+  return {
+    systemNodes,
+    executionNodes,
+    graphByName,
+    isLinear: topology.isLinear && confirmationLayoutSupported,
+    hasCommandConfirmation,
+  };
+};
+
+const renderWorkflowArchitecture = (detail) => {
+  const {
+    systemNodes,
+    executionNodes,
+    graphByName,
+    isLinear,
+    hasCommandConfirmation,
+  } = getOrderedWorkflowNodes(detail);
+  if (!isLinear || (!systemNodes.length && !executionNodes.length)) return false;
+
+  mermaidContainer.replaceChildren();
+  mermaidContainer.classList.add("workflow-architecture-host");
+  const diagram = document.createElement("div");
+  diagram.className = "workflow-architecture";
+  const executionFlowWidth = executionNodes.length
+    ? (executionNodes.length * 210) + (Math.max(0, executionNodes.length - 1) * 40) + 80
+    : 720;
+  diagram.style.setProperty("--workflow-architecture-min-width", `${Math.max(720, executionFlowWidth)}px`);
+  makeWorkflowDiagramInteractive(diagram, detail);
+
+  if (systemNodes.length) {
+    const systemStage = document.createElement("section");
+    systemStage.className = "workflow-architecture-system-stage";
+    systemNodes.forEach((node, index) => {
+      if (index) systemStage.appendChild(createWorkflowDownArrow());
+      systemStage.appendChild(createWorkflowSystemNode(node, index));
+    });
+    if (hasCommandConfirmation) {
+      systemStage.appendChild(createWorkflowDownArrow("workflow-architecture-arrow-compact"));
+      const confirmation = document.createElement("div");
+      confirmation.className = "workflow-architecture-confirm";
+      confirmation.appendChild(createWorkflowTextElement("span", "", "命令确认"));
+      systemStage.appendChild(confirmation);
+    }
+    if (executionNodes.length) {
+      systemStage.appendChild(createWorkflowDownArrow("workflow-architecture-arrow-to-zone"));
+    }
+    diagram.appendChild(systemStage);
+  }
+
+  if (executionNodes.length) {
+    const executionZone = document.createElement("section");
+    executionZone.className = "workflow-architecture-execution-zone";
+    executionZone.appendChild(createWorkflowTextElement("div", "workflow-architecture-zone-title", "执行代理"));
+    const agentFlow = document.createElement("div");
+    agentFlow.className = "workflow-architecture-agent-flow";
+    executionNodes.forEach((node, index) => {
+      if (index) {
+        const arrow = document.createElement("div");
+        arrow.className = "workflow-architecture-flow-arrow";
+        arrow.setAttribute("aria-hidden", "true");
+        agentFlow.appendChild(arrow);
+      }
+      agentFlow.appendChild(createWorkflowExecutionNode(node, graphByName.get(node.name), index));
+    });
+    executionZone.appendChild(agentFlow);
+    diagram.appendChild(executionZone);
+  }
+
+  const endStage = document.createElement("section");
+  endStage.className = "workflow-architecture-end-stage";
+  endStage.append(
+    createWorkflowDownArrow(),
+    createWorkflowTextElement("div", "workflow-architecture-end", "结束")
+  );
+  diagram.appendChild(endStage);
+  mermaidContainer.appendChild(diagram);
+  requestAnimationFrame(() => {
+    mermaidContainer.scrollLeft = Math.max(
+      0,
+      (mermaidContainer.scrollWidth - mermaidContainer.clientWidth) / 2,
+    );
+  });
+  return true;
+};
+
+
 const selectWorkflow = async (workflowId) => {
   selectedWorkflowId = workflowId;
   document.querySelectorAll(".workflow-item").forEach((item) => {
@@ -5298,14 +6592,19 @@ const selectWorkflow = async (workflowId) => {
 
   workflowDetail.textContent = "Loading...";
   mermaidContainer.textContent = "Loading...";
+  mermaidContainer.classList.remove("workflow-architecture-host");
+  mermaidContainer.classList.remove("workflow-diagram-interactive");
 
+  let detail = null;
   const detailRes = await fetch(`/api/workflows/${encodeURIComponent(workflowId)}`);
   if (detailRes.ok) {
-    const detail = await detailRes.json();
+    detail = await detailRes.json();
     workflowDetail.textContent = JSON.stringify(detail, null, 2);
   } else {
     workflowDetail.textContent = "Failed to load workflow detail.";
   }
+
+  if (detail && renderWorkflowArchitecture(detail)) return;
 
   const mermaidRes = await fetch(`/api/workflows/${encodeURIComponent(workflowId)}/mermaid`);
   if (mermaidRes.ok) {
@@ -5316,7 +6615,12 @@ const selectWorkflow = async (workflowId) => {
     pre.textContent = code;
     mermaidContainer.appendChild(pre);
     try {
-      mermaid.run({ nodes: mermaidContainer.querySelectorAll(".mermaid") });
+      await mermaid.run({ nodes: mermaidContainer.querySelectorAll(".mermaid") });
+      const svg = mermaidContainer.querySelector("svg");
+      if (svg) {
+        mermaidContainer.classList.add("workflow-diagram-interactive");
+        makeWorkflowDiagramInteractive(svg, detail, "mermaid");
+      }
     } catch (err) {
       mermaidContainer.textContent = "Mermaid render failed.";
     }
@@ -5975,6 +7279,8 @@ const resumeTask = async ({ inChat = false } = {}) => {
 
   if (inChat) {
     switchTab("chat");
+    clearOutputPhase("executing");
+    resetSummary();
     currentRunContext = "executing";
     executionInProgress = true;
     currentRunHasError = false;
@@ -6003,10 +7309,12 @@ const resumeTask = async ({ inChat = false } = {}) => {
   };
 
   resumeAbortController = new AbortController();
+  let resumeTerminalStatus = "";
+  let resumeFailureMessage = "";
   try {
     const response = await fetch("/api/tasks/resume", {
       method: "POST",
-      headers: window.getTaskCleanupHeaders(true),
+      headers: jsonRequestHeaders,
       body: JSON.stringify(payload),
       signal: resumeAbortController.signal,
     });
@@ -6024,6 +7332,9 @@ const resumeTask = async ({ inChat = false } = {}) => {
 
     const handleResumeEvent = (eventName, payload) => {
       if (inChat) {
+        if (eventName === "end_of_workflow") {
+          resumeTerminalStatus = String(payload.data?.status || "").toUpperCase();
+        }
         handleEvent(eventName, payload);
         return;
       }
@@ -6081,9 +7392,10 @@ const resumeTask = async ({ inChat = false } = {}) => {
     }
   } catch (err) {
     if (inChat) {
+      resumeFailureMessage = String(err.message || err);
       currentRunHasError = true;
-      errorStepCard(err.message || String(err));
-      updateChatExecutionProgress("error", `恢复失败：${err.message || err}`);
+      errorStepCard(resumeFailureMessage);
+      updateChatExecutionProgress("error", `恢复失败：${resumeFailureMessage}`);
       setStatus("Resume Failed", false);
       throw err;
     } else {
@@ -6091,12 +7403,42 @@ const resumeTask = async ({ inChat = false } = {}) => {
     }
   } finally {
     if (inChat) {
+      if (resumeTerminalStatus === "SUCCEEDED" && !currentRunHasError) {
+        captureAssistantConversationContext({
+          replaceLatest: true,
+          outcomeStatus: "succeeded",
+        });
+        if (currentChatLifecycle) {
+          currentChatLifecycle.confirmPlanButton.textContent = "已执行";
+          currentChatLifecycle.confirmPlanButton.disabled = true;
+          currentChatLifecycle.modifyPlanButton.disabled = true;
+        }
+      } else {
+        const reportedOutcomeStatus = resumeTerminalStatus.toLowerCase();
+        const outcomeStatus = reportedOutcomeStatus === "succeeded" && currentRunHasError
+          ? "failed"
+          : reportedOutcomeStatus || (resumeFailureMessage ? "failed" : "unknown");
+        let outcomeMessage = "恢复执行结束，但未收到明确终态，请在 Task History 中核对任务状态。";
+        if (resumeFailureMessage) {
+          outcomeMessage = `恢复执行失败：${resumeFailureMessage}`;
+        } else if (reportedOutcomeStatus === "succeeded" && currentRunHasError) {
+          outcomeMessage = "恢复执行过程中出现错误，请在 Task History 中核对任务状态。";
+        } else if (resumeTerminalStatus === "PARTIAL_FAILED") {
+          outcomeMessage = "恢复执行部分失败，已保留失败前产生的可用结果。";
+        } else if (resumeTerminalStatus) {
+          outcomeMessage = `恢复执行未成功，任务状态：${resumeTerminalStatus}。`;
+        }
+        captureAssistantConversationContext({
+          replaceLatest: true,
+          outcomeStatus,
+          outcomeMessage,
+        });
+      }
       currentRunContext = null;
       executionInProgress = false;
       runBtn.disabled = false;
       userIdInput.disabled = false;
       if (newConversationBtn) newConversationBtn.disabled = false;
-      if (!currentRunHasError) captureAssistantConversationContext();
       scrollChatToLatest();
     }
     resumeBtn.disabled = false;
@@ -6117,8 +7459,7 @@ const loadTaskGovernance = async (taskId) => {
   governanceTimeline.textContent = "Loading...";
   try {
     const response = await fetch(
-      `/api/tasks/${encodeURIComponent(taskId)}/governance`,
-      { headers: window.getGovernanceAuthHeaders(false) }
+      `/api/tasks/${encodeURIComponent(taskId)}/governance`
     );
     if (!response.ok) throw new Error("request failed");
     const events = await response.json();
@@ -6166,11 +7507,21 @@ window.resumeApprovedTask = async ({
   resume_step,
   user_id,
 }) => {
+  const resumeUserId = String(user_id || userIdInput.value || "test").trim() || "test";
+  if (userIdInput.value.trim() !== resumeUserId) {
+    userIdInput.value = resumeUserId;
+  }
+  const originalConversation = findConversationByTaskId(
+    resumeUserId,
+    task_id,
+    workflow_id
+  );
+  if (originalConversation) loadConversation(originalConversation);
   selectedTaskId = task_id;
   resumeTaskIdInput.value = task_id || "";
   resumeWorkflowIdInput.value = workflow_id || "";
   resumeStepInput.value = Number(resume_step) || 1;
-  resumeUserIdInput.value = user_id || "test";
+  resumeUserIdInput.value = resumeUserId;
   await resumeTask({ inChat: true });
   if (window.SecurityModule?.loadSecurityApprovals) {
     window.SecurityModule.loadSecurityApprovals();
@@ -6183,7 +7534,6 @@ const deleteTaskById = async (taskId) => {
   try {
     const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}`, {
       method: "DELETE",
-      headers: window.getTaskCleanupHeaders(false),
     });
     if (!res.ok) {
       const err = await res.json();
