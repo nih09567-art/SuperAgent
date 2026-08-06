@@ -1,7 +1,13 @@
+from concurrent.futures import ThreadPoolExecutor
 from fastapi.testclient import TestClient
+import json
 import pytest
+import threading
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import src.service.web_app as web_app
+import src.orchestration.reconciliation as reconciliation_module
 
 from src.orchestration.completion import (
     PersistentReceiptStore,
@@ -9,7 +15,10 @@ from src.orchestration.completion import (
     normalize_input,
     validate_receipt,
 )
-from src.orchestration.reconciliation import get_reconciliation_store
+from src.orchestration.reconciliation import (
+    ReconciliationStore,
+    get_reconciliation_store,
+)
 from src.orchestration.governance import record_governance_event
 from src.robust.task_logger import TaskLogger
 from src.security.approval import get_approval_store
@@ -188,6 +197,466 @@ def test_reconciliation_api_releases_receipt_then_exposes_resume(
 
     timeline = client.get("/api/tasks/task-recon/governance").json()
     assert timeline[-1]["decision"] == "SAFE_TO_RETRY"
+
+
+def test_reconciliation_resume_claim_is_single_use_and_consumed_on_success(
+    tmp_path, monkeypatch
+):
+    reconciliation, _ = _reconciliation(tmp_path, monkeypatch)
+    store = get_reconciliation_store()
+    store.resolve(
+        reconciliation.reconciliation_id,
+        status="retry_ready",
+        operator="admin",
+        comment="verified not executed",
+    )
+
+    claimed = store.claim_for_resume(
+        task_id=reconciliation.task_id,
+        resume_step=reconciliation.resume_step,
+        operator="admin",
+    )
+    assert claimed is not None
+    assert claimed.status == "resuming"
+    with pytest.raises(ValueError, match="already in progress"):
+        store.claim_for_resume(
+            task_id=reconciliation.task_id,
+            resume_step=reconciliation.resume_step,
+            operator="admin",
+        )
+
+    completed = store.finish_resume(
+        reconciliation.reconciliation_id,
+        resume_claim_id=claimed.resolution["resume_claim_id"],
+        succeeded=True,
+    )
+    assert completed.status == "consumed"
+    assert completed.resolution["resume_succeeded"] is True
+    assert (
+        store.claim_for_resume(
+            task_id=reconciliation.task_id,
+            resume_step=reconciliation.resume_step,
+            operator="admin",
+        )
+        is None
+    )
+
+
+def test_reconciliation_resume_claim_is_atomic_across_store_instances(
+    tmp_path,
+) -> None:
+    base_dir = tmp_path / "reconciliations"
+    setup_store = ReconciliationStore(base_dir)
+    request = setup_store.create(
+        user_id="u1",
+        workflow_id="wf-recon",
+        task_id="task-cross-store",
+        step_id="write-1",
+        resume_step=2,
+        agent_name="DocumentAgent",
+        error="external result unknown",
+    )
+    setup_store.resolve(
+        request.reconciliation_id,
+        status="retry_ready",
+        operator="admin",
+    )
+    store_a = ReconciliationStore(base_dir)
+    store_b = ReconciliationStore(base_dir)
+    barrier = threading.Barrier(2)
+
+    def claim(store):
+        barrier.wait()
+        try:
+            result = store.claim_for_resume(
+                task_id="task-cross-store",
+                resume_step=2,
+                operator="admin",
+            )
+            return result.status if result else "none"
+        except ValueError as exc:
+            return str(exc)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        outcomes = list(executor.map(claim, (store_a, store_b)))
+
+    assert outcomes.count("resuming") == 1
+    assert sum("already in progress" in value for value in outcomes) == 1
+
+
+def test_failed_reconciliation_resume_returns_to_ready_state(tmp_path, monkeypatch):
+    reconciliation, _ = _reconciliation(tmp_path, monkeypatch)
+    store = get_reconciliation_store()
+    store.resolve(
+        reconciliation.reconciliation_id,
+        status="retry_ready",
+        operator="admin",
+    )
+    claimed = store.claim_for_resume(
+        task_id=reconciliation.task_id,
+        resume_step=reconciliation.resume_step,
+        operator="admin",
+    )
+
+    restored = store.finish_resume(
+        reconciliation.reconciliation_id,
+        resume_claim_id=claimed.resolution["resume_claim_id"],
+        succeeded=False,
+    )
+
+    assert restored.status == "retry_ready"
+    assert restored.resolution["resume_succeeded"] is False
+
+
+def test_expired_resume_claim_is_reclaimed_after_process_restart(
+    tmp_path, monkeypatch
+) -> None:
+    base_dir = tmp_path / "reconciliations"
+    clock = SimpleNamespace(now=1_800_000_000.0)
+    monkeypatch.setattr(
+        reconciliation_module,
+        "time",
+        SimpleNamespace(time=lambda: clock.now),
+    )
+    setup_store = ReconciliationStore(base_dir)
+    request = setup_store.create(
+        user_id="u1",
+        workflow_id="wf-recon",
+        task_id="task-restart",
+        step_id="write-1",
+        resume_step=2,
+        agent_name="DocumentAgent",
+        error="external result unknown",
+    )
+    setup_store.resolve(
+        request.reconciliation_id,
+        status="retry_ready",
+        operator="admin",
+    )
+    first_claim = setup_store.claim_for_resume(
+        task_id=request.task_id,
+        resume_step=request.resume_step,
+        operator="worker-a",
+        lease_seconds=30,
+    )
+
+    restarted_store = ReconciliationStore(base_dir)
+    with pytest.raises(ValueError, match="already in progress"):
+        restarted_store.claim_for_resume(
+            task_id=request.task_id,
+            resume_step=request.resume_step,
+            operator="worker-b",
+            lease_seconds=30,
+        )
+
+    clock.now += 31
+    second_claim = restarted_store.claim_for_resume(
+        task_id=request.task_id,
+        resume_step=request.resume_step,
+        operator="worker-b",
+        lease_seconds=30,
+    )
+
+    assert second_claim.status == "resuming"
+    assert (
+        second_claim.resolution["resume_claim_id"]
+        != first_claim.resolution["resume_claim_id"]
+    )
+    assert (
+        second_claim.resolution["resume_reclaimed_claim_id"]
+        == first_claim.resolution["resume_claim_id"]
+    )
+    with pytest.raises(ValueError, match="claim id mismatch"):
+        setup_store.finish_resume(
+            request.reconciliation_id,
+            resume_claim_id=first_claim.resolution["resume_claim_id"],
+            succeeded=True,
+        )
+
+    completed = restarted_store.finish_resume(
+        request.reconciliation_id,
+        resume_claim_id=second_claim.resolution["resume_claim_id"],
+        succeeded=True,
+    )
+    assert completed.status == "consumed"
+
+
+def test_governance_queue_reaps_expired_resume_claim_and_audits_it(
+    tmp_path, monkeypatch
+) -> None:
+    reconciliation, _ = _reconciliation(
+        tmp_path, monkeypatch, task_id="task-expired-resume"
+    )
+    clock = SimpleNamespace(now=1_800_000_000.0)
+    monkeypatch.setattr(
+        reconciliation_module,
+        "time",
+        SimpleNamespace(time=lambda: clock.now),
+    )
+    store = get_reconciliation_store()
+    store.resolve(
+        reconciliation.reconciliation_id,
+        status="retry_ready",
+        operator="admin",
+    )
+    claimed = store.claim_for_resume(
+        task_id=reconciliation.task_id,
+        resume_step=reconciliation.resume_step,
+        operator="worker-a",
+        lease_seconds=30,
+    )
+    clock.now += 31
+
+    response = _client().get(
+        "/api/security/reconciliations",
+        params={"task_id": reconciliation.task_id},
+    )
+
+    assert response.status_code == 200
+    assert response.json()[0]["status"] == "retry_ready"
+    restored = store.get(reconciliation.reconciliation_id)
+    assert restored.resolution["resume_reaped_claim_id"] == (
+        claimed.resolution["resume_claim_id"]
+    )
+    timeline = _client().get(
+        f"/api/tasks/{reconciliation.task_id}/governance"
+    ).json()
+    assert timeline[-1]["event_type"] == "RECONCILIATION_RESUME_LEASE_EXPIRED"
+    assert timeline[-1]["decision"] == "RESTORED_TO_READY"
+
+
+def test_resume_heartbeat_renews_lease_across_store_instances(
+    tmp_path, monkeypatch
+) -> None:
+    base_dir = tmp_path / "reconciliations"
+    clock = SimpleNamespace(now=1_800_000_000.0)
+    monkeypatch.setattr(
+        reconciliation_module,
+        "time",
+        SimpleNamespace(time=lambda: clock.now),
+    )
+    worker_store = ReconciliationStore(base_dir)
+    request = worker_store.create(
+        user_id="u1",
+        workflow_id="wf-recon",
+        task_id="task-heartbeat",
+        step_id="write-1",
+        resume_step=2,
+        agent_name="DocumentAgent",
+        error="external result unknown",
+    )
+    worker_store.resolve(
+        request.reconciliation_id,
+        status="retry_ready",
+        operator="admin",
+    )
+    claim = worker_store.claim_for_resume(
+        task_id=request.task_id,
+        resume_step=request.resume_step,
+        operator="worker-a",
+        lease_seconds=30,
+    )
+    claim_id = claim.resolution["resume_claim_id"]
+
+    clock.now += 20
+    renewed = worker_store.renew_resume_claim(
+        request.reconciliation_id,
+        resume_claim_id=claim_id,
+        lease_seconds=30,
+    )
+    assert renewed.resolution["resume_lease_expires_at"] == clock.now + 30
+
+    clock.now += 11
+    restarted_store = ReconciliationStore(base_dir)
+    with pytest.raises(ValueError, match="already in progress"):
+        restarted_store.claim_for_resume(
+            task_id=request.task_id,
+            resume_step=request.resume_step,
+            operator="worker-b",
+            lease_seconds=30,
+        )
+
+    clock.now += 20
+    reclaimed = restarted_store.claim_for_resume(
+        task_id=request.task_id,
+        resume_step=request.resume_step,
+        operator="worker-b",
+        lease_seconds=30,
+    )
+    assert reclaimed.resolution["resume_claim_id"] != claim_id
+
+
+def _patch_resume_dependencies(monkeypatch, events):
+    import src.robust.checkpoint as checkpoint_module
+
+    checkpoint = SimpleNamespace(
+        workflow_id="wf-recon",
+        state={
+            "messages": [{"role": "user", "content": "resume"}],
+            "workflow_mode": "production",
+            "coor_agents": [],
+        },
+    )
+
+    class FakeCheckpointManager:
+        def load_checkpoint(self, **_kwargs):
+            return checkpoint
+
+    class FakeServer:
+        async def _run_agent_workflow_with_resume(self, *_args, **_kwargs):
+            for event in events:
+                if isinstance(event, Exception):
+                    raise event
+                yield event
+
+    monkeypatch.setattr(
+        checkpoint_module, "CheckpointManager", FakeCheckpointManager
+    )
+    monkeypatch.setattr(web_app, "Server", FakeServer)
+
+
+@pytest.mark.parametrize("terminal_status", ["FAILED", "NEEDS_RECONCILIATION"])
+def test_resume_api_restores_reconciliation_after_failed_terminal(
+    tmp_path, monkeypatch, terminal_status
+) -> None:
+    reconciliation, _ = _reconciliation(
+        tmp_path, monkeypatch, task_id=f"task-{terminal_status.lower()}"
+    )
+    store = get_reconciliation_store()
+    store.resolve(
+        reconciliation.reconciliation_id,
+        status="confirmed_succeeded",
+        operator="admin",
+    )
+    _patch_resume_dependencies(
+        monkeypatch,
+        [
+            {
+                "event": "end_of_workflow",
+                "data": {
+                    "task_id": reconciliation.task_id,
+                    "status": terminal_status,
+                },
+            }
+        ],
+    )
+
+    response = _client().post(
+        "/api/tasks/resume",
+        json={
+            "task_id": reconciliation.task_id,
+            "resume_step": reconciliation.resume_step,
+            "user_id": "admin",
+        },
+    )
+
+    assert response.status_code == 200
+    restored = store.get(reconciliation.reconciliation_id)
+    assert restored.status == "confirmed_succeeded"
+    assert restored.resolution["resume_succeeded"] is False
+
+
+def test_resume_api_consumes_reconciliation_only_after_successful_terminal(
+    tmp_path, monkeypatch
+) -> None:
+    reconciliation, _ = _reconciliation(
+        tmp_path, monkeypatch, task_id="task-resume-success"
+    )
+    store = get_reconciliation_store()
+    store.resolve(
+        reconciliation.reconciliation_id,
+        status="confirmed_succeeded",
+        operator="admin",
+    )
+    _patch_resume_dependencies(
+        monkeypatch,
+        [
+            {
+                "event": "end_of_workflow",
+                "data": {
+                    "task_id": reconciliation.task_id,
+                    "status": "SUCCEEDED",
+                },
+            }
+        ],
+    )
+
+    response = _client().post(
+        "/api/tasks/resume",
+        json={
+            "task_id": reconciliation.task_id,
+            "resume_step": reconciliation.resume_step,
+            "user_id": "admin",
+        },
+    )
+
+    assert response.status_code == 200
+    assert store.get(reconciliation.reconciliation_id).status == "consumed"
+
+
+def test_resume_api_restores_reconciliation_when_stream_raises(
+    tmp_path, monkeypatch
+) -> None:
+    reconciliation, _ = _reconciliation(
+        tmp_path, monkeypatch, task_id="task-resume-error"
+    )
+    store = get_reconciliation_store()
+    store.resolve(
+        reconciliation.reconciliation_id,
+        status="confirmed_succeeded",
+        operator="admin",
+    )
+    _patch_resume_dependencies(monkeypatch, [RuntimeError("resume failed")])
+
+    with pytest.raises(Exception, match="resume failed"):
+        _client().post(
+            "/api/tasks/resume",
+            json={
+                "task_id": reconciliation.task_id,
+                "resume_step": reconciliation.resume_step,
+                "user_id": "admin",
+            },
+        )
+
+    restored = store.get(reconciliation.reconciliation_id)
+    assert restored.status == "confirmed_succeeded"
+    assert restored.resolution["resume_succeeded"] is False
+
+
+def test_resume_api_restores_reconciliation_when_client_disconnects(
+    tmp_path, monkeypatch
+) -> None:
+    reconciliation, _ = _reconciliation(
+        tmp_path, monkeypatch, task_id="task-resume-disconnect"
+    )
+    store = get_reconciliation_store()
+    store.resolve(
+        reconciliation.reconciliation_id,
+        status="confirmed_succeeded",
+        operator="admin",
+    )
+    _patch_resume_dependencies(
+        monkeypatch,
+        [{"event": "message", "data": {"task_id": reconciliation.task_id}}],
+    )
+
+    async def disconnected(_request):
+        return True
+
+    monkeypatch.setattr(web_app.Request, "is_disconnected", disconnected)
+    response = _client().post(
+        "/api/tasks/resume",
+        json={
+            "task_id": reconciliation.task_id,
+            "resume_step": reconciliation.resume_step,
+            "user_id": "admin",
+        },
+    )
+
+    assert response.status_code == 200
+    restored = store.get(reconciliation.reconciliation_id)
+    assert restored.status == "confirmed_succeeded"
+    assert restored.resolution["resume_succeeded"] is False
 
 
 def test_reconciliation_api_confirms_success_with_external_operation_id(
@@ -496,7 +965,47 @@ def test_task_owner_capability_allows_cleanup_without_governance_admin_key(
     assert TaskLogger.load(task_id) is None
 
 
+def _production_authorization_fields(
+    client, *, user_id: str, workflow_id: str, owner_token: str
+):
+    credential = f"execution-key-{user_id}"
+    with patch.object(
+        web_app,
+        "EXECUTION_USER_API_KEYS_JSON",
+        json.dumps({user_id: credential}),
+    ):
+        response = client.post(
+            "/api/workflows/execution-authorizations",
+            headers={
+                "X-Task-Owner-Token": owner_token,
+                "Authorization": f"Bearer {credential}",
+                "Idempotency-Key": "confirmation-governance-request",
+            },
+            json={
+                "user_id": user_id,
+                "workflow_id": workflow_id,
+                "plan_hash": "a" * 64,
+                "user_query": "test",
+            },
+        )
+    if response.status_code != 200:
+        return response, {}
+    data = response.json()
+    return response, {
+        "execution_task_id": data["task_id"],
+        "execution_attempt_id": data["execution_attempt_id"],
+        "execution_idempotency_key": data["execution_idempotency_key"],
+        "execution_plan_hash": data["execution_plan_hash"],
+        "execution_authorization_token": data["execution_authorization_token"],
+    }
+
+
 def test_workflow_run_binds_browser_cleanup_capability(tmp_path, monkeypatch):
+    import src.robust.task_logger as task_logger_module
+
+    monkeypatch.setattr(
+        task_logger_module, "checkpoints_dir", tmp_path / "checkpoints"
+    )
     monkeypatch.setenv(
         "CLEANUP_CAPABILITY_STORE_PATH", str(tmp_path / "cleanup-capabilities.json")
     )
@@ -509,9 +1018,17 @@ def test_workflow_run_binds_browser_cleanup_capability(tmp_path, monkeypatch):
             }
 
     monkeypatch.setattr(web_app, "Server", FakeServer)
+    monkeypatch.setattr(
+        web_app, "_server_execution_plan_hash", lambda _user, _workflow: "a" * 64
+    )
     token = "owner-capability-token-with-at-least-32-chars"
+    client = TestClient(create_app())
+    authorization, identity = _production_authorization_fields(
+        client, user_id="u1", workflow_id="u1:wf", owner_token=token
+    )
+    assert authorization.status_code == 200
 
-    response = TestClient(create_app()).post(
+    response = client.post(
         "/api/workflows/run",
         headers={"X-Task-Owner-Token": token},
         json={
@@ -524,6 +1041,7 @@ def test_workflow_run_binds_browser_cleanup_capability(tmp_path, monkeypatch):
             "coor_agents": None,
             "workmode": "production",
             "workflow_id": "u1:wf",
+            **identity,
         },
     )
 
@@ -554,22 +1072,15 @@ def test_unbound_historical_workflow_cannot_be_claimed_by_new_client(
             yield {"event": "done", "data": {}}
 
     monkeypatch.setattr(web_app, "Server", FakeServer)
+    monkeypatch.setattr(
+        web_app, "_server_execution_plan_hash", lambda _user, _workflow: "a" * 64
+    )
     attacker_token = "attacker-capability-token-with-at-least-32-chars"
-
-    response = TestClient(create_app()).post(
-        "/api/workflows/run",
-        headers={"X-Task-Owner-Token": attacker_token},
-        json={
-            "user_id": "victim",
-            "lang": "zh",
-            "messages": [{"role": "user", "content": "claim history"}],
-            "debug": False,
-            "deep_thinking_mode": False,
-            "search_before_planning": False,
-            "coor_agents": None,
-            "workmode": "production",
-            "workflow_id": "victim:history",
-        },
+    response, _ = _production_authorization_fields(
+        TestClient(create_app()),
+        user_id="victim",
+        workflow_id="victim:history",
+        owner_token=attacker_token,
     )
 
     assert response.status_code == 403
@@ -598,23 +1109,14 @@ def test_unbound_workflow_with_only_governance_records_cannot_be_claimed(
         agent_name="RemoteEmailDispatchAgent",
         error="unknown",
     )
-
-    response = TestClient(create_app()).post(
-        "/api/workflows/run",
-        headers={
-            "X-Task-Owner-Token": "attacker-capability-token-with-at-least-32-chars"
-        },
-        json={
-            "user_id": "victim",
-            "lang": "zh",
-            "messages": [{"role": "user", "content": "claim governance"}],
-            "debug": False,
-            "deep_thinking_mode": False,
-            "search_before_planning": False,
-            "coor_agents": None,
-            "workmode": "production",
-            "workflow_id": workflow_id,
-        },
+    monkeypatch.setattr(
+        web_app, "_server_execution_plan_hash", lambda _user, _workflow: "a" * 64
+    )
+    response, _ = _production_authorization_fields(
+        TestClient(create_app()),
+        user_id="victim",
+        workflow_id=workflow_id,
+        owner_token="attacker-capability-token-with-at-least-32-chars",
     )
 
     assert response.status_code == 403
@@ -833,6 +1335,93 @@ def test_security_precheck_matches_static_policy_constraints(monkeypatch):
     document_summary = precheck.json()["tool_access"]["remote_docx_generator_tool"]
     assert salary_summary["decision"] == "REVIEW_REQUIRED"
     assert document_summary["decision"] == "ALLOW"
+
+
+def test_demo_static_assets_disable_stale_cache_and_include_resume_fixes():
+    client = TestClient(create_app())
+
+    index = client.get("/")
+    script = client.get("/static/app.js")
+
+    assert index.status_code == 200
+    assert "v=20260803-decision-history-1" in index.text
+    assert script.status_code == 200
+    assert script.headers["cache-control"] == "no-store"
+    assert "const uniqueOutputs = []" in script.text
+    assert 'await resumeTask({ inChat: true })' in script.text
+
+
+def test_governance_queue_items_include_chinese_friendly_task_context(
+    monkeypatch,
+):
+    import src.service.web_app as web_app
+
+    task = SimpleNamespace(
+        user_query="查询李娜的基本信息，生成收入证明，然后发给王经理",
+        created_at="2026-08-03T17:16:13+08:00",
+        execution_phase="execution",
+        planning_steps=[
+            {
+                "step_id": "step_3",
+                "title": "将收入证明发送给王经理",
+                "intents": ["email.send"],
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        web_app.TaskLogger,
+        "load",
+        classmethod(lambda cls, task_id: task),
+    )
+    monkeypatch.setattr(
+        web_app.TaskLogger,
+        "list_tasks",
+        classmethod(
+            lambda cls, **kwargs: [
+                {
+                    "task_id": "task-previous",
+                    "created_at": "2026-08-03T17:00:00+08:00",
+                },
+                {
+                    "task_id": "task-current",
+                    "created_at": "2026-08-03T17:16:13+08:00",
+                },
+            ]
+        ),
+    )
+
+    result = web_app._enrich_governance_queue_items(
+        [
+            {
+                "task_id": "task-current",
+                "workflow_id": "admin:demo",
+                "step_id": "step_3",
+            }
+        ]
+    )[0]
+
+    assert result["user_query"] == task.user_query
+    assert result["task_created_at"] == task.created_at
+    assert result["step_title"] == "将收入证明发送给王经理"
+    assert result["step_intents"] == ["email.send"]
+    assert result["execution_round"] == 2
+    assert result["execution_round_total"] == 2
+
+
+def test_governance_static_ui_explains_trigger_and_uses_chinese_context():
+    client = TestClient(create_app())
+
+    index = client.get("/")
+    script = client.get("/static/security.js")
+
+    assert "人工核对队列（外部操作状态不确定）" in index.text
+    assert "普通查询失败不会进入这里" in index.text
+    assert "触发时间：" in script.text
+    assert "所属对话/工作流执行轮次：" in script.text
+    assert "用户问题：" in script.text
+    assert "已恢复完成" in script.text
+    assert "文档生成工具" in script.text
+    assert "第 ${numbered[1]} 步" in script.text
 
 
 def test_agent_precheck_enforces_user_agent_roster(monkeypatch):
