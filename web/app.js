@@ -985,12 +985,14 @@ const captureAssistantConversationContext = ({
   const cardResults = structuredResults.map((result) => `[${result.agentName}]\n${result.content}`);
   const fallback = executionOutput ? executionOutput.innerText.trim() : "";
   const unavailableFinalResult = latestFinalResultText === "工作流未产生可展示的最终结果。";
+  const normalizedOutcomeStatus = String(outcomeStatus || "").toLowerCase();
+  const resumeSucceeded = ["succeeded", "completed"].includes(normalizedOutcomeStatus);
   const resultText = (
     (!unavailableFinalResult ? latestFinalResultText : "")
     || cardResults.join("\n\n")
     || latestFinalResultText
     || fallback
-    || (replaceLatest ? "任务已恢复并执行成功。" : "")
+    || (replaceLatest && resumeSucceeded ? "任务已恢复并执行成功。" : "")
   );
   const content = [outcomeMessage, resultText].filter(Boolean).join("\n\n")
     || (outcomeStatus ? "执行结束，请查看执行状态。" : "执行完成。");
@@ -7218,6 +7220,7 @@ const resumeTask = async ({ inChat = false } = {}) => {
 
   resumeAbortController = new AbortController();
   let resumeTerminalStatus = "";
+  let resumeFailureMessage = "";
   try {
     const response = await fetch("/api/tasks/resume", {
       method: "POST",
@@ -7286,9 +7289,10 @@ const resumeTask = async ({ inChat = false } = {}) => {
     }
   } catch (err) {
     if (inChat) {
+      resumeFailureMessage = String(err.message || err);
       currentRunHasError = true;
-      errorStepCard(err.message || String(err));
-      updateChatExecutionProgress("error", `恢复失败：${err.message || err}`);
+      errorStepCard(resumeFailureMessage);
+      updateChatExecutionProgress("error", `恢复失败：${resumeFailureMessage}`);
       setStatus("Resume Failed", false);
       throw err;
     } else {
@@ -7306,6 +7310,26 @@ const resumeTask = async ({ inChat = false } = {}) => {
           currentChatLifecycle.confirmPlanButton.disabled = true;
           currentChatLifecycle.modifyPlanButton.disabled = true;
         }
+      } else {
+        const reportedOutcomeStatus = resumeTerminalStatus.toLowerCase();
+        const outcomeStatus = reportedOutcomeStatus === "succeeded" && currentRunHasError
+          ? "failed"
+          : reportedOutcomeStatus || (resumeFailureMessage ? "failed" : "unknown");
+        let outcomeMessage = "恢复执行结束，但未收到明确终态，请在 Task History 中核对任务状态。";
+        if (resumeFailureMessage) {
+          outcomeMessage = `恢复执行失败：${resumeFailureMessage}`;
+        } else if (reportedOutcomeStatus === "succeeded" && currentRunHasError) {
+          outcomeMessage = "恢复执行过程中出现错误，请在 Task History 中核对任务状态。";
+        } else if (resumeTerminalStatus === "PARTIAL_FAILED") {
+          outcomeMessage = "恢复执行部分失败，已保留失败前产生的可用结果。";
+        } else if (resumeTerminalStatus) {
+          outcomeMessage = `恢复执行未成功，任务状态：${resumeTerminalStatus}。`;
+        }
+        captureAssistantConversationContext({
+          replaceLatest: true,
+          outcomeStatus,
+          outcomeMessage,
+        });
       }
       currentRunContext = null;
       executionInProgress = false;
