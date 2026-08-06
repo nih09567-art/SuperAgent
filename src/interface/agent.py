@@ -224,6 +224,7 @@ class State(MessagesState):
     agent_capability_bindings: dict[str, list[str]]
     runtime_event_handler: Optional[Callable[[dict[str, Any]], Awaitable[None]]]
     memory_session_id: str
+    memory_enabled: bool
     memory_context: dict[str, Any]
     skill_reuse_enabled: bool
     reused_skill_id: str

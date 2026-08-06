@@ -265,6 +265,7 @@ class MemoryContextMetadata:
     consolidation_watermark: int = 0
     markdown_projection_path: str | None = None
     compaction_markdown_path: str | None = None
+    current_turn_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         from .utils import to_json_safe

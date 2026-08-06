@@ -484,16 +484,34 @@ def test_resume_heartbeat_renews_lease_across_store_instances(
     assert reclaimed.resolution["resume_claim_id"] != claim_id
 
 
-def _patch_resume_dependencies(monkeypatch, events):
+def _patch_resume_dependencies(
+    monkeypatch,
+    events,
+    captured=None,
+    *,
+    include_memory_enabled=True,
+    memory_enabled=True,
+):
     import src.robust.checkpoint as checkpoint_module
 
+    checkpoint_state = {
+        "messages": [
+            {
+                "role": "user",
+                "content": "resume",
+                "message_id": "u-resume",
+                "metadata": {"turn_id": "u-resume", "source": "checkpoint"},
+            }
+        ],
+        "workflow_mode": "production",
+        "coor_agents": [],
+        "memory_session_id": "thread-resume",
+    }
+    if include_memory_enabled:
+        checkpoint_state["memory_enabled"] = memory_enabled
     checkpoint = SimpleNamespace(
         workflow_id="wf-recon",
-        state={
-            "messages": [{"role": "user", "content": "resume"}],
-            "workflow_mode": "production",
-            "coor_agents": [],
-        },
+        state=checkpoint_state,
     )
 
     class FakeCheckpointManager:
@@ -501,7 +519,9 @@ def _patch_resume_dependencies(monkeypatch, events):
             return checkpoint
 
     class FakeServer:
-        async def _run_agent_workflow_with_resume(self, *_args, **_kwargs):
+        async def _run_agent_workflow_with_resume(self, *args, **_kwargs):
+            if captured is not None:
+                captured["request"] = args[0]
             for event in events:
                 if isinstance(event, Exception):
                     raise event
@@ -511,6 +531,85 @@ def _patch_resume_dependencies(monkeypatch, events):
         checkpoint_module, "CheckpointManager", FakeCheckpointManager
     )
     monkeypatch.setattr(web_app, "Server", FakeServer)
+
+
+def test_resume_api_preserves_checkpoint_memory_identity(tmp_path, monkeypatch):
+    reconciliation, _ = _reconciliation(
+        tmp_path, monkeypatch, task_id="task-resume-memory"
+    )
+    store = get_reconciliation_store()
+    store.resolve(
+        reconciliation.reconciliation_id,
+        status="confirmed_succeeded",
+        operator="admin",
+    )
+    captured = {}
+    _patch_resume_dependencies(
+        monkeypatch,
+        [
+            {
+                "event": "end_of_workflow",
+                "data": {"task_id": reconciliation.task_id, "status": "SUCCEEDED"},
+            }
+        ],
+        captured,
+    )
+
+    response = _client().post(
+        "/api/tasks/resume",
+        json={
+            "task_id": reconciliation.task_id,
+            "resume_step": reconciliation.resume_step,
+            "user_id": "admin",
+        },
+    )
+
+    request = captured["request"]
+    assert response.status_code == 200
+    assert request.memory_session_id == "thread-resume"
+    assert request.memory_enabled is True
+    assert request.messages[0].message_id == "u-resume"
+    assert request.messages[0].metadata == {
+        "turn_id": "u-resume",
+        "source": "checkpoint",
+    }
+
+
+def test_resume_api_defaults_legacy_checkpoint_memory_to_disabled(
+    tmp_path, monkeypatch
+):
+    reconciliation, _ = _reconciliation(
+        tmp_path, monkeypatch, task_id="task-resume-legacy-memory"
+    )
+    get_reconciliation_store().resolve(
+        reconciliation.reconciliation_id,
+        status="confirmed_succeeded",
+        operator="admin",
+    )
+    captured = {}
+    _patch_resume_dependencies(
+        monkeypatch,
+        [
+            {
+                "event": "end_of_workflow",
+                "data": {"task_id": reconciliation.task_id, "status": "SUCCEEDED"},
+            }
+        ],
+        captured,
+        include_memory_enabled=False,
+    )
+
+    response = _client().post(
+        "/api/tasks/resume",
+        json={
+            "task_id": reconciliation.task_id,
+            "resume_step": reconciliation.resume_step,
+            "user_id": "admin",
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["request"].memory_enabled is False
 
 
 @pytest.mark.parametrize("terminal_status", ["FAILED", "NEEDS_RECONCILIATION"])

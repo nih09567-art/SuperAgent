@@ -93,26 +93,34 @@ def completed_turns(messages: Sequence[Any]) -> list[tuple[Any, ...]]:
     """Group complete user -> assistant exchanges without splitting responses.
 
     A turn may contain several assistant messages because streaming and internal
-    orchestration can persist more than one visible response.  A trailing user
-    message without an assistant response is deliberately excluded.
+    orchestration can persist more than one visible response. Explicit turn IDs
+    keep interleaved concurrent requests isolated; legacy messages without one
+    retain the previous nearest-user behavior. A user message without an
+    assistant response is deliberately excluded.
     """
 
-    turns: list[tuple[Any, ...]] = []
-    current: list[Any] = []
-    has_assistant = False
+    turn_order: list[str] = []
+    turns: dict[str, list[Any]] = {}
+    completed: set[str] = set()
+    current_turn_id: str | None = None
     for message in _eligible(messages):
         role = _role(message)
+        metadata = _read(message, "metadata", {})
+        metadata = metadata if isinstance(metadata, Mapping) else {}
         if role == "user":
-            if current and has_assistant:
-                turns.append(tuple(current))
-            current = [message]
-            has_assistant = False
-        elif current:
-            current.append(message)
-            has_assistant = True
-    if current and has_assistant:
-        turns.append(tuple(current))
-    return turns
+            current_turn_id = str(
+                metadata.get("turn_id") or _message_id(message)
+            )
+            if current_turn_id not in turns:
+                turn_order.append(current_turn_id)
+                turns[current_turn_id] = [message]
+        else:
+            explicit_turn_id = str(metadata.get("turn_id") or "").strip()
+            target_turn_id = explicit_turn_id or current_turn_id
+            if target_turn_id and target_turn_id in turns:
+                turns[target_turn_id].append(message)
+                completed.add(target_turn_id)
+    return [tuple(turns[turn_id]) for turn_id in turn_order if turn_id in completed]
 
 
 def select_recent_turns(

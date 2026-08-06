@@ -54,6 +54,22 @@ def test_concurrent_appends_keep_all_messages(tmp_path):
     }
 
 
+def test_turn_consolidation_claim_is_atomic_across_store_instances(tmp_path):
+    path = tmp_path / "memory.sqlite3"
+    first = MemoryStore(path)
+    second = MemoryStore(path)
+
+    assert first.claim_turn_consolidation("alice", "thread", "u-1", 2) is True
+    assert second.claim_turn_consolidation("alice", "thread", "u-1", 2) is False
+
+    first.release_turn_consolidation_claim("alice", "thread", "u-1")
+    assert second.claim_turn_consolidation("alice", "thread", "u-1", 2) is True
+
+    second.mark_turn_consolidated("alice", "thread", "u-1", 2)
+    assert first.claim_turn_consolidation("alice", "thread", "u-1", 2) is False
+    assert first.list_consolidated_turn_ids("alice", "thread") == {"u-1"}
+
+
 def test_short_term_secrets_are_redacted_before_disk_write(tmp_path):
     path = tmp_path / "memory.sqlite3"
     store = MemoryStore(path)

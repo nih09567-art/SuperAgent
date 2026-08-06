@@ -269,6 +269,15 @@ class Server:
         memory_manager = None
         memory_metadata = {}
         memory_session_id = ""
+        memory_turn_id = next(
+            (
+                str(item.get("message_id"))
+                for item in reversed(incoming_messages)
+                if str(item.get("role") or "").casefold() == "user"
+                and item.get("message_id")
+            ),
+            None,
+        )
         memory_active = MEMORY_ENABLED and request.memory_enabled is not False
         if memory_active:
             memory_manager = get_memory_manager()
@@ -360,6 +369,7 @@ class Server:
                 "",
             )
             memory_session_id = prepared.metadata.session_id
+            memory_turn_id = prepared.metadata.current_turn_id or memory_turn_id
             if prepared.metadata.warning:
                 yield {
                     "event": "memory_warning",
@@ -385,6 +395,7 @@ class Server:
             instruction_history=getattr(request, "instruction_history", None),
             original_user_query=getattr(request, "original_user_query", None),
             memory_session_id=memory_session_id,
+            memory_enabled=memory_active,
             memory_context=memory_metadata,
             project_id=request.project_id,
             compaction_model_type=_active_compaction_model_type(request),
@@ -402,7 +413,12 @@ class Server:
                 "artifacts": list(resolved_request.artifact_inputs),
             },
             request_input_messages=[
-                {"role": item["role"], "content": redact_secrets(item["content"])}
+                {
+                    "role": item["role"],
+                    "content": redact_secrets(item["content"]),
+                    "message_id": item.get("message_id"),
+                    "metadata": dict(item.get("metadata") or {}),
+                }
                 for item in incoming_messages
             ],
         )
@@ -463,6 +479,7 @@ class Server:
                         session_id=memory_session_id,
                         workflow_id=actual_workflow_id,
                         outputs=outputs,
+                        turn_id=memory_turn_id,
                     )
                 except Exception as exc:
                     logger.warning(
@@ -503,11 +520,32 @@ class Server:
         # Resume场景：直接使用request.messages（来自step=0 checkpoint）
         # 不依赖session，因为resume可能在很久之后执行，session已过期
         # request.messages是AgentMessage列表，需要转换为dict列表
-        session_messages = [{"role": m.role, "content": m.content} for m in request.messages]
+        session_messages = [
+            {
+                "role": message.role,
+                "content": message.content,
+                "message_id": message.message_id,
+                "metadata": dict(message.metadata or {}),
+            }
+            for message in request.messages
+        ]
+        resume_turn_id = next(
+            (
+                str(
+                    (message.metadata or {}).get("turn_id")
+                    or message.message_id
+                )
+                for message in reversed(request.messages)
+                if str(message.role or "").casefold() == "user"
+                and ((message.metadata or {}).get("turn_id") or message.message_id)
+            ),
+            None,
+        )
         memory_session_id = ""
         memory_metadata = {}
         memory_manager = None
-        if MEMORY_ENABLED and request.memory_enabled is not False:
+        memory_active = MEMORY_ENABLED and request.memory_enabled is True
+        if memory_active:
             memory_manager = get_memory_manager()
             memory_session_id = memory_manager.resolve_session_id(
                 request.user_id,
@@ -516,6 +554,7 @@ class Server:
             memory_metadata = {
                 "session_id": memory_session_id,
                 "resume_uses_checkpoint_state": True,
+                "current_turn_id": resume_turn_id,
             }
 
         response_stream = run_agent_workflow(
@@ -534,6 +573,7 @@ class Server:
             instruction_history=getattr(request, "instruction_history", None),
             original_user_query=getattr(request, "original_user_query", None),
             memory_session_id=memory_session_id,
+            memory_enabled=memory_active,
             memory_context=memory_metadata,
             project_id=request.project_id,
             compaction_model_type=_active_compaction_model_type(request),
@@ -589,13 +629,19 @@ class Server:
             outputs = _assistant_memory_outputs(
                 assistant_buffers, visible_remote_buffers
             )
-            if memory_manager is not None and outputs:
+            if outputs and not resume_turn_id:
+                logger.warning(
+                    "Skipping resumed assistant memory persistence because the "
+                    "checkpoint has no trusted user turn id"
+                )
+            elif memory_manager is not None and outputs:
                 try:
                     await memory_manager.record_assistant_outputs(
                         user_id=request.user_id,
                         session_id=memory_session_id,
                         workflow_id=actual_workflow_id,
                         outputs=outputs,
+                        turn_id=resume_turn_id,
                     )
                 except Exception as exc:
                     logger.warning(

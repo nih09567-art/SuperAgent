@@ -34,7 +34,7 @@ def _manager(tmp_path, **overrides):
     return MemoryManager(settings=settings, store=store)
 
 
-def test_manager_persists_context_and_explicit_long_term_memory(tmp_path):
+def test_explicit_memory_waits_for_completed_turn_and_llm_extractor(tmp_path):
     manager = _manager(tmp_path, trigger_tokens=10000)
 
     first = asyncio.run(
@@ -57,9 +57,41 @@ def test_manager_persists_context_and_explicit_long_term_memory(tmp_path):
     memories = asyncio.run(restarted.list_long_term("alice"))
 
     assert first.metadata.session_id == "thread"
-    assert any("concise reports" in item.content for item in memories)
-    assert any("untrusted_long_term_memory" in msg["content"] for msg in second.messages)
+    assert memories == []
+    assert not any("untrusted_long_term_memory" in msg["content"] for msg in second.messages)
     assert len(asyncio.run(restarted.list_session_messages("alice", "thread"))) == 2
+
+
+def test_completed_turn_without_llm_does_not_use_heuristic_memory(tmp_path):
+    manager = _manager(
+        tmp_path,
+        trigger_tokens=10000,
+        consolidation_llm_enabled=False,
+    )
+
+    asyncio.run(
+        manager.prepare_context(
+            user_id="alice",
+            session_id="thread",
+            incoming_messages=[
+                {
+                    "role": "user",
+                    "content": "Remember that I prefer concise reports",
+                    "message_id": "u1",
+                }
+            ],
+        )
+    )
+    asyncio.run(
+        manager.record_assistant_outputs(
+            user_id="alice",
+            session_id="thread",
+            outputs=[{"agent_name": "assistant", "content": "Understood."}],
+            turn_id="u1",
+        )
+    )
+
+    assert asyncio.run(manager.list_long_term("alice")) == []
 
 
 def test_missing_web_message_ids_are_stable_and_deduplicated(tmp_path):
@@ -122,6 +154,190 @@ def test_identical_assistant_content_is_distinct_across_user_turns(tmp_path):
     assert len(assistant_messages) == 2
     assert len({item.message_id for item in assistant_messages}) == 2
     assert [item.metadata["turn_id"] for item in assistant_messages] == ["u1", "u2"]
+
+
+def test_interleaved_requests_keep_outputs_and_consolidation_in_their_turns(tmp_path):
+    manager = _manager(tmp_path, trigger_tokens=10000, long_term_enabled=False)
+    consolidated_turns = []
+
+    async def capture_turn(turn, *, workflow_id=None):
+        consolidated_turns.append([item.message_id for item in turn])
+        return []
+
+    manager.consolidator.consolidate = capture_turn
+
+    prepared_a = asyncio.run(
+        manager.prepare_context(
+            user_id="alice",
+            session_id="thread",
+            incoming_messages=[
+                {"role": "user", "content": "request A", "message_id": "u-a"}
+            ],
+        )
+    )
+    prepared_b = asyncio.run(
+        manager.prepare_context(
+            user_id="alice",
+            session_id="thread",
+            incoming_messages=[
+                {"role": "user", "content": "request B", "message_id": "u-b"}
+            ],
+        )
+    )
+
+    asyncio.run(
+        manager.record_assistant_outputs(
+            user_id="alice",
+            session_id="thread",
+            outputs=[{"agent_name": "assistant", "content": "result A"}],
+            workflow_id="wf-a",
+            turn_id=prepared_a.metadata.current_turn_id,
+        )
+    )
+    messages_after_a = asyncio.run(
+        manager.list_session_messages("alice", "thread")
+    )
+    result_a_id = next(
+        item.message_id for item in messages_after_a if item.content == "result A"
+    )
+    assert consolidated_turns == [["u-a", result_a_id]]
+    assert manager.store.get_consolidation_watermark("alice", "thread") == 1
+
+    asyncio.run(
+        manager.record_assistant_outputs(
+            user_id="alice",
+            session_id="thread",
+            outputs=[{"agent_name": "assistant", "content": "result B"}],
+            workflow_id="wf-b",
+            turn_id=prepared_b.metadata.current_turn_id,
+        )
+    )
+
+    messages = asyncio.run(manager.list_session_messages("alice", "thread"))
+    outputs_by_content = {
+        message.content: message.metadata["turn_id"]
+        for message in messages
+        if message.role == "assistant"
+    }
+    assert prepared_a.metadata.current_turn_id == "u-a"
+    assert prepared_b.metadata.current_turn_id == "u-b"
+    assert outputs_by_content == {"result A": "u-a", "result B": "u-b"}
+    assert consolidated_turns == [
+        ["u-a", result_a_id],
+        ["u-b", next(item.message_id for item in messages if item.content == "result B")],
+    ]
+    assert manager.store.get_consolidation_watermark("alice", "thread") == 4
+
+
+def test_abandoned_turn_does_not_block_later_turn_consolidation(tmp_path):
+    manager = _manager(tmp_path, trigger_tokens=10000, long_term_enabled=False)
+    consolidated_turns = []
+
+    async def capture_turn(turn, *, workflow_id=None):
+        consolidated_turns.append([item.metadata.get("turn_id") for item in turn])
+        return []
+
+    manager.consolidator.consolidate = capture_turn
+
+    for message_id in ("u-a", "u-b"):
+        asyncio.run(
+            manager.prepare_context(
+                user_id="alice",
+                session_id="thread",
+                incoming_messages=[
+                    {
+                        "role": "user",
+                        "content": f"request {message_id}",
+                        "message_id": message_id,
+                    }
+                ],
+            )
+        )
+    asyncio.run(
+        manager.record_assistant_outputs(
+            user_id="alice",
+            session_id="thread",
+            outputs=[{"agent_name": "assistant", "content": "result A"}],
+            turn_id="u-a",
+        )
+    )
+
+    asyncio.run(
+        manager.prepare_context(
+            user_id="alice",
+            session_id="thread",
+            incoming_messages=[
+                {"role": "user", "content": "request C", "message_id": "u-c"}
+            ],
+        )
+    )
+    asyncio.run(
+        manager.record_assistant_outputs(
+            user_id="alice",
+            session_id="thread",
+            outputs=[{"agent_name": "assistant", "content": "result C"}],
+            turn_id="u-c",
+        )
+    )
+
+    assert consolidated_turns == [["u-a", "u-a"], ["u-c", "u-c"]]
+    assert manager.store.list_consolidated_turn_ids("alice", "thread") == {
+        "u-a",
+        "u-c",
+    }
+    assert manager.store.get_consolidation_watermark("alice", "thread") == 1
+
+
+def test_concurrent_consolidation_claims_each_turn_once(tmp_path):
+    manager = _manager(
+        tmp_path,
+        trigger_tokens=10000,
+        long_term_enabled=False,
+        auto_consolidation_enabled=False,
+    )
+    calls = 0
+    extractor_started = asyncio.Event()
+    release_extractor = asyncio.Event()
+
+    async def capture_turn(turn, *, workflow_id=None):
+        nonlocal calls
+        calls += 1
+        extractor_started.set()
+        await release_extractor.wait()
+        return []
+
+    manager.consolidator.consolidate = capture_turn
+
+    async def exercise():
+        await manager.prepare_context(
+            user_id="alice",
+            session_id="thread",
+            incoming_messages=[
+                {"role": "user", "content": "request", "message_id": "u-1"}
+            ],
+        )
+        await manager.record_assistant_outputs(
+            user_id="alice",
+            session_id="thread",
+            outputs=[{"agent_name": "assistant", "content": "result"}],
+            turn_id="u-1",
+        )
+
+        first = asyncio.create_task(
+            manager._consolidate_pending("alice", "thread", "wf-1")
+        )
+        await extractor_started.wait()
+        second = asyncio.create_task(
+            manager._consolidate_pending("alice", "thread", "wf-1")
+        )
+        await asyncio.sleep(0)
+        release_extractor.set()
+        await asyncio.gather(first, second)
+
+    asyncio.run(exercise())
+
+    assert calls == 1
+    assert manager.store.list_consolidated_turn_ids("alice", "thread") == {"u-1"}
 
 
 def test_manager_rejects_explicit_prompt_injection_memory(tmp_path):
@@ -230,7 +446,7 @@ def test_structured_memory_value_cannot_bypass_prompt_token_budget(tmp_path):
     assert entries == ()
 
 
-def test_explicit_memory_key_is_filtered_before_top_k_ranking(tmp_path):
+def test_explicit_memory_key_boosts_without_filtering_active_profile(tmp_path):
     manager = _manager(tmp_path, trigger_tokens=10000, long_term_top_k=1)
     language = manager.store.remember(
         user_id="alice",
@@ -267,7 +483,8 @@ def test_explicit_memory_key_is_filtered_before_top_k_ranking(tmp_path):
         )
     )
 
-    assert memory_ids == (language.memory_id,)
+    assert memory_ids[0] == language.memory_id
+    assert len(memory_ids) == 2
     assert entries[0]["key"] == "preference.language"
 
 
@@ -318,7 +535,7 @@ def test_memory_failure_returns_original_sanitized_messages(tmp_path):
     assert context.metadata.warning.startswith("memory_soft_failure:")
 
 
-def test_simple_greeting_does_not_retrieve_long_term_memory(tmp_path):
+def test_simple_greeting_retrieves_active_long_term_memory(tmp_path):
     manager = _manager(tmp_path)
     asyncio.run(
         manager.remember(
@@ -334,7 +551,7 @@ def test_simple_greeting_does_not_retrieve_long_term_memory(tmp_path):
         )
     )
 
-    assert not any(
+    assert any(
         "untrusted_long_term_memory" in message["content"]
         for message in context.messages
     )
@@ -378,6 +595,19 @@ def test_compaction_retains_two_completed_turns_and_current_request(tmp_path):
         target_tokens=40,
         max_context_tokens=1400,
         reserved_output_tokens=100,
+    )
+    manager.store.remember(
+        user_id="alice",
+        content="Chinese",
+        kind="preference",
+        memory_key="preference.language",
+        value="zh",
+        label="Default response language: Chinese.",
+        confidence=1.0,
+        importance=1.0,
+        decay_class="pinned",
+        tags=("preference.language",),
+        provenance={"source": "test"},
     )
 
     for index in range(3):
@@ -430,11 +660,29 @@ def test_compaction_retains_two_completed_turns_and_current_request(tmp_path):
     assert record is not None
     assert record.boundary.retained_turn_count == 2
     assert record.boundary.retained_message_ids == ("u1", "a1", "u2", "a2")
+    assert any(
+        (message.get("metadata") or {}).get("memory_type")
+        == "long_term_reference"
+        for message in context.messages
+    )
     assert context.messages[-1]["content"] == "CURRENT REQUEST"
 
 
 def test_completed_turn_consolidates_preference_and_projects_markdown(tmp_path):
     manager = _manager(tmp_path, trigger_tokens=10000)
+    manager.consolidator.extractor = lambda _turn: [
+        {
+            "tag": "preference.language",
+            "value": "Chinese",
+            "source_text": "I prefer Chinese responses",
+            "source_message_ids": ["u1"],
+            "confidence": 0.95,
+            "importance": 0.8,
+            "sensitivity": "normal",
+            "future_utility": True,
+            "evidence_authority": "user",
+        }
+    ]
     asyncio.run(
         manager.prepare_context(
             user_id="alice",
@@ -467,6 +715,11 @@ def test_completed_turn_consolidates_preference_and_projects_markdown(tmp_path):
         encoding="utf-8"
     )
     assert any(item.memory_key == "preference.language" for item in records)
+    record = next(item for item in records if item.memory_key == "preference.language")
+    provenance = record.metadata["source_conversations"][0]
+    assert provenance["turn_id"] == "u1"
+    assert provenance["user_messages"][0]["content"] == "I prefer Chinese responses"
+    assert provenance["assistant_messages"][0]["content"] == "Understood."
     assert "`preference.language`" in markdown
     assert manager.store.get_consolidation_watermark("alice", "thread") == 2
 
@@ -625,10 +878,9 @@ def test_llm_memory_extractor_is_tool_free_and_requires_user_source_ids():
             return type("Response", (), {"content": self.content, "tool_calls": []})()
 
     model = FakeModel(
-        '[{"kind":"preference","scope":"user","key":"preference.language",'
-        '"value":"Chinese","label":"Use Chinese.","source_text":"I prefer Chinese",'
+        '[{"tag":"preference.language","value":"Chinese",'
         '"source_message_ids":["u1"],"confidence":0.95,"importance":0.8,'
-        '"decay_class":"pinned","sensitivity":"normal","tags":["preference.language"]}]'
+        '"sensitivity":"normal","future_utility":true,"evidence_authority":"user"}]'
     )
     extractor = build_llm_extractor(model)
     turn = [
@@ -638,13 +890,13 @@ def test_llm_memory_extractor_is_tool_free_and_requires_user_source_ids():
     result = asyncio.run(extractor(turn))
 
     assert result[0]["source_message_ids"] == ("u1",)
+    assert result[0]["source_text"] == "I prefer Chinese"
     assert "Do not call tools" in model.prompts[0]
 
     invalid = FakeModel(
-        '[{"kind":"preference","scope":"user","key":"preference.language",'
-        '"value":"English","label":"Use English.","source_text":"guess",'
+        '[{"tag":"preference.language","value":"English",'
         '"source_message_ids":["a1"],"confidence":1,"importance":1,'
-        '"decay_class":"pinned","sensitivity":"normal","tags":[]}]'
+        '"sensitivity":"normal","future_utility":true,"evidence_authority":"user"}]'
     )
     assert asyncio.run(build_llm_extractor(invalid)(turn)) == []
 

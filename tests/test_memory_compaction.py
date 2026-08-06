@@ -309,6 +309,54 @@ def test_recent_turn_preflight_keeps_whole_turns_without_summary_retries():
     assert all(item.message_id != "u3" for turn in retained for item in turn)
 
 
+def test_completed_turns_groups_interleaved_outputs_by_explicit_turn_id():
+    messages = [
+        MemoryMessage(
+            message_id="u-a",
+            user_id="alice",
+            session_id="thread",
+            sequence=1,
+            role="user",
+            content="request A",
+            metadata={"turn_id": "u-a"},
+        ),
+        MemoryMessage(
+            message_id="u-b",
+            user_id="alice",
+            session_id="thread",
+            sequence=2,
+            role="user",
+            content="request B",
+            metadata={"turn_id": "u-b"},
+        ),
+        MemoryMessage(
+            message_id="a-a",
+            user_id="alice",
+            session_id="thread",
+            sequence=3,
+            role="assistant",
+            content="result A",
+            metadata={"turn_id": "u-a"},
+        ),
+        MemoryMessage(
+            message_id="a-b",
+            user_id="alice",
+            session_id="thread",
+            sequence=4,
+            role="assistant",
+            content="result B",
+            metadata={"turn_id": "u-b"},
+        ),
+    ]
+
+    turns = completed_turns(messages)
+
+    assert [[item.message_id for item in turn] for turn in turns] == [
+        ["u-a", "a-a"],
+        ["u-b", "a-b"],
+    ]
+
+
 def test_recent_turn_preflight_degrades_locally_to_one_or_zero_turns():
     turns = completed_turns(
         [

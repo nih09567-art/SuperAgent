@@ -49,6 +49,7 @@ from .agent_skill import (
     set_agent_skill_manager,
     slice_agent_skill_evidence,
 )
+from .reflection import SkillReflection, SkillReflectionResult
 
 __all__ = [
     "Skill",
@@ -96,4 +97,6 @@ __all__ = [
     "get_agent_skill_manager",
     "set_agent_skill_manager",
     "slice_agent_skill_evidence",
+    "SkillReflection",
+    "SkillReflectionResult",
 ]

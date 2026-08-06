@@ -9,7 +9,7 @@ import tempfile
 import threading
 from contextlib import closing
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 from uuid import uuid4
@@ -165,9 +165,27 @@ class MemoryStore:
                     user_id TEXT NOT NULL,
                     session_id TEXT NOT NULL,
                     last_sequence INTEGER NOT NULL DEFAULT 0,
-                    extractor_version TEXT NOT NULL DEFAULT 'heuristic-v1',
+                    extractor_version TEXT NOT NULL DEFAULT 'llm-taxonomy-v1',
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY (user_id, session_id, extractor_version)
+                );
+
+                CREATE TABLE IF NOT EXISTS memory_consolidated_turns (
+                    user_id TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    turn_id TEXT NOT NULL,
+                    extractor_version TEXT NOT NULL DEFAULT 'llm-taxonomy-v1',
+                    last_sequence INTEGER NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'completed',
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (
+                        user_id, session_id, turn_id, extractor_version
+                    )
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_memory_consolidated_turns_sequence
+                ON memory_consolidated_turns(
+                    user_id, session_id, extractor_version, last_sequence
                 );
                 """
             )
@@ -638,12 +656,47 @@ class MemoryStore:
                 if existing is not None and (
                     not memory_key or normalize_content(existing["content"]) == normalized
                 ):
+                    existing_metadata = dict(_loads(existing["metadata_json"], {}))
+                    incoming_metadata = dict(metadata or {})
+                    existing_sources = list(
+                        existing_metadata.get("source_conversations") or []
+                    )
+                    known_turns = {
+                        str(item.get("turn_id") or "")
+                        for item in existing_sources
+                        if isinstance(item, Mapping)
+                    }
+                    for source in incoming_metadata.get("source_conversations") or []:
+                        if not isinstance(source, Mapping):
+                            continue
+                        turn_id = str(source.get("turn_id") or "")
+                        if turn_id and turn_id in known_turns:
+                            continue
+                        existing_sources.append(dict(source))
+                        if turn_id:
+                            known_turns.add(turn_id)
+                    merged_metadata = {**existing_metadata, **incoming_metadata}
+                    merged_metadata["source_conversations"] = existing_sources[-10:]
+                    merged_provenance = {
+                        **dict(_loads(existing["provenance_json"], {})),
+                        **dict(provenance or {}),
+                    }
+                    existing_source_ids = list(
+                        _loads(existing["source_message_ids_json"], [])
+                    )
+                    merged_source_ids = tuple(
+                        dict.fromkeys(
+                            [str(item) for item in existing_source_ids]
+                            + [str(item) for item in source_message_ids or ()]
+                        )
+                    )
                     connection.execute(
                         """
                         UPDATE memory_long_term
                         SET confidence=?, importance=?, label=?, memory_value_json=?,
                             last_reinforced_at=?, reinforcement_count=?, updated_at=?,
-                            source_message_ids_json=?, tags_json=?, extractor_version=?
+                            source_message_ids_json=?, tags_json=?, extractor_version=?,
+                            provenance_json=?, metadata_json=?
                         WHERE memory_id=? AND user_id=?
                         """,
                         (
@@ -655,9 +708,11 @@ class MemoryStore:
                             int(existing["reinforcement_count"] or 0)
                             + max(1, int(reinforcement_count or 0)),
                             _iso(now),
-                            _json(tuple(source_message_ids or ())),
+                            _json(merged_source_ids),
                             _json(normalized_tags),
                             extractor_version,
+                            _json(merged_provenance),
+                            _json(merged_metadata),
                             existing["memory_id"],
                             user_id,
                         ),
@@ -792,7 +847,7 @@ class MemoryStore:
     forget = delete_long_term
 
     def get_consolidation_watermark(
-        self, user_id: str, session_id: str, *, extractor_version: str = "heuristic-v1"
+        self, user_id: str, session_id: str, *, extractor_version: str = "llm-taxonomy-v1"
     ) -> int:
         self._validate_scope(user_id, session_id)
         with closing(self._connect()) as connection:
@@ -811,7 +866,7 @@ class MemoryStore:
         session_id: str,
         sequence: int,
         *,
-        extractor_version: str = "heuristic-v1",
+        extractor_version: str = "llm-taxonomy-v1",
     ) -> int:
         self._validate_scope(user_id, session_id)
         now = _iso()
@@ -835,6 +890,128 @@ class MemoryStore:
                 (user_id, session_id, extractor_version),
             ).fetchone()
         return int(row["last_sequence"] if row else 0)
+
+    def list_consolidated_turn_ids(
+        self,
+        user_id: str,
+        session_id: str,
+        *,
+        extractor_version: str = "llm-taxonomy-v1",
+    ) -> set[str]:
+        self._validate_scope(user_id, session_id)
+        with closing(self._connect()) as connection:
+            rows = connection.execute(
+                """
+                SELECT turn_id FROM memory_consolidated_turns
+                WHERE user_id=? AND session_id=? AND extractor_version=?
+                  AND status='completed'
+                """,
+                (user_id, session_id, extractor_version),
+            ).fetchall()
+        return {str(row["turn_id"]) for row in rows}
+
+    def claim_turn_consolidation(
+        self,
+        user_id: str,
+        session_id: str,
+        turn_id: str,
+        last_sequence: int,
+        *,
+        extractor_version: str = "llm-taxonomy-v1",
+        lease_seconds: int = 300,
+    ) -> bool:
+        self._validate_scope(user_id, session_id)
+        identifier = str(turn_id).strip()
+        if not identifier:
+            raise ValueError("turn_id is required")
+        now = utc_now()
+        stale_before = now - timedelta(seconds=max(1, int(lease_seconds)))
+        with closing(self._connect()) as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO memory_consolidated_turns (
+                    user_id, session_id, turn_id, extractor_version,
+                    last_sequence, status, updated_at
+                ) VALUES (?, ?, ?, ?, ?, 'processing', ?)
+                ON CONFLICT(
+                    user_id, session_id, turn_id, extractor_version
+                ) DO UPDATE SET
+                    last_sequence=MAX(last_sequence, excluded.last_sequence),
+                    status='processing',
+                    updated_at=excluded.updated_at
+                WHERE memory_consolidated_turns.status='processing'
+                  AND memory_consolidated_turns.updated_at <= ?
+                """,
+                (
+                    user_id,
+                    session_id,
+                    identifier,
+                    extractor_version,
+                    max(0, int(last_sequence)),
+                    _iso(now),
+                    _iso(stale_before),
+                ),
+            )
+        return cursor.rowcount == 1
+
+    def release_turn_consolidation_claim(
+        self,
+        user_id: str,
+        session_id: str,
+        turn_id: str,
+        *,
+        extractor_version: str = "llm-taxonomy-v1",
+    ) -> None:
+        self._validate_scope(user_id, session_id)
+        identifier = str(turn_id).strip()
+        if not identifier:
+            raise ValueError("turn_id is required")
+        with closing(self._connect()) as connection:
+            connection.execute(
+                """
+                DELETE FROM memory_consolidated_turns
+                WHERE user_id=? AND session_id=? AND turn_id=?
+                  AND extractor_version=? AND status='processing'
+                """,
+                (user_id, session_id, identifier, extractor_version),
+            )
+
+    def mark_turn_consolidated(
+        self,
+        user_id: str,
+        session_id: str,
+        turn_id: str,
+        last_sequence: int,
+        *,
+        extractor_version: str = "llm-taxonomy-v1",
+    ) -> None:
+        self._validate_scope(user_id, session_id)
+        identifier = str(turn_id).strip()
+        if not identifier:
+            raise ValueError("turn_id is required")
+        with closing(self._connect()) as connection:
+            connection.execute(
+                """
+                INSERT INTO memory_consolidated_turns (
+                    user_id, session_id, turn_id, extractor_version,
+                    last_sequence, status, updated_at
+                ) VALUES (?, ?, ?, ?, ?, 'completed', ?)
+                ON CONFLICT(
+                    user_id, session_id, turn_id, extractor_version
+                ) DO UPDATE SET
+                    last_sequence=MAX(last_sequence, excluded.last_sequence),
+                    status='completed',
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    user_id,
+                    session_id,
+                    identifier,
+                    extractor_version,
+                    max(0, int(last_sequence)),
+                    _iso(),
+                ),
+            )
 
     def project_markdown(
         self,

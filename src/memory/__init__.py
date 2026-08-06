@@ -1,6 +1,10 @@
 """Public Agent Memory API."""
 
-from .consolidation import MemoryCandidate, MemoryConsolidator
+from .consolidation import (
+    MemoryCandidate,
+    MemoryConsolidator,
+    OFFICE_MEMORY_TAXONOMY,
+)
 from .manager import (
     CurrentRequestOverflowError,
     MemoryManager,
@@ -30,6 +34,7 @@ __all__ = [
     "MemoryMessage",
     "MemorySettings",
     "MemoryStore",
+    "OFFICE_MEMORY_TAXONOMY",
     "PreparedMemoryContext",
     "PlanContextOverflowError",
     "RecoveryAttachments",

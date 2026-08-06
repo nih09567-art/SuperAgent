@@ -27,6 +27,8 @@ from src.skills.execution_evidence import (
     StepExecutionEvidence,
     VerificationStatus,
 )
+from src.skills.reflection import SkillReflection, SkillReflectionResult
+from src.memory.utils import redact_secrets
 
 
 _RISK_LEVEL = {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "CRITICAL": 3}
@@ -56,6 +58,18 @@ def _hash(value: Any) -> str:
             default=str,
         ).encode("utf-8")
     ).hexdigest()
+
+
+def _sanitize_snapshot(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {str(key): _sanitize_snapshot(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_sanitize_snapshot(item) for item in value]
+    if isinstance(value, tuple):
+        return [_sanitize_snapshot(item) for item in value]
+    if isinstance(value, str):
+        return redact_secrets(value)[:12000]
+    return value
 
 
 def _normalize_token(value: Any, default: str = "") -> str:
@@ -266,6 +280,8 @@ class AgentSkillSettings(BaseModel):
     enabled: bool = True
     reuse_enabled: bool = False
     auto_distill_enabled: bool = True
+    reflection_enabled: bool = True
+    reflection_min_confidence: float = 0.75
     allow_side_effect_reuse: bool = False
     match_threshold: float = 0.75
     match_margin: float = 0.08
@@ -282,6 +298,10 @@ class AgentSkillSettings(BaseModel):
             enabled=getattr(env, "AGENT_SKILL_ENABLED", True),
             reuse_enabled=getattr(env, "AGENT_SKILL_REUSE_ENABLED", False),
             auto_distill_enabled=getattr(env, "AGENT_SKILL_AUTO_DISTILL_ENABLED", True),
+            reflection_enabled=getattr(env, "AGENT_SKILL_REFLECTION_ENABLED", True),
+            reflection_min_confidence=getattr(
+                env, "AGENT_SKILL_REFLECTION_MIN_CONFIDENCE", 0.75
+            ),
             allow_side_effect_reuse=getattr(
                 env, "AGENT_SKILL_SIDE_EFFECT_REUSE_ENABLED", False
             ),
@@ -335,6 +355,13 @@ class AgentSkillEvidence(BaseModel):
     external_operation_id_present: bool = False
     needs_reconciliation: bool = False
     artifact_refs: tuple[dict[str, Any], ...] = ()
+    source_conversations: tuple[dict[str, Any], ...] = ()
+    reflection_accepted: bool = False
+    reflection_family: str = ""
+    reflection_procedure: dict[str, Any] = Field(default_factory=dict)
+    reflection_confidence: float = 0.0
+    reflection_reasons: tuple[str, ...] = ()
+    reflection_model_version: str = ""
     created_at: str = Field(default_factory=_now)
 
     @property
@@ -450,6 +477,12 @@ class AgentSkillCard(BaseModel):
     consecutive_failures: int = 0
     confidence: float = 0.5
     provenance: AgentSkillProvenance = Field(default_factory=AgentSkillProvenance)
+    source_conversations: list[dict[str, Any]] = Field(default_factory=list)
+    aggregate_reflection_accepted: bool = False
+    aggregate_reflection_reasons: list[str] = Field(default_factory=list)
+    aggregate_reflection_model_version: str = ""
+    reflection_family: str = ""
+    reflection_procedure: dict[str, Any] = Field(default_factory=dict)
     created_at: str = Field(default_factory=_now)
     updated_at: str = Field(default_factory=_now)
     last_used_at: str | None = None
@@ -694,6 +727,7 @@ class AgentSkillStore:
                 card.schema_version >= 1
                 and card.quality.promotion_evidence_count >= threshold
                 and card.quality.structure_consistency >= minimum_structure_consistency
+                and card.aggregate_reflection_accepted
                 and (not side_effect or allow_side_effect_activation)
             )
             if card.status != AgentSkillStatus.DISABLED and promotion_ready:
@@ -847,13 +881,65 @@ class AgentSkillManager:
         self,
         settings: AgentSkillSettings | None = None,
         store: AgentSkillStore | None = None,
+        reflection: SkillReflection | None = None,
     ) -> None:
         self.settings = settings or AgentSkillSettings.from_env()
         self.store = store or AgentSkillStore(self.settings.store_path)
+        default_reflection = reflection or SkillReflection.from_default_model()
+        self.reflection = SkillReflection(
+            default_reflection.model,
+            min_confidence=self.settings.reflection_min_confidence,
+            timeout_seconds=default_reflection.timeout_seconds,
+        )
+
+    def reflect(
+        self,
+        evidence: AgentSkillEvidence,
+        *,
+        source_conversations: Sequence[Mapping[str, Any]] = (),
+    ) -> AgentSkillEvidence:
+        """Attach a fail-closed LLM reflection to one step evidence record."""
+
+        if not self.settings.reflection_enabled:
+            return evidence.model_copy(
+                update={
+                    "source_conversations": tuple(
+                        dict(item) for item in source_conversations
+                    ),
+                    "reflection_reasons": ("reflection_disabled",),
+                }
+            )
+
+        sanitized_sources = tuple(
+            _sanitize_snapshot(dict(item))
+            for item in source_conversations
+            if isinstance(item, Mapping)
+        )
+        evidence = evidence.model_copy(update={"source_conversations": sanitized_sources})
+        result = self.reflection.reflect_trace(
+            evidence, source_conversations=sanitized_sources
+        )
+        return evidence.model_copy(
+            update={
+                "source_conversations": sanitized_sources,
+                "reflection_accepted": bool(
+                    result.valid
+                    and result.is_reusable
+                    and result.confidence >= self.reflection.min_confidence
+                ),
+                "reflection_family": result.workflow_family,
+                "reflection_procedure": dict(result.normalized_procedure),
+                "reflection_confidence": result.confidence,
+                "reflection_reasons": result.reasons,
+                "reflection_model_version": result.model_version,
+            }
+        )
 
     def distill(self, evidence: AgentSkillEvidence) -> AgentSkillDistillationResult:
         if not self.settings.enabled or not self.settings.auto_distill_enabled:
             raise ValueError("agent skill distillation is disabled")
+        if not evidence.reflection_accepted:
+            raise ValueError("agent step evidence lacks an accepted LLM reflection")
         decision = evaluate_agent_skill_evidence(evidence)
         if not decision.contributes:
             raise ValueError(
@@ -877,8 +963,21 @@ class AgentSkillManager:
                 item.task_id
                 for item in supporting
                 if evaluate_agent_skill_evidence(item).promotion_ready
+                and item.reflection_accepted
             }
         )
+        aggregate_reflection = SkillReflectionResult(
+            False, "", {}, 0.0, ("promotion_threshold_not_reached",), valid=False
+        )
+        if promotion_count >= max(2, self.settings.promotion_success_threshold):
+            aggregate_reflection = self.reflection.reflect_aggregate(
+                supporting,
+                source_conversations=[
+                    conversation
+                    for item in supporting
+                    for conversation in item.source_conversations
+                ],
+            )
         typed_count = sum(
             bool(item.schema_valid is True or item.expected_schema_ref or item.output_accepted)
             for item in supporting
@@ -948,6 +1047,25 @@ class AgentSkillManager:
             ),
             created_at=before.created_at if before else _now(),
             last_used_at=before.last_used_at if before else None,
+            source_conversations=[
+                conversation
+                for item in supporting
+                for conversation in item.source_conversations
+            ][:10],
+            aggregate_reflection_accepted=bool(
+                aggregate_reflection.valid
+                and aggregate_reflection.is_reusable
+                and aggregate_reflection.confidence >= self.reflection.min_confidence
+            ),
+            aggregate_reflection_reasons=list(aggregate_reflection.reasons),
+            aggregate_reflection_model_version=aggregate_reflection.model_version,
+            reflection_family=(
+                aggregate_reflection.workflow_family or evidence.reflection_family
+            ),
+            reflection_procedure=dict(
+                aggregate_reflection.normalized_procedure
+                or evidence.reflection_procedure
+            ),
         )
         saved = self.store.save_candidate(
             card,
@@ -1171,6 +1289,7 @@ def slice_agent_skill_evidence(
     task_profile: Mapping[str, Any] | None,
     agent_contracts: Mapping[str, str],
     agent_capabilities: Mapping[str, Sequence[str]] | None = None,
+    source_conversations: Sequence[Mapping[str, Any]] = (),
 ) -> list[AgentSkillEvidence]:
     plan: dict[str, Mapping[str, Any]] = {}
     agent_to_steps: dict[str, list[str]] = {}
@@ -1275,6 +1394,9 @@ def slice_agent_skill_evidence(
             external_operation_id_present=bool(observed.external_operation_id),
             needs_reconciliation=observed.needs_reconciliation,
             artifact_refs=refs,
+            source_conversations=tuple(
+                dict(item) for item in source_conversations if isinstance(item, Mapping)
+            ),
         )
         if evaluate_agent_skill_evidence(candidate).contributes:
             results.append(candidate)

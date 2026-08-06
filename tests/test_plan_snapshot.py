@@ -53,6 +53,7 @@ def test_validate_ok():
     tg = plan_to_task_graph(_STEPS, task_id="wf-1", subject="u1").model_dump()
     snap = {
         "schema_version": SCHEMA_VERSION,
+        "converter_version": CONVERTER_VERSION,
         "workflow_id": "wf-1",
         "user_id": "u1",
         "planning_steps": _STEPS,
@@ -68,6 +69,7 @@ def test_validate_detects_mismatches():
     tg = plan_to_task_graph(_STEPS, task_id="wf-1", subject="u1").model_dump()
     base = {
         "schema_version": SCHEMA_VERSION,
+        "converter_version": CONVERTER_VERSION,
         "workflow_id": "wf-1",
         "user_id": "u1",
         "planning_steps": _STEPS,
@@ -281,6 +283,19 @@ def test_verify_rejects_converter_version_mismatch(tmp_path):
     snap["converter_version"] = CONVERTER_VERSION + 1
     tg, reason = _verify(snap)
     assert tg is None and "converter_version mismatch" in reason
+
+
+def test_verify_rejects_previous_converter_with_explicit_replan_reason(tmp_path):
+    snap = _saved_snapshot(tmp_path)
+    snap["converter_version"] = CONVERTER_VERSION - 1
+
+    tg, reason = _verify(snap)
+
+    assert tg is None
+    assert reason == (
+        f"converter_version mismatch: {CONVERTER_VERSION - 1} "
+        "(replan required)"
+    )
 
 
 def test_verify_rejects_corrupt_snapshot_hash(tmp_path):

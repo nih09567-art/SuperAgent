@@ -5,6 +5,40 @@ from src.memory import MemoryManager, MemorySettings, MemoryStore
 from src.orchestration.plan_snapshot import load_plan_snapshot, save_plan_snapshot
 from src.orchestration.plan_to_task_graph import plan_to_task_graph
 from src.robust.checkpoint import CheckpointManager
+from src.workflow.process import _checkpoint_user_message
+
+
+def test_checkpoint_user_message_preserves_resume_identity():
+    message = _checkpoint_user_message(
+        "resolved request",
+        [
+            {
+                "role": "user",
+                "content": "original request",
+                "message_id": "u-original",
+                "metadata": {"source": "web"},
+            }
+        ],
+        {"current_turn_id": "u-original"},
+    )
+
+    assert message == {
+        "role": "user",
+        "content": "resolved request",
+        "message_id": "u-original",
+        "metadata": {"source": "web", "turn_id": "u-original"},
+    }
+
+
+def test_checkpoint_user_message_uses_memory_turn_id_when_web_has_none():
+    message = _checkpoint_user_message(
+        "resolved request",
+        [{"role": "user", "content": "original request"}],
+        {"current_turn_id": "u-stored"},
+    )
+
+    assert message["message_id"] == "u-stored"
+    assert message["metadata"]["turn_id"] == "u-stored"
 
 
 def test_compaction_and_restart_preserve_exact_plan_version_and_current_step(tmp_path):

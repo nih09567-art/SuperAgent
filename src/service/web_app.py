@@ -1393,12 +1393,37 @@ def create_app() -> FastAPI:
             user_id=body.user_id,
             lang=body.lang,
             workmode=workmode,
-            messages=[AgentMessage(role=m["role"], content=m["content"]) for m in initial_messages],
+            messages=[
+                AgentMessage(
+                    role=m["role"],
+                    content=m["content"],
+                    message_id=(
+                        m.get("message_id")
+                        or (m.get("metadata") or {}).get("message_id")
+                    ),
+                    metadata=dict(m.get("metadata") or {}),
+                )
+                for m in initial_messages
+            ],
             debug=checkpoint.state.get("debug", False),
             deep_thinking_mode=checkpoint.state.get("deep_thinking_mode", True),
             search_before_planning=checkpoint.state.get("search_before_planning", False),
             coor_agents=checkpoint.state.get("coor_agents", []),
             workflow_id=checkpoint.workflow_id,
+            session_id=(
+                checkpoint_0.state.get("session_id")
+                or checkpoint.state.get("session_id")
+            ),
+            memory_session_id=(
+                checkpoint_0.state.get("memory_session_id")
+                or checkpoint.state.get("memory_session_id")
+            ),
+            memory_enabled=bool(
+                checkpoint_0.state.get(
+                    "memory_enabled",
+                    checkpoint.state.get("memory_enabled", False),
+                )
+            ),
         )
 
         try:

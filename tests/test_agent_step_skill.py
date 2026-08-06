@@ -22,6 +22,42 @@ from src.skills.execution_evidence import (
     StepExecutionEvidence,
     VerificationStatus,
 )
+from src.skills.reflection import SkillReflection
+
+
+class _ReflectionModel:
+    def __init__(self, *, reusable: bool = True, malformed: bool = False):
+        self.reusable = reusable
+        self.malformed = malformed
+
+    def invoke(self, _prompt):
+        if self.malformed:
+            return type("Response", (), {"content": "not-json", "tool_calls": []})()
+        return type(
+            "Response",
+            (),
+            {
+                "content": {
+                    "is_reusable": self.reusable,
+                    "workflow_family": "routine_metrics_lookup",
+                    "normalized_procedure": {
+                        "steps": ["resolve_scope", "read_metrics", "return_typed_result"]
+                    },
+                    "confidence": 0.95,
+                    "reasons": ["stable office procedure"],
+                    "risk_notes": [],
+                    "model_version": "test-reflector-v1",
+                },
+                "tool_calls": [],
+            },
+        )()
+
+
+class _AggregateRejectModel(_ReflectionModel):
+    def invoke(self, prompt):
+        if "TRACES:" in prompt:
+            self.reusable = False
+        return super().invoke(prompt)
 
 
 def _manager(tmp_path, **overrides) -> AgentSkillManager:
@@ -41,6 +77,7 @@ def _manager(tmp_path, **overrides) -> AgentSkillManager:
     return AgentSkillManager(
         settings=settings,
         store=AgentSkillStore(settings.store_path),
+        reflection=SkillReflection(_ReflectionModel()),
     )
 
 
@@ -82,6 +119,26 @@ def _read_evidence(
         output_accepted=True,
         needs_reconciliation=False,
         artifact_refs=({"artifact_id": "artifact-1", "version": 1},),
+        source_conversations=(
+            {
+                "turn_id": f"turn-{task_id}",
+                "user_messages": [
+                    {
+                        "message_id": f"message-{task_id}",
+                        "content": "查询本月部门指标",
+                    }
+                ],
+                "assistant_messages": [
+                    {"message_id": f"answer-{task_id}", "content": "指标查询完成"}
+                ],
+            },
+        ),
+        reflection_accepted=True,
+        reflection_family="routine_metrics_lookup",
+        reflection_procedure={"steps": ["resolve_scope", "read_metrics"]},
+        reflection_confidence=0.95,
+        reflection_reasons=("stable office procedure",),
+        reflection_model_version="test-reflector-v1",
     )
 
 
@@ -91,6 +148,61 @@ def test_agent_skill_evidence_forbids_raw_execution_payloads():
 
     with pytest.raises(ValidationError):
         AgentSkillEvidence.model_validate(payload)
+
+
+def test_agent_skill_reflection_rejection_is_fail_closed(tmp_path):
+    manager = _manager(tmp_path)
+    rejected = manager.reflect(
+        _read_evidence("task-rejected"),
+        source_conversations=_read_evidence("task-rejected").source_conversations,
+    )
+    assert rejected.reflection_accepted is True
+
+    rejecting_manager = AgentSkillManager(
+        settings=manager.settings,
+        store=AgentSkillStore(tmp_path / "reject.sqlite3"),
+        reflection=SkillReflection(_ReflectionModel(reusable=False)),
+    )
+    rejected = rejecting_manager.reflect(_read_evidence("task-one"))
+    assert rejected.reflection_accepted is False
+    with pytest.raises(ValueError, match="accepted LLM reflection"):
+        rejecting_manager.distill(rejected)
+
+
+def test_agent_skill_reflection_invalid_output_is_fail_closed(tmp_path):
+    settings = AgentSkillSettings(
+        enabled=True,
+        reuse_enabled=True,
+        auto_distill_enabled=True,
+        store_path=tmp_path / "invalid.sqlite3",
+    )
+    manager = AgentSkillManager(
+        settings=settings,
+        store=AgentSkillStore(settings.store_path),
+        reflection=SkillReflection(_ReflectionModel(malformed=True)),
+    )
+    rejected = manager.reflect(_read_evidence("task-invalid"))
+    assert rejected.reflection_accepted is False
+    assert "reflection_invalid" in rejected.reflection_reasons[0]
+
+
+def test_aggregate_reflection_can_keep_two_traces_as_candidate(tmp_path):
+    settings = AgentSkillSettings(
+        enabled=True,
+        reuse_enabled=True,
+        auto_distill_enabled=True,
+        store_path=tmp_path / "aggregate.sqlite3",
+    )
+    manager = AgentSkillManager(
+        settings=settings,
+        store=AgentSkillStore(settings.store_path),
+        reflection=SkillReflection(_AggregateRejectModel()),
+    )
+    first = manager.distill(_read_evidence("task-a"))
+    second = manager.distill(_read_evidence("task-b"))
+    assert first.card.status == AgentSkillStatus.CANDIDATE
+    assert second.card.status == AgentSkillStatus.CANDIDATE
+    assert second.card.aggregate_reflection_accepted is False
 
 
 def test_agent_skill_candidate_promotes_from_two_distinct_tasks_and_is_idempotent(
@@ -108,6 +220,11 @@ def test_agent_skill_candidate_promotes_from_two_distinct_tasks_and_is_idempoten
     assert second.card.status == AgentSkillStatus.ACTIVE
     assert second.card.evidence_count == 2
     assert second.card.provenance.source_task_ids == ["task-1", "task-2"]
+    assert second.card.aggregate_reflection_accepted is True
+    assert {item["turn_id"] for item in second.card.source_conversations} == {
+        "turn-task-1",
+        "turn-task-2",
+    }
     assert len(manager.store.list_evidence("alice")) == 2
 
 

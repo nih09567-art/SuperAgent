@@ -27,7 +27,7 @@ SCHEMA_VERSION = 1
 # Bumped whenever ``plan_to_task_graph`` changes its derivation so a snapshot
 # built by an older converter is refused (re-plan) instead of executed against a
 # graph the current converter would no longer produce.
-CONVERTER_VERSION = 3
+CONVERTER_VERSION = 4
 _DEFAULT_DIR = "store/plan_snapshots"
 
 
@@ -170,6 +170,11 @@ def validate_snapshot(
         return False, "no_snapshot"
     if snapshot.get("schema_version") != SCHEMA_VERSION:
         return False, f"schema_version mismatch: {snapshot.get('schema_version')}"
+    if snapshot.get("converter_version") != CONVERTER_VERSION:
+        return False, (
+            f"converter_version mismatch: {snapshot.get('converter_version')} "
+            "(replan required)"
+        )
     if snapshot.get("workflow_id") != workflow_id:
         return False, "workflow_id mismatch"
     if snapshot.get("user_id") != user_id:

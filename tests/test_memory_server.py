@@ -1,4 +1,8 @@
+import asyncio
+
 from fastapi.testclient import TestClient
+
+from src.interface.agent import AgentRequest
 
 from src.memory import CurrentRequestOverflowError
 from src.memory.models import (
@@ -33,6 +37,7 @@ def test_web_aligned_launch_request_uses_memory_and_captures_stream(monkeypatch)
                 metadata=MemoryContextMetadata(
                     session_id="thread",
                     token_estimate=10,
+                    current_turn_id="u-current",
                     retrieved_memories=(
                         {
                             "memory_id": "memory-language",
@@ -130,7 +135,9 @@ def test_web_aligned_launch_request_uses_memory_and_captures_stream(monkeypatch)
         "instruction": instruction,
         "instruction_history": [instruction],
         "original_user_query": instruction,
-        "messages": [{"role": "user", "content": instruction}],
+        "messages": [
+            {"role": "user", "content": instruction, "message_id": "u-current"}
+        ],
         "debug": False,
         "deep_thinking_mode": False,
         "search_before_planning": False,
@@ -154,7 +161,7 @@ def test_web_aligned_launch_request_uses_memory_and_captures_stream(monkeypatch)
         {
             "role": "user",
             "content": instruction,
-            "message_id": None,
+            "message_id": "u-current",
             "metadata": {},
         }
     ]
@@ -165,7 +172,12 @@ def test_web_aligned_launch_request_uses_memory_and_captures_stream(monkeypatch)
     assert captured["prepare"]["attachments"]["current_plan"] == [instruction]
     assert captured["workflow"]["user_input_messages"][0]["content"] == "prior memory"
     assert captured["workflow"]["request_input_messages"] == [
-        {"role": "user", "content": instruction}
+        {
+            "role": "user",
+            "content": instruction,
+            "message_id": "u-current",
+            "metadata": {},
+        }
     ]
     assert captured["workflow"]["workmode"].value == "launch"
     assert captured["workflow"]["stop_after_planner"] is True
@@ -178,6 +190,7 @@ def test_web_aligned_launch_request_uses_memory_and_captures_stream(monkeypatch)
         "preference.language"
     )
     assert captured["outputs"]["workflow_id"] == "alice:wf"
+    assert captured["outputs"]["turn_id"] == "u-current"
     assert captured["outputs"]["outputs"] == [
         {"agent_name": "planner", "content": "plan done", "user_visible": True},
         {
@@ -277,3 +290,141 @@ def test_remote_result_fallback_redacts_and_marks_truncation():
     assert content.endswith("...")
     assert "Bearer abcdefghijklmnop" not in content
     assert "[REDACTED]" in content
+
+
+def test_resume_persists_output_against_checkpoint_turn(monkeypatch):
+    captured = {}
+
+    class FakeMemoryManager:
+        def resolve_session_id(self, user_id, *, session_id=None):
+            return session_id or user_id
+
+        async def record_assistant_outputs(self, **kwargs):
+            captured["outputs"] = kwargs
+            return []
+
+        async def compact_if_needed(self, **kwargs):
+            return None
+
+    async def fake_initialize():
+        return None
+
+    async def fake_reload(force=False):
+        return None
+
+    async def fake_workflow(**kwargs):
+        captured["workflow"] = kwargs
+        yield {
+            "event": "messages",
+            "agent_name": "assistant",
+            "data": {"delta": {"content": "resumed result"}},
+        }
+        yield {"event": "end_of_workflow", "data": {"workflow_id": "wf-1"}}
+
+    monkeypatch.setattr("src.service.server.get_memory_manager", FakeMemoryManager)
+    monkeypatch.setattr(
+        "src.service.server.agent_manager.ensure_initialized", fake_initialize
+    )
+    monkeypatch.setattr(Server, "_trigger_mcp_reload", staticmethod(fake_reload))
+    monkeypatch.setattr("src.service.server.run_agent_workflow", fake_workflow)
+
+    request = AgentRequest(
+        user_id="alice",
+        lang="zh",
+        messages=[
+            {
+                "role": "user",
+                "content": "original request",
+                "message_id": "u-original",
+                "metadata": {"turn_id": "u-original"},
+            }
+        ],
+        debug=False,
+        deep_thinking_mode=False,
+        search_before_planning=False,
+        coor_agents=None,
+        workmode="production",
+        workflow_id="wf-1",
+        memory_session_id="thread-original",
+        memory_enabled=True,
+    )
+
+    async def collect():
+        return [
+            event
+            async for event in Server()._run_agent_workflow_with_resume(
+                request, resume_step=1, task_id="task-1"
+            )
+        ]
+
+    asyncio.run(collect())
+
+    assert captured["workflow"]["user_input_messages"][0]["message_id"] == (
+        "u-original"
+    )
+    assert captured["workflow"]["memory_session_id"] == "thread-original"
+    assert captured["workflow"]["memory_enabled"] is True
+    assert captured["outputs"]["session_id"] == "thread-original"
+    assert captured["outputs"]["turn_id"] == "u-original"
+
+
+def test_resume_without_trusted_turn_id_skips_assistant_memory(monkeypatch, caplog):
+    captured = {"persisted": False}
+
+    class FakeMemoryManager:
+        def resolve_session_id(self, user_id, *, session_id=None):
+            return session_id or user_id
+
+        async def record_assistant_outputs(self, **kwargs):
+            captured["persisted"] = True
+            return []
+
+    async def fake_initialize():
+        return None
+
+    async def fake_reload(force=False):
+        return None
+
+    async def fake_workflow(**kwargs):
+        captured["workflow"] = kwargs
+        yield {
+            "event": "messages",
+            "agent_name": "assistant",
+            "data": {"delta": {"content": "legacy resumed result"}},
+        }
+        yield {"event": "end_of_workflow", "data": {"workflow_id": "wf-old"}}
+
+    monkeypatch.setattr("src.service.server.get_memory_manager", FakeMemoryManager)
+    monkeypatch.setattr(
+        "src.service.server.agent_manager.ensure_initialized", fake_initialize
+    )
+    monkeypatch.setattr(Server, "_trigger_mcp_reload", staticmethod(fake_reload))
+    monkeypatch.setattr("src.service.server.run_agent_workflow", fake_workflow)
+
+    request = AgentRequest(
+        user_id="alice",
+        lang="zh",
+        messages=[{"role": "user", "content": "legacy request"}],
+        debug=False,
+        deep_thinking_mode=False,
+        search_before_planning=False,
+        coor_agents=None,
+        workmode="production",
+        workflow_id="wf-old",
+        memory_session_id="thread-old",
+        memory_enabled=True,
+    )
+
+    async def collect():
+        return [
+            event
+            async for event in Server()._run_agent_workflow_with_resume(
+                request, resume_step=1, task_id="task-old"
+            )
+        ]
+
+    with caplog.at_level("WARNING"):
+        asyncio.run(collect())
+
+    assert captured["persisted"] is False
+    assert "trusted user turn id" in caplog.text

@@ -250,6 +250,7 @@ class TaggedMemoryRetriever:
             )
         results.sort(
             key=lambda item: (
+                bool(item.matched_terms),
                 item.score,
                 item.memory.last_reinforced_at or item.memory.updated_at,
                 item.memory.memory_id,

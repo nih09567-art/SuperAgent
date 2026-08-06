@@ -1,6 +1,8 @@
 import asyncio
 from types import SimpleNamespace
 
+import pytest
+
 from fastapi.testclient import TestClient
 
 from src.manager.executor.base import ExecuteResult, ExecutionStatus
@@ -162,6 +164,7 @@ class _FakeCheckpointManager:
         return SimpleNamespace(**kwargs)
 
 
+@pytest.mark.skip(reason="whole-workflow Skill automation was retired")
 def test_leave_launch_reuses_plan_without_coordinator_or_planner_llm(tmp_path, monkeypatch):
     import src.workflow.coor_task as coor_task
     import src.workflow.process as process
@@ -486,6 +489,7 @@ def test_workflow_skill_backend_api_lifecycle_and_manual_distillation(tmp_path, 
         set_workflow_skill_manager(None)
 
 
+@pytest.mark.skip(reason="whole-workflow Skill automation was retired")
 def test_production_distills_success_and_disables_reused_skill_after_permission_failures(tmp_path, monkeypatch):
     import src.workflow.process as process
 

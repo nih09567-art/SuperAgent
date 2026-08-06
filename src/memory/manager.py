@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -27,8 +26,6 @@ from .consolidation import (
     EXTRACTOR_VERSION,
     MemoryConsolidator,
     build_llm_extractor,
-    candidate_from_user_message,
-    contains_prompt_injection,
 )
 from .models import (
     CompactionRecord,
@@ -44,7 +41,7 @@ from .retrieval import (
     project_model_memories,
     select_model_memories,
 )
-from .store import MemoryStore, MemoryStoreError, SecretDetectedError
+from .store import MemoryStore, MemoryStoreError
 from .utils import (
     build_provenance,
     contains_secret,
@@ -79,16 +76,6 @@ class CurrentRequestOverflowError(RuntimeError):
             "current_request_context_overflow: required="
             f"{self.current_request_tokens}, budget={self.input_budget}"
         )
-
-
-_REMEMBER_PATTERNS = (
-    re.compile(r"^\s*(?:请)?记住(?:一下)?[：:,，\s]*(?P<content>.+)$", re.DOTALL),
-    re.compile(r"^\s*remember(?:\s+that)?[：:,\s]+(?P<content>.+)$", re.I | re.DOTALL),
-)
-_SIMPLE_GREETING_PATTERN = re.compile(
-    r"^\s*(?:hi|hello|hey|thanks|thank you|你好|您好|嗨|谢谢|你是谁|who are you)[!.。！?？\s]*$",
-    re.IGNORECASE,
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -220,12 +207,14 @@ class MemoryManager:
     ) -> PreparedMemoryContext:
         fallback_messages = tuple(self._sanitize_message(message) for message in incoming_messages)
         resolved = self.resolve_session_id(user_id, session_id=session_id)
+        current_turn_id = self._latest_user_turn_id(incoming_messages)
         if not self.settings.enabled or request_enabled is False:
             return PreparedMemoryContext(
                 messages=fallback_messages,
                 metadata=MemoryContextMetadata(
                     session_id=resolved,
                     token_estimate=estimate_tokens(fallback_messages),
+                    current_turn_id=current_turn_id,
                     warning="memory_disabled",
                 ),
             )
@@ -275,8 +264,7 @@ class MemoryManager:
                 incoming_messages,
                 workflow_id,
             )
-            if self.settings.long_term_enabled:
-                await self._promote_explicit_requests(stored, workflow_id)
+            current_turn_id = self._latest_user_turn_id(stored) or current_turn_id
             if self.settings.auto_consolidation_enabled:
                 await self._consolidate_pending(user_id, resolved, workflow_id)
 
@@ -332,38 +320,36 @@ class MemoryManager:
             retrieved = []
             selected_retrieved = []
             retrieved_memories: tuple[dict[str, Any], ...] = ()
-            if (
-                query
-                and self.settings.long_term_enabled
-                and not _SIMPLE_GREETING_PATTERN.fullmatch(query)
-            ):
+            if self.settings.long_term_enabled:
                 long_term = await asyncio.to_thread(self.store.list_long_term, user_id)
                 normalized_memory_keys = {
                     str(key).strip() for key in memory_keys or () if str(key).strip()
                 }
-                if normalized_memory_keys:
-                    # Explicit preference questions select named keys before Top-K
-                    # ranking so unrelated preferences cannot crowd them out.
-                    long_term = [
-                        record
-                        for record in long_term
-                        if str(record.memory_key or record.kind) in normalized_memory_keys
-                    ]
+                recall_tags = tuple(
+                    dict.fromkeys(
+                        [
+                            str(tag)
+                            for tag in intent_tags or extra.get("intent_tags") or ()
+                            if str(tag).strip()
+                        ]
+                        + sorted(normalized_memory_keys)
+                    )
+                )
                 try:
                     retrieved = self.retriever.retrieve(
-                        query,
+                        query or "",
                         long_term,
                         user_id=user_id,
-                        top_k=self.settings.long_term_top_k,
-                        intent_tags=tuple(intent_tags or extra.get("intent_tags") or ()),
+                        top_k=max(self.settings.long_term_top_k, len(long_term)),
+                        intent_tags=recall_tags,
                         project_id=str(extra.get("project_id") or "") or None,
                     )
                 except TypeError:
                     retrieved = self.retriever.retrieve(
-                        query,
+                        query or "",
                         long_term,
                         user_id=user_id,
-                        top_k=self.settings.long_term_top_k,
+                        top_k=max(self.settings.long_term_top_k, len(long_term)),
                     )
                 selected_retrieved = select_model_memories(
                     retrieved, token_budget=self.settings.long_term_token_budget
@@ -402,6 +388,7 @@ class MemoryManager:
             metadata = MemoryContextMetadata(
                 session_id=resolved,
                 token_estimate=token_estimate,
+                current_turn_id=current_turn_id,
                 compaction_id=latest.compaction_id if latest else None,
                 compaction_generation=len(compactions),
                 retrieved_memory_ids=tuple(
@@ -445,6 +432,7 @@ class MemoryManager:
                 metadata=MemoryContextMetadata(
                     session_id=resolved,
                     token_estimate=estimate_tokens(fallback_messages),
+                    current_turn_id=current_turn_id,
                     warning=f"memory_soft_failure:{correlation}",
                 ),
             )
@@ -490,76 +478,6 @@ class MemoryManager:
                 )
             )
         return stored
-
-    async def _promote_explicit_requests(
-        self, messages: Sequence[MemoryMessage], workflow_id: str | None
-    ) -> None:
-        for message in messages:
-            if message.role != "user":
-                continue
-            if message.metadata.get("secret_redacted"):
-                continue
-            candidate = self._extract_explicit_memory(message.content)
-            if candidate is None:
-                continue
-            if contains_prompt_injection(candidate):
-                logger.warning("Rejected instruction-like explicit memory request")
-                continue
-            structured = candidate_from_user_message(message)
-            try:
-                await self.remember(
-                    user_id=message.user_id,
-                    content=candidate,
-                    kind=(
-                        structured.kind
-                        if structured is not None
-                        else (
-                            "preference"
-                            if self._looks_like_preference(candidate)
-                            else "fact"
-                        )
-                    ),
-                    confidence=1.0,
-                    memory_key=(structured.key if structured is not None else None),
-                    value=(structured.value if structured is not None else candidate),
-                    label=(structured.label if structured is not None else candidate),
-                    importance=(structured.importance if structured is not None else 1.0),
-                    decay_class=(
-                        structured.decay_class if structured is not None else "pinned"
-                    ),
-                    source_message_ids=(message.message_id,),
-                    extractor_version=(
-                        structured.extractor_version
-                        if structured is not None
-                        else EXTRACTOR_VERSION
-                    ),
-                    tags=(structured.tags if structured is not None else ()),
-                    workflow_id=workflow_id,
-                    session_id=message.session_id,
-                    provenance=build_provenance(
-                        "explicit_user_request",
-                        message_id=message.message_id,
-                        workflow_id=workflow_id,
-                        session_id=message.session_id,
-                        actor="user",
-                    ),
-                )
-            except SecretDetectedError:
-                logger.warning("Rejected secret-looking explicit memory request")
-
-    @staticmethod
-    def _extract_explicit_memory(content: str) -> str | None:
-        for pattern in _REMEMBER_PATTERNS:
-            match = pattern.match(content)
-            if match:
-                candidate = match.group("content").strip()
-                return candidate or None
-        return None
-
-    @staticmethod
-    def _looks_like_preference(content: str) -> bool:
-        normalized = content.casefold()
-        return any(token in normalized for token in ("prefer", "preference", "偏好", "喜欢"))
 
     async def _compact_for_request(
         self,
@@ -725,6 +643,25 @@ class MemoryManager:
         return ""
 
     @staticmethod
+    def _latest_user_turn_id(messages: Sequence[Any]) -> str | None:
+        for message in reversed(messages):
+            if isinstance(message, Mapping):
+                role = str(message.get("role") or "")
+                metadata = message.get("metadata") or {}
+                message_id = message.get("message_id")
+            else:
+                role = str(getattr(message, "role", ""))
+                metadata = getattr(message, "metadata", {}) or {}
+                message_id = getattr(message, "message_id", None)
+            if role.casefold() != "user":
+                continue
+            identifier = (
+                metadata.get("turn_id") if isinstance(metadata, Mapping) else None
+            ) or message_id
+            return str(identifier) if identifier else None
+        return None
+
+    @staticmethod
     def _sanitize_message(message: Mapping[str, Any]) -> dict[str, Any]:
         return {
             "role": str(message.get("role", "user")),
@@ -743,18 +680,21 @@ class MemoryManager:
         session_id: str,
         outputs: Sequence[Mapping[str, Any]],
         workflow_id: str | None = None,
+        turn_id: str | None = None,
     ) -> list[MemoryMessage]:
         history = await asyncio.to_thread(
             self.store.list_messages, user_id, session_id
         )
-        turn_id = next(
-            (
-                message.metadata.get("turn_id") or message.message_id
-                for message in reversed(history)
-                if message.role == "user"
-            ),
-            None,
-        )
+        resolved_turn_id = str(turn_id).strip() if turn_id else None
+        if resolved_turn_id is not None and not any(
+            message.role == "user"
+            and str(message.metadata.get("turn_id") or message.message_id)
+            == resolved_turn_id
+            for message in history
+        ):
+            raise ValueError("turn_id does not identify a user message in this session")
+        if resolved_turn_id is None:
+            resolved_turn_id = self._latest_user_turn_id(history)
         messages = []
         for output in outputs:
             if output.get("user_visible") is False:
@@ -767,7 +707,7 @@ class MemoryManager:
                 continue
             identifier = output.get("message_id") or uuid5(
                 NAMESPACE_URL,
-                f"superagent-output:{workflow_id}:{session_id}:{turn_id}:"
+                f"superagent-output:{workflow_id}:{session_id}:{resolved_turn_id}:"
                 f"{agent_name}:{content}",
             ).hex
             messages.append(
@@ -783,7 +723,7 @@ class MemoryManager:
                         "agent_name": agent_name,
                         "turn_complete": bool(output.get("turn_complete", True)),
                         "main_visible": True,
-                        "turn_id": turn_id,
+                        "turn_id": resolved_turn_id,
                     },
                 )
             )
@@ -815,9 +755,65 @@ class MemoryManager:
             session_id,
             after_sequence=watermark,
         )
-        for turn in completed_turns(messages):
-            await self.consolidator.consolidate(turn, workflow_id=workflow_id)
-            last_sequence = max(message.sequence for message in turn)
+        turns = completed_turns(messages)
+        consolidated_turn_ids = await asyncio.to_thread(
+            self.store.list_consolidated_turn_ids,
+            user_id,
+            session_id,
+            extractor_version=EXTRACTOR_VERSION,
+        )
+        for turn in turns:
+            turn_id = self._latest_user_turn_id(turn)
+            if turn_id is None or turn_id in consolidated_turn_ids:
+                continue
+            turn_last_sequence = max(message.sequence for message in turn)
+            claimed = await asyncio.to_thread(
+                self.store.claim_turn_consolidation,
+                user_id,
+                session_id,
+                turn_id,
+                turn_last_sequence,
+                extractor_version=EXTRACTOR_VERSION,
+            )
+            if not claimed:
+                continue
+            try:
+                await self.consolidator.consolidate(turn, workflow_id=workflow_id)
+            except (Exception, asyncio.CancelledError):
+                await asyncio.to_thread(
+                    self.store.release_turn_consolidation_claim,
+                    user_id,
+                    session_id,
+                    turn_id,
+                    extractor_version=EXTRACTOR_VERSION,
+                )
+                raise
+            await asyncio.to_thread(
+                self.store.mark_turn_consolidated,
+                user_id,
+                session_id,
+                turn_id,
+                turn_last_sequence,
+                extractor_version=EXTRACTOR_VERSION,
+            )
+            consolidated_turn_ids.add(turn_id)
+
+        unresolved_sequences = [
+            message.sequence
+            for message in messages
+            if message.role == "user"
+            and (self._latest_user_turn_id((message,)) or "")
+            not in consolidated_turn_ids
+        ]
+        if messages:
+            last_sequence = (
+                min(unresolved_sequences) - 1
+                if unresolved_sequences
+                else max(message.sequence for message in messages)
+            )
+        else:
+            last_sequence = watermark
+        if last_sequence > watermark:
             await asyncio.to_thread(
                 self.store.advance_consolidation_watermark,
                 user_id,
@@ -1032,20 +1028,20 @@ class MemoryManager:
         normalized_memory_keys = {
             str(key).strip() for key in memory_keys or () if str(key).strip()
         }
-        if normalized_memory_keys:
-            records = [
-                record
-                for record in records
-                if str(record.memory_key or record.kind) in normalized_memory_keys
-            ]
+        recall_tags = tuple(
+            dict.fromkeys(
+                [str(tag) for tag in intent_tags if str(tag).strip()]
+                + sorted(normalized_memory_keys)
+            )
+        )
         try:
             retrieved = self.retriever.retrieve(
                 query,
                 records,
                 user_id=user_id,
-                top_k=self.settings.long_term_top_k,
+                top_k=max(self.settings.long_term_top_k, len(records)),
                 scopes=scopes,
-                intent_tags=intent_tags,
+                intent_tags=recall_tags,
                 project_id=project_id,
             )
         except TypeError:
@@ -1053,7 +1049,7 @@ class MemoryManager:
                 query,
                 records,
                 user_id=user_id,
-                top_k=self.settings.long_term_top_k,
+                top_k=max(self.settings.long_term_top_k, len(records)),
                 scopes=scopes,
             )
         selected = select_model_memories(
