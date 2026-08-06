@@ -94,6 +94,30 @@ def test_converter_explicit_step_id_and_independent_steps():
     assert g.step_map()["step_2"].depends_on == []
 
 
+def test_converter_preserves_memory_constraints_for_scheduler():
+    graph = plan_to_task_graph(
+        [
+            {
+                "agent_name": "ReportAgent",
+                "title": "Generate report",
+                "note": "Use concise Chinese output",
+                "memory_constraints": [
+                    "Output language: Chinese",
+                    "Report style: concise",
+                ],
+            }
+        ],
+        task_id="memory-constraints",
+    )
+
+    step = graph.steps[0]
+    assert step.note == "Use concise Chinese output"
+    assert step.memory_constraints == [
+        "Output language: Chinese",
+        "Report style: concise",
+    ]
+
+
 def test_converter_resolves_step_and_subtask_references_before_building_edges():
     graph = plan_to_task_graph(
         [

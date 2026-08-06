@@ -767,7 +767,8 @@ class MemoryManager:
                 continue
             identifier = output.get("message_id") or uuid5(
                 NAMESPACE_URL,
-                f"superagent-output:{workflow_id}:{session_id}:{agent_name}:{content}",
+                f"superagent-output:{workflow_id}:{session_id}:{turn_id}:"
+                f"{agent_name}:{content}",
             ).hex
             messages.append(
                 MemoryMessage(

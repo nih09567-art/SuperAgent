@@ -601,6 +601,12 @@ def plan_to_task_graph(
             input_bindings=inputs,
             title=raw.get("title", ""),
             description=raw.get("description", ""),
+            **({"note": raw.get("note")} if "note" in raw else {}),
+            **(
+                {"memory_constraints": _as_list(raw.get("memory_constraints"))}
+                if raw.get("memory_constraints")
+                else {}
+            ),
             task_type=raw.get("task_type", ""),
             scenario_tags=raw.get("scenario_tags", []) or [],
             data_scope=raw.get("data_scope", ""),

@@ -524,6 +524,14 @@ def _apply_memory_output_constraints(
         )
         if not is_document_output:
             continue
+        existing_constraints = [
+            str(item).strip()
+            for item in step.get("memory_constraints") or ()
+            if str(item).strip()
+        ]
+        step["memory_constraints"] = list(
+            dict.fromkeys([*existing_constraints, *constraints])
+        )
         clause = "；".join(constraints)
         note = str(step.get("note") or "").strip()
         if clause not in note:

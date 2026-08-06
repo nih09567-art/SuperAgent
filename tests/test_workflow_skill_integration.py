@@ -1354,6 +1354,9 @@ def test_plan_applies_allowlisted_memory_preferences_to_report_step():
     updated = coor_task._apply_memory_output_constraints(steps, state)
 
     assert updated is not steps
+    assert updated[0]["memory_constraints"] == coor_task._memory_output_constraints(
+        state
+    )
     assert updated[0]["note"] == (
         "输出语言使用中文；报告风格保持简洁；报告表达保持专业；报告结论优先"
     )

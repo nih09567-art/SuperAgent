@@ -89,6 +89,41 @@ def test_missing_web_message_ids_are_stable_and_deduplicated(tmp_path):
     ]
 
 
+def test_identical_assistant_content_is_distinct_across_user_turns(tmp_path):
+    manager = _manager(tmp_path, trigger_tokens=10000, long_term_enabled=False)
+
+    for user_message_id in ("u1", "u2"):
+        asyncio.run(
+            manager.prepare_context(
+                user_id="alice",
+                session_id="thread",
+                incoming_messages=[
+                    {
+                        "role": "user",
+                        "content": f"request {user_message_id}",
+                        "message_id": user_message_id,
+                    }
+                ],
+            )
+        )
+        asyncio.run(
+            manager.record_assistant_outputs(
+                user_id="alice",
+                session_id="thread",
+                outputs=[{"agent_name": "assistant", "content": "OK"}],
+                workflow_id="wf-1",
+            )
+        )
+
+    messages = asyncio.run(manager.list_session_messages("alice", "thread"))
+    assistant_messages = [item for item in messages if item.role == "assistant"]
+
+    assert len(messages) == 4
+    assert len(assistant_messages) == 2
+    assert len({item.message_id for item in assistant_messages}) == 2
+    assert [item.metadata["turn_id"] for item in assistant_messages] == ["u1", "u2"]
+
+
 def test_manager_rejects_explicit_prompt_injection_memory(tmp_path):
     manager = _manager(tmp_path, trigger_tokens=10000)
 

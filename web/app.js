@@ -1206,7 +1206,11 @@ const loadConversation = (conversation) => {
   activeConversationTranscript = normalized.messages.map((message) => ({ ...message }));
   activeConversationMessages = activeConversationTranscript
     .slice(-ACTIVE_CONVERSATION_LIMIT)
-    .map((message) => ({ role: message.role, content: message.content }));
+    .map((message) => ({
+      role: message.role,
+      content: message.content,
+      message_id: message.message_id,
+    }));
   instructionHistory = activeConversationTranscript
     .filter((message) => message.role === "user")
     .map((message) => message.content)

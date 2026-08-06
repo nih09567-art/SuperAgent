@@ -33,10 +33,16 @@ def test_web_displays_context_compaction_event_details():
 
 def test_web_assigns_and_preserves_stable_message_ids():
     source = _source()
+    load_conversation = source[
+        source.index("const loadConversation") : source.index(
+            "const clearChatHistory = async"
+        )
+    ]
 
     assert "const createConversationMessageId" in source
     assert "message_id: metadata.message_id || createConversationMessageId(role)" in source
     assert "message_id: message.message_id" in source
+    assert "message_id: message.message_id" in load_conversation
     assert "execute-confirmed-plan" in source
 
 

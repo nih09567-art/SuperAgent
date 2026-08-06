@@ -26,6 +26,7 @@ from src.orchestration.runtime import (
     _build_execution_context,
     _public_step_metrics,
     _required_step_outputs,
+    _scheduler_assigned_step_payload,
     build_task_graph_from_state,
     has_task_graph,
     run_scheduler_workflow,
@@ -50,6 +51,28 @@ def _isolate_stores(tmp_path, monkeypatch):
 
 async def _fake_execute(*, step, selected_agent, inputs, context):
     return ExecuteResult(status=ExecutionStatus.SUCCESS, result={"ok": step.step_id})
+
+
+def test_scheduler_assigned_step_carries_memory_constraints():
+    step = TaskStep(
+        step_id="report",
+        title="Generate report",
+        description="Generate the requested report",
+        intents=["report_generation"],
+        note="Use concise Chinese output",
+        memory_constraints=[
+            "Output language: Chinese",
+            "Report style: concise",
+        ],
+    )
+
+    payload = _scheduler_assigned_step_payload(step)
+
+    assert payload["note"] == "Use concise Chinese output"
+    assert payload["memory_constraints"] == [
+        "Output language: Chinese",
+        "Report style: concise",
+    ]
 
 
 def test_missing_artifact_for_succeeded_receipt_creates_reconciliation_record():
