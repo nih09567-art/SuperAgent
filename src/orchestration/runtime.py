@@ -763,6 +763,9 @@ def _make_real_execute_step(state: dict) -> ExecuteStep:
                 }
             ],
             "task_profile": state.get("task_profile") or {},
+            "scenario_contract_id": str(
+                getattr(step, "scenario_contract_id", "") or ""
+            ),
             # Surfaced so an idempotency-aware tool/provider can dedupe an
             # external side effect (e.g. a message id / request key).
             "idempotency_key": (context.get("idempotency_key") if isinstance(context, dict) else None),

@@ -63,9 +63,9 @@ def _leave_skill_fixture(manager, user_id="alice"):
                 "description": "Submit the current leave request",
                 "inputs": [
                     {
-                        "parameter_name": "employee.id",
+                        "parameter_name": "employee.info",
                         "source_step": "RemoteHRAssistantAgent",
-                        "source_output": "employee.id",
+                        "source_output": "employee.info",
                     }
                 ],
             },
@@ -980,6 +980,54 @@ def test_data_flow_validation_infers_exact_upstream_bindings(monkeypatch):
             "source_output": "employee.name",
         },
     ]
+
+
+def test_data_flow_validation_accepts_forward_structural_input_binding(monkeypatch):
+    import src.workflow.coor_task as coor_task
+
+    class Registry:
+        async def list(self):
+            return [
+                SimpleNamespace(
+                    user_id="share",
+                    agent_name="ProducerAgent",
+                    requires=[],
+                    produces=["data"],
+                ),
+                SimpleNamespace(
+                    user_id="share",
+                    agent_name="ConsumerAgent",
+                    requires=["data"],
+                    produces=["result"],
+                ),
+            ]
+
+    monkeypatch.setattr(
+        coor_task,
+        "agent_manager",
+        SimpleNamespace(agent_registry=Registry()),
+    )
+    steps = [
+        {
+            "step_id": "consumer",
+            "agent_name": "ConsumerAgent",
+            "inputs": [
+                {
+                    "parameter_name": "data",
+                    "source_step": "producer",
+                    "source_output": "data",
+                }
+            ],
+        },
+        {"step_id": "producer", "agent_name": "ProducerAgent", "inputs": []},
+    ]
+
+    is_valid, errors = asyncio.run(
+        coor_task._validate_plan_data_flow(steps, "alice")
+    )
+
+    assert is_valid is True
+    assert errors == []
 
 
 def test_data_flow_validation_materializes_report_fan_in(monkeypatch):

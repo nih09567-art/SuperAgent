@@ -27,7 +27,7 @@ SCHEMA_VERSION = 1
 # Bumped whenever ``plan_to_task_graph`` changes its derivation so a snapshot
 # built by an older converter is refused (re-plan) instead of executed against a
 # graph the current converter would no longer produce.
-CONVERTER_VERSION = 3
+CONVERTER_VERSION = 4
 _DEFAULT_DIR = "store/plan_snapshots"
 
 
@@ -283,7 +283,10 @@ def verify_snapshot_for_execution(
     # main guarantee: it catches a modified plan, a swapped-in task graph, or
     # any field drift even if the stored hash was recomputed by a tamperer.
     try:
-        from src.orchestration.plan_to_task_graph import plan_to_task_graph
+        from src.orchestration.plan_to_task_graph import (
+            plan_to_task_graph,
+            trusted_scenario_contract_for_plan,
+        )
 
         # The rebuild inputs mirror the planner save path: Contracts and
         # produces come from the CURRENT trusted registry only. The snapshot
@@ -318,6 +321,10 @@ def verify_snapshot_for_execution(
             agent_produces=agent_produces,
             agent_contracts=agent_contracts,
             subtasks=subtasks,
+            trusted_scenario_contract_id=trusted_scenario_contract_for_plan(
+                planning_steps,
+                user_query=goal,
+            ),
         ).model_dump()
     except Exception as exc:  # noqa: BLE001 - cannot rebuild -> refuse
         return None, f"rebuild failed (replan required): {exc}"

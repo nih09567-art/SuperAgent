@@ -728,6 +728,17 @@ async def _validate_plan_data_flow(steps: list, user_id: str) -> tuple[bool, lis
     # rejecting a plan whose upstream Agent already produces the exact field.
     available_outputs = set()
     available_output_sources: dict[str, str] = {}
+    structural_source_steps: dict[str, dict] = {}
+    for candidate in steps:
+        if not isinstance(candidate, dict):
+            continue
+        references = {
+            str(candidate.get("step_id") or ""),
+            str(candidate.get("subtask_id") or ""),
+        }
+        references.update(_step_subtask_ids(candidate))
+        for reference in references - {""}:
+            structural_source_steps[reference] = candidate
 
     for step_idx, step in enumerate(steps):
         agent_name = step.get("agent_name")
@@ -855,20 +866,49 @@ async def _validate_plan_data_flow(steps: list, user_id: str) -> tuple[bool, lis
                     )
                     continue
 
-                # Verify source_step exists in previous steps
+                # Structural step/subtask ids are unambiguous and may point to
+                # a later list entry; TaskGraph validation/topological sorting
+                # determines execution order.  Legacy Agent-name aliases stay
+                # backward-only because one Agent may own multiple steps.
                 source_found = False
-                for prev_idx in range(step_idx):
-                    prev_step = steps[prev_idx]
-                    source_references = {
-                        str(prev_step.get("agent_name") or ""),
-                        str(prev_step.get("step_id") or ""),
-                        str(prev_step.get("subtask_id") or ""),
-                    }
-                    source_references.update(_step_subtask_ids(prev_step))
-                    if str(source_step) in source_references:
+                source_candidate = structural_source_steps.get(str(source_step))
+                if source_candidate is not None:
+                    source_found = True
+                    if source_candidate is step:
+                        errors.append(
+                            f"Step {step_idx + 1} ({agent_name}): Input mapping "
+                            f"references its own source_step '{source_step}'"
+                        )
+                    source_agent = source_candidate.get("agent_name")
+                    source_metadata = agent_metadata.get(source_agent)
+                    if (
+                        source_metadata
+                        and source_output not in source_metadata["produces"]
+                    ):
+                        canonical_outputs = _string_list(
+                            source_metadata["produces"]
+                        )
+                        canonical_output = _primary_output_for_step(
+                            source_candidate, canonical_outputs
+                        )
+                        if canonical_output:
+                            source_mapping["source_output"] = canonical_output
+                            source_output = canonical_output
+                        else:
+                            errors.append(
+                                f"Step {step_idx + 1} ({agent_name}): Input mapping "
+                                f"references '{source_output}' from '{source_step}', but "
+                                f"it produces {source_metadata['produces']}"
+                            )
+                else:
+                    for prev_idx in range(step_idx):
+                        prev_step = steps[prev_idx]
+                        if str(source_step) != str(prev_step.get("agent_name") or ""):
+                            continue
                         source_found = True
-                        source_agent = prev_step.get("agent_name")
-                        source_metadata = agent_metadata.get(source_agent)
+                        source_metadata = agent_metadata.get(
+                            prev_step.get("agent_name")
+                        )
                         if (
                             source_metadata
                             and source_output not in source_metadata["produces"]
@@ -896,7 +936,7 @@ async def _validate_plan_data_flow(steps: list, user_id: str) -> tuple[bool, lis
                 if not source_found:
                     errors.append(
                         f"Step {step_idx + 1} ({agent_name}): Input mapping references "
-                        f"source_step '{source_step}' which does not exist in previous steps"
+                        f"unknown source_step '{source_step}'"
                     )
 
         # If the Planner omitted an input mapping but an earlier Agent declares
@@ -1326,6 +1366,34 @@ async def _finalize_validated_plan(
     TaskGraph/PlanSnapshot that production execution requires.
     """
 
+    trusted_scenario_contract_id = None
+    if steps:
+        # The annual-leave defense workflow has a fixed evidence contract.  A
+        # real Planner may choose the right Agents and edges while emitting
+        # positional step IDs; normalize only that explicitly scoped shape so
+        # launch and production persist the same stable IDs.
+        try:
+            from src.orchestration.plan_to_task_graph import (
+                canonicalize_annual_leave_plan,
+                trusted_scenario_contract_for_plan,
+            )
+
+            trusted_scenario_contract_id = trusted_scenario_contract_for_plan(
+                steps,
+                user_query=state.get("original_user_query", "")
+                or state.get("USER_QUERY", ""),
+            )
+            steps = canonicalize_annual_leave_plan(
+                steps,
+                user_query=state.get("original_user_query", "")
+                or state.get("USER_QUERY", ""),
+            )
+        except Exception as canonicalize_exc:  # noqa: BLE001 - planning remains fail-safe
+            logger.warning(
+                "annual-leave plan canonicalization skipped: %s",
+                canonicalize_exc,
+            )
+
     if steps:
         # Recover data-flow ordering the Planner drops for autonomous remote
         # agents. Persisting the corrected steps keeps production snapshot
@@ -1442,6 +1510,7 @@ async def _finalize_validated_plan(
             # Agent config while the verification rebuild chose the identical
             # mode from the TaskProfile, causing a false TASK_GRAPH_INVALID.
             subtasks=(state.get("task_profile") or {}).get("subtasks"),
+            trusted_scenario_contract_id=trusted_scenario_contract_id,
         )
         unknown = unknown_operation_modes(task_graph)
         if unknown:

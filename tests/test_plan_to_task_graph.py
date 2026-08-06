@@ -117,6 +117,33 @@ def test_converter_resolves_step_and_subtask_references_before_building_edges():
     assert graph.topological_order() == ["source", "consumer"]
 
 
+def test_converter_accepts_forward_input_binding_by_structural_step_id():
+    graph = plan_to_task_graph(
+        [
+            {
+                "step_id": "consumer",
+                "agent_name": "ConsumerAgent",
+                "inputs": [
+                    {
+                        "parameter_name": "payload",
+                        "source_step": "producer",
+                        "source_output": "data",
+                    }
+                ],
+            },
+            {
+                "step_id": "producer",
+                "agent_name": "ProducerAgent",
+                "produces": ["data"],
+            },
+        ],
+        task_id="forward-input-binding",
+    )
+
+    assert graph.step_map()["consumer"].depends_on == ["producer"]
+    assert graph.topological_order() == ["producer", "consumer"]
+
+
 def test_converter_rejects_unknown_dependency_instead_of_dropping_it():
     with pytest.raises(
         TaskGraphValidationError,

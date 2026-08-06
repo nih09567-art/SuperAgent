@@ -155,6 +155,15 @@ AGENT_SCHEMA_CATALOG: dict[str, dict[str, Any]] = {
                 "items": {
                     "type": "object",
                     "properties": {
+                        # Minimized RemoteHRAssistantAgent vocabulary.  The
+                        # old normalized aliases remain accepted for existing
+                        # non-remote callers, but the remote Agent projects
+                        # onto the five source fields below before publication.
+                        "adtEmpeNm": {"type": "string"},
+                        "empeStdsc": {"type": "string"},
+                        "holdposInstNm": {"type": "string"},
+                        "tcoPostNm": {"type": "string"},
+                        "pcsTrdYrlmt": {"type": "number"},
                         "employee_id": {"type": "string"},
                         "name": {"type": "string"},
                         "department": {"type": "string"},
@@ -198,6 +207,7 @@ AGENT_SCHEMA_CATALOG: dict[str, dict[str, Any]] = {
                         "id": {"type": "string"},
                         "category": {"type": "string"},
                         "source": {"type": "string"},
+                        "source_note": {"type": "string"},
                         "effective_date": {"type": "string"},
                         "source_updated_at": {"type": "string"},
                         "is_demo": {"type": "boolean"},
@@ -248,6 +258,7 @@ AGENT_SCHEMA_CATALOG: dict[str, dict[str, Any]] = {
                         "id": {"type": "string"},
                         "category": {"type": "string"},
                         "source": {"type": "string"},
+                        "source_note": {"type": "string"},
                         "effective_date": {"type": "string"},
                         "source_updated_at": {"type": "string"},
                         "is_demo": {"type": "boolean"},
@@ -294,6 +305,7 @@ AGENT_SCHEMA_CATALOG: dict[str, dict[str, Any]] = {
             "title": {"type": "string"},
             "markdown": {"type": "string"},
             "source_count": {"type": "integer"},
+            "external_op_id": {"type": "string"},
         },
     },
     "document.content@v1": {
