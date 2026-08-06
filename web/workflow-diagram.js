@@ -25,6 +25,23 @@ const renderError = (message) => {
   downloadButton.disabled = true;
 };
 
+const sanitizeDiagramElement = (diagram) => {
+  diagram.querySelectorAll("script, iframe, object, embed, link").forEach((element) => element.remove());
+  [diagram, ...diagram.querySelectorAll("*")].forEach((element) => {
+    Array.from(element.attributes).forEach((attribute) => {
+      const name = attribute.name.toLowerCase();
+      const value = attribute.value.trim().toLowerCase();
+      if (name.startsWith("on") || (["href", "xlink:href"].includes(name) && value.startsWith("javascript:"))) {
+        element.removeAttribute(attribute.name);
+      }
+    });
+  });
+  diagram.removeAttribute("role");
+  diagram.removeAttribute("tabindex");
+  diagram.removeAttribute("title");
+  return diagram;
+};
+
 const loadDiagram = () => {
   const workflowId = getWorkflowId();
   const payload = workflowId ? getStoredDiagram(workflowId) : null;
@@ -33,22 +50,24 @@ const loadDiagram = () => {
     return;
   }
 
-  const parsed = new DOMParser().parseFromString(payload.diagramHtml, "text/html");
-  const diagram = parsed.querySelector(".workflow-architecture");
-  if (!diagram) {
+  const isMermaid = payload.kind === "mermaid";
+  const parsed = new DOMParser().parseFromString(
+    payload.diagramHtml,
+    isMermaid ? "image/svg+xml" : "text/html"
+  );
+  const diagram = isMermaid
+    ? parsed.documentElement
+    : parsed.querySelector(".workflow-architecture");
+  const validDiagram = isMermaid
+    ? diagram?.nodeName.toLowerCase() === "svg" && !parsed.querySelector("parsererror")
+    : diagram?.classList.contains("workflow-architecture");
+  if (!validDiagram) {
     renderError("流程图数据格式无效，请返回 Workflows 页面重新打开。");
     return;
   }
-  diagram.querySelectorAll("script, iframe, object, embed, link, style").forEach((element) => element.remove());
-  [diagram, ...diagram.querySelectorAll("*")].forEach((element) => {
-    Array.from(element.attributes).forEach((attribute) => {
-      if (attribute.name.toLowerCase().startsWith("on")) element.removeAttribute(attribute.name);
-    });
-  });
-  diagram.removeAttribute("role");
-  diagram.removeAttribute("tabindex");
-  diagram.removeAttribute("title");
-  diagramRoot.replaceChildren(document.importNode(diagram, true));
+  const importedDiagram = document.importNode(sanitizeDiagramElement(diagram), true);
+  if (isMermaid) importedDiagram.classList.add("workflow-diagram-mermaid-svg");
+  diagramRoot.replaceChildren(importedDiagram);
   pageTitle.textContent = payload.title || "Workflow Diagram";
   pageMeta.textContent = payload.workflowId;
   document.title = `${payload.title || "Workflow Diagram"} - CoorAgent`;
@@ -231,14 +250,55 @@ const renderDiagramCanvas = (diagram) => {
   return canvas;
 };
 
+const renderMermaidCanvas = async (svg) => {
+  const rect = svg.getBoundingClientRect();
+  const viewBox = svg.viewBox?.baseVal;
+  const width = Math.max(1, Math.ceil(rect.width || viewBox?.width || 1));
+  const height = Math.max(1, Math.ceil(rect.height || viewBox?.height || 1));
+  const padding = 32;
+  const exportWidth = width + (padding * 2);
+  const exportHeight = height + (padding * 2);
+  const scale = Math.min(2, 4096 / Math.max(exportWidth, exportHeight));
+  const clone = svg.cloneNode(true);
+  clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+  clone.setAttribute("width", String(width));
+  clone.setAttribute("height", String(height));
+  const source = new XMLSerializer().serializeToString(clone);
+  const sourceUrl = URL.createObjectURL(new Blob([source], { type: "image/svg+xml;charset=utf-8" }));
+  try {
+    const image = new Image();
+    image.src = sourceUrl;
+    await image.decode();
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.ceil(exportWidth * scale);
+    canvas.height = Math.ceil(exportHeight * scale);
+    const context = canvas.getContext("2d");
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(
+      image,
+      padding * scale,
+      padding * scale,
+      width * scale,
+      height * scale
+    );
+    return canvas;
+  } finally {
+    URL.revokeObjectURL(sourceUrl);
+  }
+};
+
 const downloadDiagramPng = async () => {
   const diagram = diagramRoot.querySelector(".workflow-architecture");
-  if (!diagram || downloadButton.disabled) return;
+  const mermaidSvg = diagramRoot.querySelector(".workflow-diagram-mermaid-svg");
+  if ((!diagram && !mermaidSvg) || downloadButton.disabled) return;
   const originalLabel = downloadButton.textContent;
   downloadButton.disabled = true;
   downloadButton.textContent = "生成中...";
   try {
-    const canvas = renderDiagramCanvas(diagram);
+    const canvas = diagram
+      ? renderDiagramCanvas(diagram)
+      : await renderMermaidCanvas(mermaidSvg);
     const pngBlob = await new Promise((resolve, reject) => {
       canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("Failed to encode PNG")), "image/png");
     });
