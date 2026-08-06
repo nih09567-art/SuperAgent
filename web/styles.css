@@ -4362,10 +4362,10 @@ button.danger:hover {
 .chat-composer {
   display: grid;
   flex: 0 0 auto;
-  grid-template-columns: 38px minmax(0, 1fr) 42px;
-  align-items: end;
-  gap: 8px;
-  padding: 10px;
+  grid-template-columns: 34px minmax(0, 1fr) 36px;
+  align-items: center;
+  gap: 6px;
+  padding: 6px;
   border: 1px solid rgba(20, 24, 40, 0.13);
   border-radius: 8px;
   background: #fff;
@@ -4374,9 +4374,10 @@ button.danger:hover {
 
 .chat-composer textarea {
   width: 100%;
-  min-height: 42px;
-  max-height: 160px;
-  padding: 10px 4px;
+  min-height: 34px;
+  max-height: 120px;
+  padding: 7px 4px;
+  line-height: 20px;
   resize: none;
   border: 0;
   outline: 0;
@@ -4386,8 +4387,8 @@ button.danger:hover {
 .chat-new,
 .chat-submit {
   display: grid;
-  width: 38px;
-  height: 38px;
+  width: 34px;
+  height: 34px;
   padding: 0;
   place-items: center;
   border-radius: 50%;
@@ -4401,8 +4402,8 @@ button.danger:hover {
 }
 
 .chat-submit {
-  width: 42px;
-  height: 42px;
+  width: 36px;
+  height: 36px;
   color: #fff;
   border-color: var(--text);
   background: var(--text);
@@ -4413,9 +4414,13 @@ button.danger:hover {
   background: var(--danger);
 }
 
-.chat-composer .chat-send:disabled,
 .chat-composer .chat-stop:disabled {
   display: none;
+}
+
+.chat-composer .chat-send:disabled {
+  display: grid;
+  opacity: 0.45;
 }
 
 @media (max-width: 900px) {
@@ -4460,7 +4465,7 @@ button.danger:hover {
   }
 
   .chat-composer {
-    grid-template-columns: 34px minmax(0, 1fr) 38px;
+    grid-template-columns: 34px minmax(0, 1fr) 36px;
   }
 
   .chat-new {
@@ -4469,7 +4474,7 @@ button.danger:hover {
   }
 
   .chat-submit {
-    width: 38px;
-    height: 38px;
+    width: 36px;
+    height: 36px;
   }
 }

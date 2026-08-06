@@ -184,7 +184,7 @@ const initializeChatPanelLayout = () => {
   newButton.innerHTML = '<span aria-hidden="true">+</span>';
   const chatMessage = document.createElement("textarea");
   chatMessage.id = "chatMessage";
-  chatMessage.rows = 2;
+  chatMessage.rows = 1;
   chatMessage.placeholder = "输入消息...";
   const chatStop = document.createElement("button");
   chatStop.id = "chatStopBtn";
@@ -213,7 +213,7 @@ const initializeChatPanelLayout = () => {
 
   const resizeMirrorMessage = () => {
     chatMessage.style.height = "auto";
-    chatMessage.style.height = `${Math.min(chatMessage.scrollHeight, 160)}px`;
+    chatMessage.style.height = `${Math.min(chatMessage.scrollHeight, 120)}px`;
   };
 
   const syncConfig = () => {
@@ -247,8 +247,9 @@ const initializeChatPanelLayout = () => {
     newButton.disabled = newConversationBtn?.disabled || false;
     chatRun.disabled = runBtn.disabled;
     chatStop.disabled = stopBtn.disabled;
-    chatRun.style.display = runBtn.disabled ? "none" : "";
-    chatStop.style.display = stopBtn.disabled ? "none" : "";
+    const isRunning = !stopBtn.disabled;
+    chatRun.style.display = isRunning ? "none" : "";
+    chatStop.style.display = isRunning ? "" : "none";
   };
   const schedule = () => {
     if (mirrorFrame !== null) return;
