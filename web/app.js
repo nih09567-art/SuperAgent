@@ -422,7 +422,11 @@ const CONVERSATION_TRANSCRIPT_LIMIT = 100;
 const CONVERSATION_MESSAGE_CHAR_LIMIT = 12000;
 const DECISION_HISTORY_LIMIT = 5;
 
-mermaid.initialize({ startOnLoad: false, theme: "default" });
+mermaid.initialize({
+  startOnLoad: false,
+  theme: "default",
+  flowchart: { htmlLabels: false },
+});
 
 const scrollChatToLatest = () => {
   if (!chatConversation) return;
@@ -871,19 +875,35 @@ const rememberPendingClarification = (eventData, question = "") => {
   };
 };
 
+const applyConversationMessageMetadata = (message, metadata = {}) => {
+  if (Array.isArray(metadata.results) && metadata.results.length) {
+    message.results = metadata.results
+      .filter((result) => result && String(result.content || "").trim())
+      .map((result) => ({
+        agentName: String(result.agentName || "assistant"),
+        content: String(result.content).slice(0, CONVERSATION_MESSAGE_CHAR_LIMIT),
+      }));
+  }
+  if (Array.isArray(metadata.planSteps) && metadata.planSteps.length) {
+    message.planSteps = metadata.planSteps.map((step) => normalizeStep(step));
+  }
+  if (metadata.outcomeStatus) {
+    message.outcomeStatus = String(metadata.outcomeStatus).slice(0, 64);
+  }
+  if (metadata.outcomeMessage) {
+    message.outcomeMessage = String(metadata.outcomeMessage)
+      .slice(0, CONVERSATION_MESSAGE_CHAR_LIMIT);
+  }
+  return message;
+};
+
 const appendActiveConversationMessage = (role, content, metadata = {}) => {
   const normalized = String(content || "").trim();
   if (!normalized) return;
   const message = { role, content: normalized.slice(0, CONVERSATION_MESSAGE_CHAR_LIMIT) };
   activeConversationMessages.push(message);
   activeConversationMessages = activeConversationMessages.slice(-ACTIVE_CONVERSATION_LIMIT);
-  const transcriptMessage = { ...message };
-  if (Array.isArray(metadata.results) && metadata.results.length) {
-    transcriptMessage.results = metadata.results.map((result) => ({
-      agentName: String(result.agentName || "assistant"),
-      content: String(result.content || "").slice(0, CONVERSATION_MESSAGE_CHAR_LIMIT),
-    }));
-  }
+  const transcriptMessage = applyConversationMessageMetadata({ ...message }, metadata);
   activeConversationTranscript.push(transcriptMessage);
   activeConversationTranscript = activeConversationTranscript.slice(-CONVERSATION_TRANSCRIPT_LIMIT);
   saveActiveConversation();
@@ -907,12 +927,7 @@ const replaceLatestAssistantConversationMessage = (content, metadata = {}) => {
     role: "assistant",
     content: normalized.slice(0, CONVERSATION_MESSAGE_CHAR_LIMIT),
   };
-  if (Array.isArray(metadata.results) && metadata.results.length) {
-    replacement.results = metadata.results.map((result) => ({
-      agentName: String(result.agentName || "assistant"),
-      content: String(result.content || "").slice(0, CONVERSATION_MESSAGE_CHAR_LIMIT),
-    }));
-  }
+  applyConversationMessageMetadata(replacement, metadata);
   activeConversationTranscript.splice(assistantIndex, 1, replacement);
   activeConversationMessages = activeConversationTranscript
     .slice(-ACTIVE_CONVERSATION_LIMIT)
@@ -921,13 +936,25 @@ const replaceLatestAssistantConversationMessage = (content, metadata = {}) => {
   return true;
 };
 
-const captureAssistantConversationContext = ({ replaceLatest = false } = {}) => {
+const captureAssistantConversationContext = ({
+  replaceLatest = false,
+  outcomeStatus = "",
+  outcomeMessage = "",
+} = {}) => {
   const structuredResults = executionStepCards
     .map((card) => {
       const content = String(card.content || "").trim();
       return content ? { agentName: card.agentName || "assistant", content } : null;
     })
-    .filter(Boolean);
+    .filter(Boolean)
+    .flatMap((result) => {
+      const values = parseJsonSequence(result.content);
+      if (!values || values.length < 2) return [result];
+      return values.map((value) => ({
+        agentName: String(value?.tool || result.agentName),
+        content: JSON.stringify(value),
+      }));
+    });
   const artifactResults = structuredResults
     .filter((result) => (
       /(report|document|research|knowledge)/i.test(result.agentName)
@@ -957,14 +984,21 @@ const captureAssistantConversationContext = ({ replaceLatest = false } = {}) => 
   const cardResults = structuredResults.map((result) => `[${result.agentName}]\n${result.content}`);
   const fallback = executionOutput ? executionOutput.innerText.trim() : "";
   const unavailableFinalResult = latestFinalResultText === "工作流未产生可展示的最终结果。";
-  const content = (
+  const resultText = (
     (!unavailableFinalResult ? latestFinalResultText : "")
     || cardResults.join("\n\n")
     || latestFinalResultText
     || fallback
     || (replaceLatest ? "任务已恢复并执行成功。" : "")
   );
-  const metadata = { results: structuredResults };
+  const content = [outcomeMessage, resultText].filter(Boolean).join("\n\n")
+    || (outcomeStatus ? "执行结束，请查看执行状态。" : "执行完成。");
+  const metadata = {
+    results: structuredResults,
+    planSteps,
+    outcomeStatus,
+    outcomeMessage,
+  };
   if (replaceLatest && replaceLatestAssistantConversationMessage(content, metadata)) return;
   appendActiveConversationMessage("assistant", content, metadata);
 };
@@ -1262,15 +1296,7 @@ const normalizeStoredConversation = (conversation) => {
           role: message.role,
           content: String(message.content).slice(0, CONVERSATION_MESSAGE_CHAR_LIMIT),
         };
-        if (Array.isArray(message.results)) {
-          normalizedMessage.results = message.results
-            .filter((result) => result && String(result.content || "").trim())
-            .map((result) => ({
-              agentName: String(result.agentName || "assistant"),
-              content: String(result.content).slice(0, CONVERSATION_MESSAGE_CHAR_LIMIT),
-            }));
-        }
-        return normalizedMessage;
+        return applyConversationMessageMetadata(normalizedMessage, message);
       })
       .slice(-CONVERSATION_TRANSCRIPT_LIMIT)
     : [];
@@ -1310,7 +1336,6 @@ const normalizeStoredConversation = (conversation) => {
     contextReferences: Array.isArray(conversation.contextReferences)
       ? conversation.contextReferences.map((item) => ({ ...item }))
       : [],
-    pendingPlan: normalizePendingPlan(conversation.pendingPlan),
     decisions,
     pendingPlan: normalizePendingPlan(conversation.pendingPlan),
     messages,
@@ -1383,7 +1408,6 @@ const saveActiveConversation = () => {
     currentResolvedRequest,
     currentRequestEntities: { ...currentRequestEntities },
     contextReferences: currentContextReferences.map((item) => ({ ...item })),
-    pendingPlan: normalizePendingPlan(activePendingPlan),
     decisions: activeConversationDecisions.map((decision) => ({
       ...decision,
       taskIds: [...decision.taskIds],
@@ -1461,29 +1485,61 @@ const renderLoadedAssistantMessage = (message) => {
   const results = Array.isArray(message?.results) && message.results.length
     ? message.results
     : parseHistoricalAgentResults(content);
-  if (!results.length || !answerOutput) {
+  const storedPlanSteps = Array.isArray(message?.planSteps) ? message.planSteps : [];
+  const outcomeStatus = String(message?.outcomeStatus || "").toLowerCase();
+  const outcomeMessage = String(message?.outcomeMessage || "").trim();
+  const hasLifecycle = storedPlanSteps.length || results.length || outcomeStatus;
+  if (!answerOutput) return;
+  if (!hasLifecycle) {
     showAssistantText(content);
     return;
   }
-  answerOutput.replaceChildren();
-  answerOutput.classList.remove("is-empty");
-  answerOutput.removeAttribute("data-empty-text");
-  const fragment = document.createDocumentFragment();
-  results.forEach((result, index) => {
-    renderStepCardInto({
-      id: index + 1,
-      total: results.length,
-      agentName: result.agentName,
-      displayName: result.agentName,
-      status: "done",
-      content: result.content,
-      startTime: null,
-      endTime: null,
-      summary: "历史执行结果",
-    }, fragment);
-  });
-  answerOutput.appendChild(fragment);
-  currentChatLifecycle = null;
+
+  const lifecycle = ensureChatLifecycle();
+  if (!lifecycle) return;
+  if (storedPlanSteps.length) {
+    renderChatPlanCard(storedPlanSteps);
+    lifecycle.planActions.classList.add("hidden");
+    lifecycle.revisionForm.classList.add("hidden");
+  }
+  if (outcomeStatus) {
+    const succeeded = ["succeeded", "completed"].includes(outcomeStatus);
+    updateChatExecutionProgress(
+      succeeded ? "completed" : "error",
+      outcomeMessage || (succeeded ? "执行已完成。" : "执行失败，请查看执行日志。")
+    );
+  }
+
+  const resultText = outcomeMessage && content.startsWith(outcomeMessage)
+    ? content.slice(outcomeMessage.length).trim()
+    : content;
+  if (results.length || resultText) {
+    lifecycle.resultSection.classList.remove("hidden");
+    lifecycle.resultTitle.textContent = outcomeStatus
+      && !["succeeded", "completed"].includes(outcomeStatus)
+      ? "执行输出（失败前）"
+      : "最终结果";
+    lifecycle.resultContent.replaceChildren();
+    if (results.length) {
+      const fragment = document.createDocumentFragment();
+      results.forEach((result, index) => {
+        renderStepCardInto({
+          id: index + 1,
+          total: results.length,
+          agentName: result.agentName,
+          displayName: result.agentName,
+          status: "done",
+          content: result.content,
+          startTime: null,
+          endTime: null,
+          summary: "历史执行结果",
+        }, fragment);
+      });
+      lifecycle.resultContent.appendChild(fragment);
+    } else {
+      lifecycle.resultContent.appendChild(formatResult(resultText));
+    }
+  }
 };
 
 const renderLoadedConversation = (messages) => {
@@ -2732,10 +2788,7 @@ const renderFinalResult = (data = {}) => {
   lifecycle.resultSection.classList.remove("hidden");
   lifecycle.resultTitle.textContent = "最终结果";
   lifecycle.resultContent.replaceChildren();
-  const content = document.createElement("pre");
-  content.className = "chat-final-result-content-text";
-  content.textContent = latestFinalResultText;
-  lifecycle.resultContent.appendChild(content);
+  lifecycle.resultContent.appendChild(formatResult(latestFinalResultText));
   scrollChatToLatest();
 };
 
@@ -2920,32 +2973,151 @@ const renderWorkflowFailureSummaryInto = (summary, parent) => {
 
 // Result Formatting
 
-const formatResult = (rawContent) => {
-  const wrap = document.createElement("div");
-  wrap.className = "step-result";
+const RESULT_GROUP_LABELS = {
+  RemoteHRAssistantAgent: "员工与薪资查询",
+  RemoteDocumentGeneratorAgent: "收入证明文档",
+  RemoteEmailDispatchAgent: "邮件发送结果",
+  "employee.info": "员工基本信息",
+  "employee.salary": "薪资信息",
+};
 
-  let parsed = null;
-  try { parsed = JSON.parse(rawContent); } catch (e) { /* not JSON */ }
+const getResultGroupLabel = (name) => RESULT_GROUP_LABELS[name] || name || "执行结果";
 
-  // Unwrap {tool, result} wrapper
-  if (parsed && parsed.result !== undefined) {
-    parsed = parsed.result;
+const parseJsonSequence = (rawContent) => {
+  if (typeof rawContent !== "string") return [rawContent];
+  const text = rawContent.trim();
+  if (!text) return null;
+
+  try {
+    return [JSON.parse(text)];
+  } catch (error) {
+    // Continue with adjacent JSON values such as {...}{...}{...}.
   }
 
-  if (parsed && Array.isArray(parsed) && parsed.length > 0 && typeof parsed[0] === "object") {
-    wrap.appendChild(buildResultTable(parsed));
-    return wrap;
+  const values = [];
+  let start = -1;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (start < 0) {
+      if (/\s/.test(char)) continue;
+      if (char !== "{" && char !== "[") return null;
+      start = index;
+      depth = 1;
+      continue;
+    }
+
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (char === '"') {
+      inString = true;
+      continue;
+    }
+    if (char === "{" || char === "[") depth += 1;
+    if (char === "}" || char === "]") depth -= 1;
+    if (depth < 0) return null;
+    if (depth === 0) {
+      try {
+        values.push(JSON.parse(text.slice(start, index + 1)));
+      } catch (error) {
+        return null;
+      }
+      start = -1;
+    }
   }
 
-  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-    wrap.appendChild(buildKeyValueList(parsed, 0));
-    return wrap;
+  return start < 0 && values.length ? values : null;
+};
+
+const buildResultGroup = (title, value) => {
+  const section = document.createElement("section");
+  section.className = "step-result-group";
+  if (title) {
+    const heading = document.createElement("h5");
+    heading.className = "step-result-group-title";
+    heading.textContent = getResultGroupLabel(title);
+    section.appendChild(heading);
+  }
+  section.appendChild(buildStructuredResult(value));
+  return section;
+};
+
+const buildStructuredResult = (rawValue) => {
+  let value = rawValue;
+  if (typeof value === "string") {
+    const parsed = parseJsonSequence(value);
+    if (parsed?.length === 1) value = parsed[0];
+  }
+
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    if (Object.prototype.hasOwnProperty.call(value, "tool")
+        && Object.prototype.hasOwnProperty.call(value, "result")) {
+      return buildResultGroup(String(value.tool || "执行结果"), value.result);
+    }
+    if (value.outputs && typeof value.outputs === "object" && !Array.isArray(value.outputs)) {
+      const groups = document.createElement("div");
+      groups.className = "step-result-groups";
+      Object.entries(value.outputs).forEach(([name, output]) => {
+        groups.appendChild(buildResultGroup(name, output));
+      });
+      return groups;
+    }
+    if (Object.prototype.hasOwnProperty.call(value, "result")) {
+      return buildStructuredResult(value.result);
+    }
+    if (Array.isArray(value.records)) {
+      if (value.records.length && typeof value.records[0] === "object") {
+        return buildResultTable(value.records);
+      }
+      const empty = document.createElement("div");
+      empty.className = "step-result-empty";
+      empty.textContent = "未查询到记录";
+      return empty;
+    }
+    return buildKeyValueList(value, 0);
+  }
+
+  if (Array.isArray(value) && value.length && typeof value[0] === "object") {
+    return buildResultTable(value);
   }
 
   const pre = document.createElement("pre");
   pre.className = "step-result-pre";
-  pre.textContent = parsed ? JSON.stringify(parsed, null, 2) : rawContent;
-  wrap.appendChild(pre);
+  pre.textContent = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+  return pre;
+};
+
+const formatResult = (rawContent) => {
+  const wrap = document.createElement("div");
+  wrap.className = "step-result";
+  const values = parseJsonSequence(rawContent);
+
+  if (values?.length > 1) {
+    const groups = document.createElement("div");
+    groups.className = "step-result-groups";
+    values.forEach((value, index) => {
+      const title = value && typeof value === "object" ? value.tool : `结果 ${index + 1}`;
+      const content = value && typeof value === "object"
+        && Object.prototype.hasOwnProperty.call(value, "result")
+        ? value.result
+        : value;
+      groups.appendChild(buildResultGroup(title, content));
+    });
+    wrap.appendChild(groups);
+  } else {
+    wrap.appendChild(buildStructuredResult(values?.[0] ?? rawContent));
+  }
   return wrap;
 };
 
@@ -4844,10 +5016,13 @@ const runExecution = async () => {
         serverStatus: terminalStatus || "UNKNOWN",
       };
       saveActiveConversation();
-      appendActiveConversationMessage("assistant", "执行未成功，请在 Task History 中核对原任务后再决定后续操作。");
+      captureAssistantConversationContext({
+        outcomeStatus: terminalStatus || "failed",
+        outcomeMessage: "执行未成功，请在 Task History 中核对原任务后再决定后续操作。",
+      });
     } else if (latestFinalResultText || !currentRunHasError) {
       activePendingPlan = null;
-      captureAssistantConversationContext();
+      captureAssistantConversationContext({ outcomeStatus: "succeeded" });
       saveActiveConversation();
     }
     currentRunContext = null;
@@ -5956,12 +6131,18 @@ const getWorkflowGraphEntryName = (entry) => String(
   || ""
 ).trim();
 
-const getWorkflowGraphTargets = (entry) => {
+const getWorkflowGraphTargets = (entry, graphEntries = []) => {
   const nextTo = entry?.config?.next_to ?? entry?.next_to;
   const targets = Array.isArray(nextTo) ? nextTo : (nextTo ? [nextTo] : []);
-  return targets
-    .map((target) => String(target?.name || target?.node_name || target || "").trim())
-    .filter((target) => target && !["__end__", "FINISH"].includes(target));
+  const entryIndex = graphEntries.indexOf(entry);
+  return targets.flatMap((target) => {
+    const targetName = String(target?.name || target?.node_name || target || "").trim();
+    if (!targetName || targetName === "FINISH") return [];
+    if (targetName !== "__end__") return [targetName];
+    const nextEntry = entryIndex >= 0 ? graphEntries[entryIndex + 1] : null;
+    const nextName = getWorkflowGraphEntryName(nextEntry);
+    return nextName ? [nextName] : [];
+  });
 };
 
 const getWorkflowNodeType = (node, graphEntry) => (
@@ -5978,12 +6159,13 @@ const getWorkflowNodeDescription = (node) => (
 
 const WORKFLOW_DIAGRAM_STORAGE_PREFIX = "cooragent.workflowDiagram.v1";
 
-const openWorkflowDiagramPage = (detail, diagram) => {
+const openWorkflowDiagramPage = (detail, diagram, kind = "custom") => {
   const workflowId = String(detail?.workflow_id || selectedWorkflowId || "").trim();
   if (!workflowId || !diagram) return;
   const payload = {
     workflowId,
     title: getWorkflowTaskName(detail) || workflowId,
+    kind,
     diagramHtml: diagram.outerHTML,
     savedAt: new Date().toISOString(),
   };
@@ -6001,6 +6183,24 @@ const openWorkflowDiagramPage = (detail, diagram) => {
   } else {
     window.alert("浏览器阻止了新页面，请允许此网站打开弹出窗口。");
   }
+};
+
+const makeWorkflowDiagramInteractive = (diagram, detail, kind = "custom") => {
+  if (!diagram) return;
+  diagram.tabIndex = 0;
+  diagram.setAttribute("role", "button");
+  diagram.setAttribute("aria-label", "在新页面查看当前流程图");
+  diagram.title = "在新页面查看流程图";
+  const openStandaloneView = () => openWorkflowDiagramPage(detail, diagram, kind);
+  diagram.addEventListener("click", () => {
+    if (window.getSelection()?.toString()) return;
+    openStandaloneView();
+  });
+  diagram.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    openStandaloneView();
+  });
 };
 
 const shortenWorkflowDescription = (description) => (
@@ -6112,7 +6312,7 @@ const getLinearWorkflowGraphOrder = (nodeEntries, graphEntries, graphByName) => 
   const outgoing = new Map(nodeNames.map((name) => [name, []]));
   const incomingCount = new Map(nodeNames.map((name) => [name, 0]));
   for (const name of nodeNames) {
-    const targets = getWorkflowGraphTargets(graphByName.get(name));
+    const targets = getWorkflowGraphTargets(graphByName.get(name), graphEntries);
     if (targets.some((target) => !nodeNameSet.has(target)) || targets.length > 1) {
       return { isLinear: false, orderedNames: [] };
     }
@@ -6152,13 +6352,24 @@ const getLinearWorkflowGraphOrder = (nodeEntries, graphEntries, graphByName) => 
 };
 
 const getOrderedWorkflowNodes = (detail) => {
-  const nodeEntries = getWorkflowNodes(detail);
+  const allNodeEntries = getWorkflowNodes(detail);
   const graphEntries = Array.isArray(detail?.graph) ? detail.graph : [];
   const graphByName = new Map(
     graphEntries
       .map((entry) => [getWorkflowGraphEntryName(entry), entry])
       .filter(([name]) => name)
   );
+  const nodesByName = new Map(allNodeEntries.map((node) => [node.name, node]));
+  const nodeEntries = graphEntries.length
+    ? graphEntries.map((entry) => {
+      const name = getWorkflowGraphEntryName(entry);
+      return nodesByName.get(name) || {
+        name,
+        type: getWorkflowNodeType(null, entry),
+        config: entry?.config || {},
+      };
+    }).filter((node) => node.name)
+    : allNodeEntries;
   const topology = getLinearWorkflowGraphOrder(nodeEntries, graphEntries, graphByName);
   const systemNodes = nodeEntries.filter((node) => (
     getWorkflowNodeType(node, graphByName.get(node.name)) === "system_agent"
@@ -6179,11 +6390,38 @@ const getOrderedWorkflowNodes = (detail) => {
   };
   systemNodes.sort(sortByTopology);
   executionNodes.sort(sortByTopology);
-  return { systemNodes, executionNodes, graphByName, isLinear: topology.isLinear };
+  const confirmationEntries = graphEntries.filter((entry) => {
+    const nextTo = entry?.config?.next_to ?? entry?.next_to;
+    return (Array.isArray(nextTo) ? nextTo : [nextTo]).some((target) => (
+      String(target?.name || target?.node_name || target || "").trim() === "__end__"
+    ));
+  });
+  const hasCommandConfirmation = confirmationEntries.length === 1;
+  const confirmationAfterName = hasCommandConfirmation
+    ? getWorkflowGraphEntryName(confirmationEntries[0])
+    : "";
+  const confirmationLayoutSupported = !confirmationEntries.length || (
+    hasCommandConfirmation
+    && systemNodes.length > 0
+    && confirmationAfterName === systemNodes[systemNodes.length - 1].name
+  );
+  return {
+    systemNodes,
+    executionNodes,
+    graphByName,
+    isLinear: topology.isLinear && confirmationLayoutSupported,
+    hasCommandConfirmation,
+  };
 };
 
 const renderWorkflowArchitecture = (detail) => {
-  const { systemNodes, executionNodes, graphByName, isLinear } = getOrderedWorkflowNodes(detail);
+  const {
+    systemNodes,
+    executionNodes,
+    graphByName,
+    isLinear,
+    hasCommandConfirmation,
+  } = getOrderedWorkflowNodes(detail);
   if (!isLinear || (!systemNodes.length && !executionNodes.length)) return false;
 
   mermaidContainer.replaceChildren();
@@ -6194,20 +6432,7 @@ const renderWorkflowArchitecture = (detail) => {
     ? (executionNodes.length * 210) + (Math.max(0, executionNodes.length - 1) * 40) + 80
     : 720;
   diagram.style.setProperty("--workflow-architecture-min-width", `${Math.max(720, executionFlowWidth)}px`);
-  diagram.tabIndex = 0;
-  diagram.setAttribute("role", "button");
-  diagram.setAttribute("aria-label", "在新页面查看当前流程图");
-  diagram.title = "在新页面查看流程图";
-  const openStandaloneView = () => openWorkflowDiagramPage(detail, diagram);
-  diagram.addEventListener("click", () => {
-    if (window.getSelection()?.toString()) return;
-    openStandaloneView();
-  });
-  diagram.addEventListener("keydown", (event) => {
-    if (event.key !== "Enter" && event.key !== " ") return;
-    event.preventDefault();
-    openStandaloneView();
-  });
+  makeWorkflowDiagramInteractive(diagram, detail);
 
   if (systemNodes.length) {
     const systemStage = document.createElement("section");
@@ -6216,12 +6441,14 @@ const renderWorkflowArchitecture = (detail) => {
       if (index) systemStage.appendChild(createWorkflowDownArrow());
       systemStage.appendChild(createWorkflowSystemNode(node, index));
     });
-    if (executionNodes.length) {
+    if (hasCommandConfirmation) {
       systemStage.appendChild(createWorkflowDownArrow("workflow-architecture-arrow-compact"));
       const confirmation = document.createElement("div");
       confirmation.className = "workflow-architecture-confirm";
       confirmation.appendChild(createWorkflowTextElement("span", "", "命令确认"));
       systemStage.appendChild(confirmation);
+    }
+    if (executionNodes.length) {
       systemStage.appendChild(createWorkflowDownArrow("workflow-architecture-arrow-to-zone"));
     }
     diagram.appendChild(systemStage);
@@ -6273,6 +6500,7 @@ const selectWorkflow = async (workflowId) => {
   workflowDetail.textContent = "Loading...";
   mermaidContainer.textContent = "Loading...";
   mermaidContainer.classList.remove("workflow-architecture-host");
+  mermaidContainer.classList.remove("workflow-diagram-interactive");
 
   let detail = null;
   const detailRes = await fetch(`/api/workflows/${encodeURIComponent(workflowId)}`);
@@ -6294,7 +6522,12 @@ const selectWorkflow = async (workflowId) => {
     pre.textContent = code;
     mermaidContainer.appendChild(pre);
     try {
-      mermaid.run({ nodes: mermaidContainer.querySelectorAll(".mermaid") });
+      await mermaid.run({ nodes: mermaidContainer.querySelectorAll(".mermaid") });
+      const svg = mermaidContainer.querySelector("svg");
+      if (svg) {
+        mermaidContainer.classList.add("workflow-diagram-interactive");
+        makeWorkflowDiagramInteractive(svg, detail, "mermaid");
+      }
     } catch (err) {
       mermaidContainer.textContent = "Mermaid render failed.";
     }
@@ -7063,7 +7296,10 @@ const resumeTask = async ({ inChat = false } = {}) => {
   } finally {
     if (inChat) {
       if (resumeTerminalStatus === "SUCCEEDED" && !currentRunHasError) {
-        captureAssistantConversationContext({ replaceLatest: true });
+        captureAssistantConversationContext({
+          replaceLatest: true,
+          outcomeStatus: "succeeded",
+        });
         if (currentChatLifecycle) {
           currentChatLifecycle.confirmPlanButton.textContent = "已执行";
           currentChatLifecycle.confirmPlanButton.disabled = true;

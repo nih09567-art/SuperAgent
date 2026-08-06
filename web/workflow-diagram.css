@@ -71,9 +71,18 @@ body.workflow-diagram-page {
 
 .workflow-diagram-standalone .workflow-architecture {
   width: max-content;
+  margin-inline: auto;
   cursor: default;
   box-shadow: none;
   outline: none;
+}
+
+.workflow-diagram-standalone .workflow-diagram-mermaid-svg {
+  display: block;
+  width: auto;
+  max-width: none;
+  height: auto;
+  margin-inline: auto;
 }
 
 .workflow-export-stage {

@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>CoorAgent Web Studio</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260803-decision-history-1" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260806-frontend-sync-1" />
     <script src="/static/mermaid.min.js"></script>
   </head>
   <body>
@@ -40,8 +40,8 @@
 
       <main class="layout">
         <aside class="sidebar">
-          <button class="tab active" data-tab="run">Workflow</button>
-          <button class="tab" data-tab="chat">Chat</button>
+          <button class="tab active" data-tab="chat">Chat</button>
+          <button class="tab" data-tab="run">Workflow</button>
           <button class="tab" data-tab="agents">Agents</button>
           <button class="tab" data-tab="tools">Tools</button>
           <button class="tab" data-tab="workflows">Workflows</button>
@@ -50,7 +50,7 @@
         </aside>
 
         <section class="content">
-          <section class="panel active" id="panel-run">
+          <section class="panel" id="panel-run">
             <div class="panel-header">
               <h2>Workflow</h2>
               <p>发起任务并实时查看输出。</p>
@@ -106,7 +106,7 @@
                       title="New conversation"
                       aria-label="Start a new conversation"
                     ><span aria-hidden="true">+</span></button>
-                    <textarea id="message" rows="2" placeholder="输入消息..."></textarea>
+                    <textarea id="message" rows="1" placeholder="输入消息..."></textarea>
                     <button
                       id="stopBtn"
                       class="chat-submit chat-stop"
@@ -244,7 +244,7 @@
             </div>
           </section>
 
-          <section class="panel" id="panel-chat">
+          <section class="panel active" id="panel-chat">
             <div class="panel-header chat-panel-header">
               <h2>Chat</h2>
             </div>
@@ -579,7 +579,7 @@
       </main>
     </div>
 
-    <script src="/static/app.js?v=20260804-security-collapsible-1"></script>
+    <script src="/static/app.js?v=20260806-frontend-sync-1"></script>
     <script src="/static/security.js?v=20260804-security-collapsible-1"></script>
   </body>
 </html>
