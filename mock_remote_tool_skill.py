@@ -2055,8 +2055,10 @@ async def tool(req: ToolRequest, authorization: Optional[str] = Header(default=N
 
             if employee_id:
                 records = [r for r in all_records if r.get("employee_id") == employee_id]
-            else:
+            elif employee_name:
                 records = [r for r in all_records if r.get("employee_name") == employee_name]
+            else:
+                records = list(all_records)
 
             # Apply additional filters
             if filters:
@@ -2145,8 +2147,10 @@ async def tool(req: ToolRequest, authorization: Optional[str] = Header(default=N
 
             if employee_id:
                 records = [r for r in all_records if r.get("employee_id") == employee_id]
-            else:
+            elif employee_name:
                 records = [r for r in all_records if r.get("employee_name") == employee_name]
+            else:
+                records = list(all_records)
 
             # Apply additional filters
             if filters:

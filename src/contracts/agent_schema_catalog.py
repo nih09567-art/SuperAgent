@@ -287,7 +287,11 @@ AGENT_SCHEMA_CATALOG: dict[str, dict[str, Any]] = {
                     "properties": {
                         "logical_name": {"type": "string"},
                         "schema_ref": {"type": "string"},
-                        "payload": {"type": "object"},
+                        # The upstream Artifact owns and validates its payload
+                        # schema. Fan-in may therefore carry structured data,
+                        # a Markdown string, or an array; this envelope only
+                        # validates the source descriptor and provenance.
+                        "payload": {},
                     },
                 },
             },
@@ -302,6 +306,27 @@ AGENT_SCHEMA_CATALOG: dict[str, dict[str, Any]] = {
             "markdown": {"type": "string"},
             "source_count": {"type": "integer"},
             "external_op_id": {"type": "string"},
+        },
+    },
+    "document.content@v1": {
+        "required": ["sources", "instruction", "title"],
+        "properties": {
+            "sources": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["logical_name", "schema_ref", "payload"],
+                    "properties": {
+                        "logical_name": {"type": "string"},
+                        "schema_ref": {"type": "string"},
+                        # The upstream Artifact has already validated this
+                        # payload against its own versioned schema.
+                        "payload": {},
+                    },
+                },
+            },
+            "instruction": {"type": "string"},
+            "title": {"type": "string"},
         },
     },
 }

@@ -715,6 +715,34 @@ def plan_to_task_graph(
                 if resolved not in depends_on:
                     depends_on.append(resolved)
 
+        # The Planner may use a prior Agent name as a legacy source alias.
+        # Execution and Artifact storage are keyed by TaskGraph step_id, so
+        # normalize both single-source and fan-in bindings at this trusted
+        # conversion boundary. Leaving the raw Agent alias here makes a valid
+        # upstream Artifact look missing at runtime.
+        normalized_inputs: List[Dict[str, Any]] = []
+        for binding in inputs:
+            if not isinstance(binding, dict):
+                continue
+            normalized = dict(binding)
+            source_artifacts = normalized.get("source_artifacts")
+            if isinstance(source_artifacts, list):
+                normalized["source_artifacts"] = [
+                    {
+                        **source,
+                        "source_step": resolve_reference(source.get("source_step")),
+                    }
+                    if isinstance(source, dict) and source.get("source_step")
+                    else source
+                    for source in source_artifacts
+                ]
+            elif normalized.get("source_step"):
+                normalized["source_step"] = resolve_reference(
+                    normalized.get("source_step")
+                )
+            normalized_inputs.append(normalized)
+        inputs = normalized_inputs
+
         # The registry-provided contract is trusted platform metadata. Planner
         # output is untrusted and must never inject a contract: a step-level
         # ``agent_contract`` in the plan is ignored outright, so a fabricated
@@ -823,6 +851,47 @@ def plan_to_task_graph(
                     }
                 )
 
+        # Planner-authored output labels are descriptive and frequently differ
+        # from the producer's platform-owned logical output name
+        # (``research_results`` vs ``research.markdown``). If the trusted
+        # producer contract has exactly one output, bind that canonical output
+        # instead of failing a valid chain at execution time.
+        prior_steps = {item.step_id: item for item in steps}
+
+        def canonical_source(source: Dict[str, Any]) -> Dict[str, Any]:
+            normalized_source = dict(source)
+            source_step = str(normalized_source.get("source_step") or "")
+            producer = prior_steps.get(source_step)
+            producer_outputs = list(
+                getattr(producer, "expected_outputs", []) or []
+            )
+            requested_output = str(
+                normalized_source.get("source_output") or ""
+            )
+            if (
+                producer is not None
+                and len(producer_outputs) == 1
+                and requested_output not in producer_outputs
+            ):
+                normalized_source["source_output"] = producer_outputs[0]
+            return normalized_source
+
+        canonical_inputs: List[Dict[str, Any]] = []
+        for binding in inputs:
+            canonical_binding = dict(binding)
+            sources = canonical_binding.get("source_artifacts")
+            if isinstance(sources, list):
+                canonical_binding["source_artifacts"] = [
+                    canonical_source(source)
+                    if isinstance(source, dict)
+                    else source
+                    for source in sources
+                ]
+            elif canonical_binding.get("source_step"):
+                canonical_binding = canonical_source(canonical_binding)
+            canonical_inputs.append(canonical_binding)
+        inputs = canonical_inputs
+
         completion_conditions = []
         for condition in raw.get("completion_conditions") or []:
             if isinstance(condition, str) and condition.strip():
@@ -852,6 +921,7 @@ def plan_to_task_graph(
             trusted_task_mode,
         )
         _validate_planner_security_constraints(agent_name, raw)
+        trusted_resource_attrs = _config_security_attributes(agent_name) or {}
 
         step = TaskStep(
             step_id=step_id,
@@ -865,6 +935,9 @@ def plan_to_task_graph(
             retry=max(0, int(raw.get("retry") or 0)),
             resource_locks=raw.get("resource_locks", []) or [],
             preferred_resource_id=agent_name or None,
+            external_side_effect=bool(
+                trusted_resource_attrs.get("external_side_effect", False)
+            ),
             # extras (TaskStep has extra="allow"):
             agent_name=agent_name,
             input_bindings=inputs,

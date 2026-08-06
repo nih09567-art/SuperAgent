@@ -89,7 +89,7 @@ class FailureAttributionHandler(BaseHandler):
         rollback_ctrl = RollbackController(checkpoint_manager)
         rollback_target = rollback_ctrl.find_rollback_point(
             task_id=ctx.task_id,
-            target_step=target_step,
+            mistake_step=target_step,
             workflow_id=ctx.workflow_id,
         )
         

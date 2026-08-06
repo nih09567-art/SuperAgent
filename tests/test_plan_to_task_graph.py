@@ -9,6 +9,7 @@ import asyncio
 import pytest
 
 from remote_agents.hr_assistant_agent import RemoteHRAssistantAgent
+from remote_agents.business_risk_agent import RemoteBusinessRiskAgent
 from remote_agents.knowledge_agent import RemoteKnowledgeAgent
 from remote_agents.report_agent import RemoteReportAgent
 from src.interface.task_graph import TaskGraphValidationError
@@ -789,6 +790,14 @@ def test_business_risk_agent_with_export_is_write():
     assert g.step_map()["step_1"].operation_mode == "write"
 
 
+def test_business_risk_agent_publishes_typed_report_source():
+    contract = RemoteBusinessRiskAgent().contract
+
+    assert contract is not None
+    assert [item.name for item in contract.produces] == ["risk.records"]
+    assert contract.produces[0].schema_ref == "structured_agent_result@v1"
+
+
 def test_mixed_mode_calendar_query_uses_trusted_task_profile_action():
     graph = plan_to_task_graph(
         [
@@ -875,3 +884,58 @@ def test_builtin_research_report_chain_uses_markdown_contract_and_binding():
             "source_output": "research.markdown",
         }
     ]
+
+
+def test_explicit_fan_in_agent_alias_is_normalized_to_step_id():
+    graph = plan_to_task_graph(
+        [
+            {
+                "agent_name": "researcher",
+                "step_id": "step_1",
+                "expected_outputs": ["research.results"],
+            },
+            {
+                "agent_name": "reporter",
+                "step_id": "step_2",
+                "inputs": [
+                    {
+                        "parameter_name": "report.sources",
+                        "source_artifacts": [
+                            {
+                                "source_step": "researcher",
+                                "source_output": "research.results",
+                            }
+                        ],
+                    }
+                ],
+            },
+        ],
+        task_id="agent-alias-binding",
+    )
+
+    assert graph.steps[1].input_bindings[0]["source_artifacts"][0][
+        "source_step"
+    ] == "step_1"
+    assert graph.steps[1].depends_on == ["step_1"]
+
+
+def test_single_producer_output_normalizes_planner_output_alias():
+    graph = plan_to_task_graph(
+        [
+            {"agent_name": "researcher", "step_id": "step_1"},
+            {
+                "agent_name": "reporter",
+                "step_id": "step_2",
+                "inputs": [
+                    {
+                        "parameter_name": "report.source_data",
+                        "source_step": "step_1",
+                        "source_output": "research_results",
+                    }
+                ],
+            },
+        ],
+        task_id="logical-output-alias",
+    )
+
+    assert graph.steps[1].input_bindings[0]["source_output"] == "research.markdown"

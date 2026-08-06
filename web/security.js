@@ -51,6 +51,18 @@ function reconciliationReasonZh(item) {
     if (/remote request timeout|timeout/i.test(raw)) {
         return "远程请求超时，系统无法确认外部操作是否已经完成。";
     }
+    if (/side effect succeeded but no durable external operation id was returned/i.test(raw)) {
+        return "外部操作可能已成功，但执行器没有返回可核验的外部操作编号，系统无法自动确认结果。";
+    }
+    if (/side effect succeeded but receipt persistence failed/i.test(raw)) {
+        return "外部操作可能已成功，但执行回执保存失败，系统无法自动确认结果。";
+    }
+    if (/side effect returned but completion condition failed/i.test(raw)) {
+        return "外部操作已经发起，但返回结果未满足完成条件，系统无法确认最终状态。";
+    }
+    if (/succeeded receipt.*output|receipt output/i.test(raw)) {
+        return "外部操作已有成功回执，但回执中的结果数据不完整或无法校验，需要人工核对。";
+    }
     return raw || "外部操作结果不确定，需要人工核对。";
 }
 
@@ -118,7 +130,10 @@ async function loadSecurityStatus() {
 async function loadSecurityUsers() {
     try {
         secUsers = await secFetch("/api/security/users");
-        populateUserSelects();
+        const selectedUserId = populateUserSelects();
+        if (selectedUserId) {
+            await loadUserSecurityProfile(selectedUserId);
+        }
     } catch (e) {
         console.warn("Failed to load security users:", e);
     }
@@ -136,9 +151,7 @@ async function loadSecurityPolicies() {
 async function loadSecurityApprovals() {
     const el = document.getElementById("securityApprovals");
     try {
-        secApprovals = await secFetch("/api/security/approvals", {
-            headers: governanceAuthHeaders(false),
-        });
+        secApprovals = await secFetch("/api/security/approvals");
         renderSecurityApprovals();
     } catch (e) {
         if (el) {
@@ -150,9 +163,7 @@ async function loadSecurityApprovals() {
 async function loadSecurityReconciliations() {
     const el = document.getElementById("securityReconciliations");
     try {
-        secReconciliations = await secFetch("/api/security/reconciliations", {
-            headers: governanceAuthHeaders(false),
-        });
+        secReconciliations = await secFetch("/api/security/reconciliations");
         renderSecurityReconciliations();
     } catch (e) {
         if (el) {
@@ -160,20 +171,6 @@ async function loadSecurityReconciliations() {
         }
     }
 }
-
-function governanceAuthHeaders(includeJson = true) {
-    let token = window.sessionStorage.getItem("governanceAdminApiKey") || "";
-    if (!token) {
-        token = window.prompt("请输入治理管理员凭据：", "") || "";
-        if (!token) throw new Error("未提供治理管理员凭据");
-        window.sessionStorage.setItem("governanceAdminApiKey", token);
-    }
-    const headers = { "Authorization": `Bearer ${token}` };
-    if (includeJson) headers["Content-Type"] = "application/json";
-    return headers;
-}
-
-window.getGovernanceAuthHeaders = governanceAuthHeaders;
 
 async function decideSecurityReconciliation(reconciliationId, decision) {
     let externalOperationId = "";
@@ -232,7 +229,7 @@ async function decideSecurityReconciliation(reconciliationId, decision) {
         `/api/security/reconciliations/${encodeURIComponent(reconciliationId)}/${decision}`,
         {
             method: "POST",
-            headers: governanceAuthHeaders(),
+            headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
                 comment,
                 external_operation_id: externalOperationId.trim(),
@@ -242,9 +239,6 @@ async function decideSecurityReconciliation(reconciliationId, decision) {
     );
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
-        if (response.status === 401) {
-            window.sessionStorage.removeItem("governanceAdminApiKey");
-        }
         throw new Error(data.detail || `HTTP ${response.status}`);
     }
     await loadSecurityReconciliations();
@@ -366,15 +360,12 @@ async function decideSecurityApproval(approvalId, decision) {
         `/api/security/approvals/${encodeURIComponent(approvalId)}/${decision}`,
         {
             method: "POST",
-            headers: governanceAuthHeaders(),
+            headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ comment }),
         }
     );
     if (!response.ok) {
         const data = await response.json().catch(() => ({}));
-        if (response.status === 401) {
-            window.sessionStorage.removeItem("governanceAdminApiKey");
-        }
         throw new Error(data.detail || `HTTP ${response.status}`);
     }
     await loadSecurityApprovals();
@@ -518,12 +509,22 @@ function renderSecurityStatus() {
 
 function populateUserSelects() {
     const sel = document.getElementById("securityUserSelect");
-    if (!sel) return;
+    if (!sel) return "";
 
-    sel.innerHTML = '<option value="">-- Select demo user --</option>';
+    const requestedUserId = String(
+        document.getElementById("userId")?.value
+        || document.getElementById("demoUserRole")?.value
+        || "admin"
+    ).trim();
+    sel.innerHTML = "";
     secUsers.forEach((u) => {
         sel.innerHTML += `<option value="${u.user_id}">${u.icon} ${u.display_name}</option>`;
     });
+    const selectedUser = secUsers.find((user) => user.user_id === requestedUserId)
+        || secUsers[0];
+    if (!selectedUser) return "";
+    sel.value = selectedUser.user_id;
+    return selectedUser.user_id;
 }
 
 function renderUserProfile() {
@@ -625,12 +626,16 @@ function renderPolicies() {
 
 function renderLastDeniedEvent() {
     const el = document.getElementById("securityLastDenied");
+    const card = document.getElementById("securityLastDeniedCard");
     if (!el) return;
 
     if (!secLastDeniedEvents.length) {
-        el.innerHTML = '<div class="sec-empty">No permission-denied events yet.</div>';
+        if (card) card.hidden = true;
+        el.replaceChildren();
         return;
     }
+
+    if (card) card.hidden = false;
 
     el.innerHTML = secLastDeniedEvents.map((d, idx) => {
         const policy = d.policy_result || {};
@@ -679,7 +684,32 @@ function renderRuleCondition(cond) {
 
 // Event Handlers
 
+function bindSecurityCollapseButton(buttonId, contentId, defaultCollapsed) {
+    const button = document.getElementById(buttonId);
+    const content = document.getElementById(contentId);
+    if (!button || !content) return;
+
+    const update = (collapsed) => {
+        content.hidden = collapsed;
+        button.setAttribute("aria-expanded", String(!collapsed));
+        const label = button.querySelector(".sec-collapse-label");
+        const icon = button.querySelector(".sec-collapse-icon");
+        if (label) label.textContent = collapsed ? "展开" : "收起";
+        if (icon) icon.textContent = collapsed ? "⌄" : "⌃";
+    };
+
+    update(defaultCollapsed);
+    button.addEventListener("click", () => update(!content.hidden));
+}
+
 function initSecurityTab() {
+    bindSecurityCollapseButton("toggleToolAccessBtn", "toolAccessGrid", false);
+    bindSecurityCollapseButton(
+        "toggleAdvancedSecurityBtn",
+        "advancedSecurityContent",
+        true
+    );
+
     const sel = document.getElementById("securityUserSelect");
     if (sel) {
         sel.addEventListener("change", () => {

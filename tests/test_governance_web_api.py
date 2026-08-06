@@ -22,20 +22,16 @@ from src.orchestration.reconciliation import (
 from src.orchestration.governance import record_governance_event
 from src.robust.task_logger import TaskLogger
 from src.security.approval import get_approval_store
-from src.security.cleanup_capabilities import get_cleanup_capability_store
 from src.service.web_app import create_app
 
 
 @pytest.fixture(autouse=True)
 def _configured_governance_identity(monkeypatch):
-    monkeypatch.setattr(web_app, "GOVERNANCE_ADMIN_API_KEY", "test-governance-key")
     monkeypatch.setattr(web_app, "GOVERNANCE_ADMIN_ACTOR_ID", "admin")
 
 
 def _client() -> TestClient:
-    client = TestClient(create_app())
-    client.headers["Authorization"] = "Bearer test-governance-key"
-    return client
+    return TestClient(create_app())
 
 
 def _approval():
@@ -918,55 +914,8 @@ def test_deleting_legacy_conversation_removes_orphan_security_records_only(
     assert get_reconciliation_store().list(task_id="legacy-task") == []
 
 
-def test_deleting_conversation_rejects_unauthenticated_spoofed_admin(
-    tmp_path, monkeypatch
-):
-    monkeypatch.setenv(
-        "RECONCILIATION_STORE_DIR", str(tmp_path / "reconciliations")
-    )
-    client = TestClient(create_app())
-
-    response = client.delete(
-        "/api/conversation-history",
-        params={"workflow_id": "alice:demo", "user_id": "admin"},
-    )
-
-    assert response.status_code == 401
-
-
-def test_task_owner_capability_allows_cleanup_without_governance_admin_key(
-    tmp_path, monkeypatch
-):
-    import src.robust.task_logger as task_logger_module
-
-    checkpoint_root = tmp_path / "checkpoints"
-    monkeypatch.setattr(task_logger_module, "checkpoints_dir", checkpoint_root)
-    monkeypatch.setenv(
-        "CLEANUP_CAPABILITY_STORE_PATH", str(tmp_path / "cleanup-capabilities.json")
-    )
-    monkeypatch.setattr(web_app, "GOVERNANCE_ADMIN_API_KEY", "")
-    task_id = "u1_demo__cleanup"
-    workflow_id = "u1:demo"
-    TaskLogger(task_id, workflow_id, "test").log_workflow_start("test")
-    token = "owner-capability-token-with-at-least-32-chars"
-    get_cleanup_capability_store().bind(
-        token=token,
-        user_id="u1",
-        workflow_id=workflow_id,
-        task_id=task_id,
-    )
-
-    response = TestClient(create_app()).delete(
-        f"/api/tasks/{task_id}",
-        headers={"X-Task-Owner-Token": token},
-    )
-
-    assert response.status_code == 200
-    assert TaskLogger.load(task_id) is None
-
-
 def _production_authorization_fields(
-    client, *, user_id: str, workflow_id: str, owner_token: str
+    client, *, user_id: str, workflow_id: str
 ):
     credential = f"execution-key-{user_id}"
     with patch.object(
@@ -977,7 +926,6 @@ def _production_authorization_fields(
         response = client.post(
             "/api/workflows/execution-authorizations",
             headers={
-                "X-Task-Owner-Token": owner_token,
                 "Authorization": f"Bearer {credential}",
                 "Idempotency-Key": "confirmation-governance-request",
             },
@@ -1000,16 +948,12 @@ def _production_authorization_fields(
     }
 
 
-def test_workflow_run_binds_browser_cleanup_capability(tmp_path, monkeypatch):
+def test_workflow_run_requires_no_browser_cleanup_credential(tmp_path, monkeypatch):
     import src.robust.task_logger as task_logger_module
 
     monkeypatch.setattr(
         task_logger_module, "checkpoints_dir", tmp_path / "checkpoints"
     )
-    monkeypatch.setenv(
-        "CLEANUP_CAPABILITY_STORE_PATH", str(tmp_path / "cleanup-capabilities.json")
-    )
-
     class FakeServer:
         async def _run_agent_workflow(self, _body):
             yield {
@@ -1021,16 +965,14 @@ def test_workflow_run_binds_browser_cleanup_capability(tmp_path, monkeypatch):
     monkeypatch.setattr(
         web_app, "_server_execution_plan_hash", lambda _user, _workflow: "a" * 64
     )
-    token = "owner-capability-token-with-at-least-32-chars"
     client = TestClient(create_app())
     authorization, identity = _production_authorization_fields(
-        client, user_id="u1", workflow_id="u1:wf", owner_token=token
+        client, user_id="u1", workflow_id="u1:wf"
     )
     assert authorization.status_code == 200
 
     response = client.post(
         "/api/workflows/run",
-        headers={"X-Task-Owner-Token": token},
         json={
             "user_id": "u1",
             "lang": "zh",
@@ -1046,120 +988,59 @@ def test_workflow_run_binds_browser_cleanup_capability(tmp_path, monkeypatch):
     )
 
     assert response.status_code == 200
-    capabilities = get_cleanup_capability_store()
-    assert capabilities.authorize_workflow("u1:wf", token)
-    assert capabilities.authorize_task("task-created", token)
 
 
-def test_unbound_historical_workflow_cannot_be_claimed_by_new_client(
-    tmp_path, monkeypatch
-):
-    import src.robust.task_logger as task_logger_module
-
-    checkpoint_root = tmp_path / "checkpoints"
-    monkeypatch.setattr(task_logger_module, "checkpoints_dir", checkpoint_root)
-    monkeypatch.setenv(
-        "CLEANUP_CAPABILITY_STORE_PATH", str(tmp_path / "cleanup-capabilities.json")
-    )
-    TaskLogger("historical-task", "victim:history", "private").log_workflow_start(
-        "private"
-    )
-    calls = {"n": 0}
-
-    class FakeServer:
-        async def _run_agent_workflow(self, _body):
-            calls["n"] += 1
-            yield {"event": "done", "data": {}}
-
-    monkeypatch.setattr(web_app, "Server", FakeServer)
-    monkeypatch.setattr(
-        web_app, "_server_execution_plan_hash", lambda _user, _workflow: "a" * 64
-    )
-    attacker_token = "attacker-capability-token-with-at-least-32-chars"
-    response, _ = _production_authorization_fields(
-        TestClient(create_app()),
-        user_id="victim",
-        workflow_id="victim:history",
-        owner_token=attacker_token,
-    )
-
-    assert response.status_code == 403
-    assert calls["n"] == 0
-    assert not get_cleanup_capability_store().authorize_workflow(
-        "victim:history", attacker_token
-    )
-
-
-def test_unbound_workflow_with_only_governance_records_cannot_be_claimed(
+def test_deleting_user_history_removes_all_orphan_queues_for_that_user_only(
     tmp_path, monkeypatch
 ):
     monkeypatch.setenv(
         "RECONCILIATION_STORE_DIR", str(tmp_path / "reconciliations")
     )
-    monkeypatch.setenv(
-        "CLEANUP_CAPABILITY_STORE_PATH", str(tmp_path / "cleanup-capabilities.json")
-    )
-    workflow_id = "victim:governance-only"
-    get_reconciliation_store().create(
-        user_id="victim",
-        workflow_id=workflow_id,
-        task_id="historical-task",
+    monkeypatch.setenv("APPROVAL_STORE_DIR", str(tmp_path / "approvals"))
+    for workflow_id, task_id in (("u1:first", "task-1"), ("u1:old", "task-old")):
+        get_reconciliation_store().create(
+            user_id="u1",
+            workflow_id=workflow_id,
+            task_id=task_id,
+            step_id="send",
+            resume_step=1,
+            agent_name="RemoteEmailDispatchAgent",
+            error="unknown",
+        )
+        get_approval_store().create(
+            user_id="u1",
+            workflow_id=workflow_id,
+            task_id=task_id,
+            resume_step=1,
+            node_name="RemoteEmailDispatchAgent",
+            subject={"id": "u1"},
+            object={"id": "RemoteEmailDispatchAgent"},
+            scenario={},
+            action={"verb": "dispatch"},
+            policy_result={"decision": "REVIEW_REQUIRED"},
+        )
+    other = get_reconciliation_store().create(
+        user_id="u2",
+        workflow_id="u2:keep",
+        task_id="task-keep",
         step_id="send",
         resume_step=1,
         agent_name="RemoteEmailDispatchAgent",
         error="unknown",
     )
-    monkeypatch.setattr(
-        web_app, "_server_execution_plan_hash", lambda _user, _workflow: "a" * 64
-    )
-    response, _ = _production_authorization_fields(
-        TestClient(create_app()),
-        user_id="victim",
-        workflow_id=workflow_id,
-        owner_token="attacker-capability-token-with-at-least-32-chars",
-    )
-
-    assert response.status_code == 403
-
-
-def test_workflow_owner_capability_cleans_orphan_records_without_admin_key(
-    tmp_path, monkeypatch
-):
-    monkeypatch.setenv(
-        "RECONCILIATION_STORE_DIR", str(tmp_path / "reconciliations")
-    )
-    monkeypatch.setenv(
-        "CLEANUP_CAPABILITY_STORE_PATH", str(tmp_path / "cleanup-capabilities.json")
-    )
-    monkeypatch.setattr(web_app, "GOVERNANCE_ADMIN_API_KEY", "")
-    workflow_id = "u1:legacy"
-    get_reconciliation_store().create(
-        user_id="u1",
-        workflow_id=workflow_id,
-        task_id="legacy-task",
-        step_id="send",
-        resume_step=1,
-        agent_name="RemoteEmailDispatchAgent",
-        error="unknown",
-    )
-    token = "owner-capability-token-with-at-least-32-chars"
-    get_cleanup_capability_store().bind(
-        token=token,
-        user_id="u1",
-        workflow_id=workflow_id,
-    )
-
     response = TestClient(create_app()).delete(
         "/api/conversation-history",
-        params={"workflow_id": workflow_id},
-        headers={"X-Task-Owner-Token": token},
+        params={"user_id": "u1"},
     )
 
     assert response.status_code == 200
-    assert response.json()["deleted"]["reconciliations"] == 1
+    assert response.json()["deleted"] == {"reconciliations": 2, "approvals": 2}
+    assert get_reconciliation_store().list(user_id="u1") == []
+    assert get_approval_store().list(user_id="u1") == []
+    assert get_reconciliation_store().get(other.reconciliation_id) is not None
 
 
-def test_governance_mutations_require_authenticated_server_identity(tmp_path, monkeypatch):
+def test_governance_apis_require_no_client_credential(tmp_path, monkeypatch):
     monkeypatch.setenv("APPROVAL_STORE_DIR", str(tmp_path / "approvals"))
     monkeypatch.setenv(
         "RECONCILIATION_STORE_DIR", str(tmp_path / "reconciliations")
@@ -1168,31 +1049,32 @@ def test_governance_mutations_require_authenticated_server_identity(tmp_path, mo
     reconciliation, _ = _reconciliation(tmp_path, monkeypatch)
     client = TestClient(create_app())
 
-    denied_approval = client.post(
+    approved = client.post(
         f"/api/security/approvals/{approval.approval_id}/approve",
         json={"approver": "admin", "comment": "spoofed admin"},
     )
-    denied_reconciliation = client.post(
+    frozen = client.post(
         (
             "/api/security/reconciliations/"
             f"{reconciliation.reconciliation_id}/freeze"
         ),
         json={"operator": "admin", "comment": "spoofed admin"},
     )
-    unknown_listing = client.get(
+    listing = client.get(
         "/api/security/approvals",
         params={"requester_id": "not-a-demo-user"},
     )
 
-    assert denied_approval.status_code == 401
-    assert denied_reconciliation.status_code == 401
-    assert unknown_listing.status_code == 401
-    assert get_approval_store().get(approval.approval_id).status == "pending"
+    assert approved.status_code == 200
+    assert frozen.status_code == 200
+    assert listing.status_code == 200
+    assert approved.json()["decision"]["approver"] == "admin"
+    assert get_approval_store().get(approval.approval_id).status == "approved"
     assert (
         get_reconciliation_store()
         .get(reconciliation.reconciliation_id)
         .status
-        == "pending"
+        == "frozen"
     )
 
 
@@ -1222,7 +1104,7 @@ def test_governance_mutations_ignore_body_actor_and_record_server_actor(
     assert frozen.json()["resolution"]["operator"] == "admin"
 
 
-def test_task_cleanup_uses_authenticated_reviewer_not_query_identity(tmp_path, monkeypatch):
+def test_task_cleanup_requires_no_client_credential(tmp_path, monkeypatch):
     monkeypatch.setenv(
         "RECONCILIATION_STORE_DIR", str(tmp_path / "reconciliations")
     )
@@ -1235,24 +1117,16 @@ def test_task_cleanup_uses_authenticated_reviewer_not_query_identity(tmp_path, m
         agent_name="RemoteEmailDispatchAgent",
         error="unknown outcome",
     )
-    unauthenticated = TestClient(create_app())
+    client = TestClient(create_app())
 
-    denied = unauthenticated.delete(
+    deleted = client.delete(
         "/api/tasks/task-owned-by-hr",
-        params={"user_id": "admin"},
-    )
-    assert denied.status_code == 401
-    assert get_reconciliation_store().get(record.reconciliation_id) is not None
-
-    deleted = _client().delete(
-        "/api/tasks/task-owned-by-hr",
-        params={"user_id": "engineer"},
     )
     assert deleted.status_code == 200
     assert get_reconciliation_store().get(record.reconciliation_id) is None
 
 
-def test_governance_reads_reject_query_parameter_identity_spoofing(
+def test_governance_reads_require_no_credential_and_ignore_query_identity(
     tmp_path, monkeypatch
 ):
     monkeypatch.setenv("APPROVAL_STORE_DIR", str(tmp_path / "approvals"))
@@ -1269,13 +1143,13 @@ def test_governance_reads_reject_query_parameter_identity_spoofing(
 
     assert client.get(
         "/api/security/approvals", params={"requester_id": "admin"}
-    ).status_code == 401
+    ).status_code == 200
     assert client.get(
         "/api/security/reconciliations", params={"requester_id": "admin"}
-    ).status_code == 401
+    ).status_code == 200
     assert client.get(
         "/api/tasks/task-1/governance", params={"requester_id": "admin"}
-    ).status_code == 401
+    ).status_code == 200
 
 
 def test_reconciliation_receipt_transaction_rolls_back_on_record_write_failure(
@@ -1349,6 +1223,12 @@ def test_demo_static_assets_disable_stale_cache_and_include_resume_fixes():
     assert script.headers["cache-control"] == "no-store"
     assert "const uniqueOutputs = []" in script.text
     assert 'await resumeTask({ inChat: true })' in script.text
+    assert "const findConversationByTaskId" in script.text
+    assert "if (originalConversation) loadConversation(originalConversation);" in script.text
+    assert 'clearOutputPhase("executing");' in script.text
+    assert 'resumeTerminalStatus === "SUCCEEDED"' in script.text
+    assert "captureAssistantConversationContext({ replaceLatest: true });" in script.text
+    assert "replaceLatestAssistantConversationMessage" in script.text
 
 
 def test_governance_queue_items_include_chinese_friendly_task_context(

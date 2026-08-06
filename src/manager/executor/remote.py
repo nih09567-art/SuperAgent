@@ -358,9 +358,25 @@ class RemoteExecutor(AgentExecutor):
                 })
 
         idempotency_key = (context.metadata or {}).get("idempotency_key")
-        authorized_remote_tools = (context.metadata or {}).get(
+        raw_authorized_remote_tools = (context.metadata or {}).get(
             "authorized_remote_tools", []
         )
+        # Only concrete, structured entries may cross the remote boundary.
+        # In particular, discard legacy or caller-supplied wildcard entries.
+        authorized_remote_tools = [
+            item
+            for item in (
+                raw_authorized_remote_tools
+                if isinstance(raw_authorized_remote_tools, list)
+                else []
+            )
+            if isinstance(item, dict)
+            and str(item.get("tool_name") or "").strip()
+            and str(item.get("tool_name") or "").strip() != "*"
+            and isinstance(item.get("arguments"), dict)
+        ]
+        # Missing and empty manifests remain deny-by-default.  Legacy remote
+        # execution must not synthesize an administrator wildcard.
 
         request = {
             "agent_name": agent.agent_name,

@@ -6,22 +6,7 @@ const readinessHint = document.getElementById("readinessHint");
 const tabs = document.querySelectorAll(".tab");
 const panels = document.querySelectorAll(".panel");
 
-const TASK_OWNER_TOKEN_KEY = "superagentTaskOwnerCapability";
-const getTaskOwnerToken = () => {
-  let token = window.localStorage.getItem(TASK_OWNER_TOKEN_KEY) || "";
-  if (!token) {
-    const bytes = new Uint8Array(32);
-    window.crypto.getRandomValues(bytes);
-    token = Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("");
-    window.localStorage.setItem(TASK_OWNER_TOKEN_KEY, token);
-  }
-  return token;
-};
-const getTaskCleanupHeaders = (includeJson = false) => ({
-  ...(includeJson ? { "Content-Type": "application/json" } : {}),
-  "X-Task-Owner-Token": getTaskOwnerToken(),
-});
-window.getTaskCleanupHeaders = getTaskCleanupHeaders;
+const jsonRequestHeaders = { "Content-Type": "application/json" };
 
 const EXECUTION_API_KEY_PREFIX = "superagentExecutionApiKey";
 const getExecutionApiKeyStorageKey = (userId) => (
@@ -42,7 +27,6 @@ const getExecutionAuthorizationHeaders = (userId, confirmationRequestId) => {
     window.sessionStorage.setItem(storageKey, credential);
   }
   return {
-    ...window.getTaskCleanupHeaders(true),
     "Authorization": `Bearer ${credential}`,
     "Idempotency-Key": confirmationRequestId,
   };
@@ -905,11 +889,39 @@ const appendActiveConversationMessage = (role, content, metadata = {}) => {
   saveActiveConversation();
 };
 
-const captureAssistantConversationContext = () => {
-  if (latestFinalResultText) {
-    appendActiveConversationMessage("assistant", latestFinalResultText);
-    return;
+const replaceLatestAssistantConversationMessage = (content, metadata = {}) => {
+  const normalized = String(content || "").trim();
+  if (!normalized) return false;
+  const lastUserIndex = activeConversationTranscript.findLastIndex(
+    (message) => message.role === "user"
+  );
+  let assistantIndex = -1;
+  for (let index = activeConversationTranscript.length - 1; index > lastUserIndex; index -= 1) {
+    if (activeConversationTranscript[index]?.role === "assistant") {
+      assistantIndex = index;
+      break;
+    }
   }
+  if (assistantIndex < 0) return false;
+  const replacement = {
+    role: "assistant",
+    content: normalized.slice(0, CONVERSATION_MESSAGE_CHAR_LIMIT),
+  };
+  if (Array.isArray(metadata.results) && metadata.results.length) {
+    replacement.results = metadata.results.map((result) => ({
+      agentName: String(result.agentName || "assistant"),
+      content: String(result.content || "").slice(0, CONVERSATION_MESSAGE_CHAR_LIMIT),
+    }));
+  }
+  activeConversationTranscript.splice(assistantIndex, 1, replacement);
+  activeConversationMessages = activeConversationTranscript
+    .slice(-ACTIVE_CONVERSATION_LIMIT)
+    .map((message) => ({ role: message.role, content: message.content }));
+  saveActiveConversation();
+  return true;
+};
+
+const captureAssistantConversationContext = ({ replaceLatest = false } = {}) => {
   const structuredResults = executionStepCards
     .map((card) => {
       const content = String(card.content || "").trim();
@@ -944,11 +956,17 @@ const captureAssistantConversationContext = () => {
   }
   const cardResults = structuredResults.map((result) => `[${result.agentName}]\n${result.content}`);
   const fallback = executionOutput ? executionOutput.innerText.trim() : "";
-  appendActiveConversationMessage(
-    "assistant",
-    cardResults.join("\n\n") || fallback,
-    { results: structuredResults }
+  const unavailableFinalResult = latestFinalResultText === "工作流未产生可展示的最终结果。";
+  const content = (
+    (!unavailableFinalResult ? latestFinalResultText : "")
+    || cardResults.join("\n\n")
+    || latestFinalResultText
+    || fallback
+    || (replaceLatest ? "任务已恢复并执行成功。" : "")
   );
+  const metadata = { results: structuredResults };
+  if (replaceLatest && replaceLatestAssistantConversationMessage(content, metadata)) return;
+  appendActiveConversationMessage("assistant", content, metadata);
 };
 
 const getChatHistoryKey = (userId) => `${CHAT_HISTORY_KEY_PREFIX}:${encodeURIComponent(userId)}`;
@@ -1702,12 +1720,6 @@ const clearChatHistory = async () => {
   const conversations = userId ? loadChatHistory(userId) : [];
   if (!userId || !conversations.length) return;
   if (!window.confirm(`确定清空用户 ${userId} 的最近对话吗？`)) return;
-  const workflowIds = [...new Set(conversations.flatMap((conversation) => [
-    conversation.workflowId,
-    ...(Array.isArray(conversation.decisions)
-      ? conversation.decisions.map((decision) => decision.workflowId)
-      : []),
-  ]).map((value) => String(value || "").trim()).filter(Boolean))];
   const taskIds = [...new Set(conversations.flatMap((conversation) => [
     ...(Array.isArray(conversation.taskIds) ? conversation.taskIds : []),
     ...(Array.isArray(conversation.decisions)
@@ -1720,24 +1732,20 @@ const clearChatHistory = async () => {
     await Promise.all(taskIds.map(async (taskId) => {
       const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}`, {
         method: "DELETE",
-        headers: window.getTaskCleanupHeaders(false),
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok && response.status !== 404) {
         throw new Error(data.detail || `清理任务 ${taskId} 失败（HTTP ${response.status}）`);
       }
     }));
-    await Promise.all(workflowIds.map(async (workflowId) => {
-      const query = new URLSearchParams({ workflow_id: workflowId });
-      const response = await fetch(`/api/conversation-history?${query}`, {
-        method: "DELETE",
-        headers: window.getTaskCleanupHeaders(false),
-      });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(data.detail || `清理 ${workflowId} 失败（HTTP ${response.status}）`);
-      }
-    }));
+    const query = new URLSearchParams({ user_id: userId });
+    const response = await fetch(`/api/conversation-history?${query}`, {
+      method: "DELETE",
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(data.detail || `清理用户 ${userId} 的关联记录失败（HTTP ${response.status}）`);
+    }
   } catch (err) {
     window.alert(`对话没有删除：后端关联记录清理失败。${err.message}`);
     return;
@@ -2335,7 +2343,7 @@ const runPlannerUpdate = async (instruction, appendHistory = true, runtime = nul
   try {
     const response = await fetch("/api/workflows/run", {
       method: "POST",
-      headers: window.getTaskCleanupHeaders(true),
+      headers: jsonRequestHeaders,
       body: JSON.stringify(payload),
       signal: plannerOnlyController.signal,
     });
@@ -3139,6 +3147,28 @@ const getDecisionConsoleConversations = () => {
   return conversations.filter((conversation) => conversation.decisions?.length);
 };
 
+const findConversationByTaskId = (userId, taskId, workflowId = "") => {
+  const normalizedTaskId = String(taskId || "").trim();
+  const normalizedWorkflowId = String(workflowId || "").trim();
+  if (!userId || (!normalizedTaskId && !normalizedWorkflowId)) return null;
+  return loadChatHistory(userId).find((conversation) => (
+    (normalizedTaskId && conversation.taskIds.includes(normalizedTaskId))
+    || (normalizedTaskId && conversation.decisions.some(
+      (decision) => decision.taskIds.includes(normalizedTaskId)
+    ))
+    || (normalizedWorkflowId && conversation.workflowId === normalizedWorkflowId)
+  )) || null;
+};
+
+const hideDecisionConsole = () => {
+  if (mainAgentDecisionCard) mainAgentDecisionCard.style.display = "none";
+  if (decisionDetailTabs) decisionDetailTabs.replaceChildren();
+  if (decisionDetailPanel) {
+    decisionDetailPanel.classList.remove("open");
+    decisionDetailPanel.replaceChildren();
+  }
+};
+
 const decisionConversationLabel = (conversation) => {
   const title = String(conversation.title || "未命名对话").trim();
   const time = formatConversationTime(conversation.updatedAt);
@@ -3219,17 +3249,38 @@ const renderDecisionHistoryControls = ({
   if (!decisionConversationSelect || !decisionRoundSelect) return null;
   const conversations = getDecisionConsoleConversations();
   if (!conversations.length) {
+    selectedDecisionConversationId = null;
+    selectedDecisionId = null;
     decisionConversationSelect.innerHTML = '<option value="">暂无历史决策</option>';
     decisionRoundSelect.innerHTML = '<option value="">暂无决策轮次</option>';
     decisionConversationSelect.disabled = true;
     decisionRoundSelect.disabled = true;
     if (decisionHistoryMeta) decisionHistoryMeta.textContent = "每个对话最多保存五轮决策。";
+    hideDecisionConsole();
     return null;
   }
 
   const selectedConversation = conversations.find((item) => item.id === conversationId)
-    || conversations.find((item) => item.id === activeConversationId)
-    || conversations[0];
+    || (activeConversationId
+      ? conversations.find((item) => item.id === activeConversationId)
+      : null);
+  if (!selectedConversation) {
+    decisionConversationSelect.innerHTML = [
+      '<option value="">请选择对话</option>',
+      ...conversations.map((conversation) => (
+        `<option value="${escapeHtml(conversation.id)}">${escapeHtml(decisionConversationLabel(conversation))}</option>`
+      )),
+    ].join("");
+    decisionConversationSelect.value = "";
+    decisionConversationSelect.disabled = false;
+    decisionRoundSelect.innerHTML = '<option value="">请先选择对话</option>';
+    decisionRoundSelect.disabled = true;
+    if (decisionHistoryMeta) decisionHistoryMeta.textContent = "点击左侧对话后显示对应决策。";
+    selectedDecisionConversationId = null;
+    selectedDecisionId = null;
+    hideDecisionConsole();
+    return null;
+  }
   selectedDecisionConversationId = selectedConversation.id;
   decisionConversationSelect.disabled = false;
   decisionConversationSelect.innerHTML = conversations.map((conversation) => (
@@ -4460,7 +4511,7 @@ const runWorkflow = async () => {
   try {
     const response = await fetch("/api/workflows/run", {
       method: "POST",
-      headers: window.getTaskCleanupHeaders(true),
+      headers: jsonRequestHeaders,
       body: JSON.stringify(payload),
       signal: controller.signal,
     });
@@ -4697,7 +4748,7 @@ const runExecution = async () => {
   try {
     const response = await fetch("/api/workflows/run", {
       method: "POST",
-      headers: window.getTaskCleanupHeaders(true),
+      headers: jsonRequestHeaders,
       body: JSON.stringify(payload),
       signal: controller.signal,
     });
@@ -6902,6 +6953,8 @@ const resumeTask = async ({ inChat = false } = {}) => {
 
   if (inChat) {
     switchTab("chat");
+    clearOutputPhase("executing");
+    resetSummary();
     currentRunContext = "executing";
     executionInProgress = true;
     currentRunHasError = false;
@@ -6930,10 +6983,11 @@ const resumeTask = async ({ inChat = false } = {}) => {
   };
 
   resumeAbortController = new AbortController();
+  let resumeTerminalStatus = "";
   try {
     const response = await fetch("/api/tasks/resume", {
       method: "POST",
-      headers: window.getTaskCleanupHeaders(true),
+      headers: jsonRequestHeaders,
       body: JSON.stringify(payload),
       signal: resumeAbortController.signal,
     });
@@ -6951,6 +7005,9 @@ const resumeTask = async ({ inChat = false } = {}) => {
 
     const handleResumeEvent = (eventName, payload) => {
       if (inChat) {
+        if (eventName === "end_of_workflow") {
+          resumeTerminalStatus = String(payload.data?.status || "").toUpperCase();
+        }
         handleEvent(eventName, payload);
         return;
       }
@@ -7005,12 +7062,19 @@ const resumeTask = async ({ inChat = false } = {}) => {
     }
   } finally {
     if (inChat) {
+      if (resumeTerminalStatus === "SUCCEEDED" && !currentRunHasError) {
+        captureAssistantConversationContext({ replaceLatest: true });
+        if (currentChatLifecycle) {
+          currentChatLifecycle.confirmPlanButton.textContent = "已执行";
+          currentChatLifecycle.confirmPlanButton.disabled = true;
+          currentChatLifecycle.modifyPlanButton.disabled = true;
+        }
+      }
       currentRunContext = null;
       executionInProgress = false;
       runBtn.disabled = false;
       userIdInput.disabled = false;
       if (newConversationBtn) newConversationBtn.disabled = false;
-      if (!currentRunHasError) captureAssistantConversationContext();
       scrollChatToLatest();
     }
     resumeBtn.disabled = false;
@@ -7031,8 +7095,7 @@ const loadTaskGovernance = async (taskId) => {
   governanceTimeline.textContent = "Loading...";
   try {
     const response = await fetch(
-      `/api/tasks/${encodeURIComponent(taskId)}/governance`,
-      { headers: window.getGovernanceAuthHeaders(false) }
+      `/api/tasks/${encodeURIComponent(taskId)}/governance`
     );
     if (!response.ok) throw new Error("request failed");
     const events = await response.json();
@@ -7080,11 +7143,21 @@ window.resumeApprovedTask = async ({
   resume_step,
   user_id,
 }) => {
+  const resumeUserId = String(user_id || userIdInput.value || "test").trim() || "test";
+  if (userIdInput.value.trim() !== resumeUserId) {
+    userIdInput.value = resumeUserId;
+  }
+  const originalConversation = findConversationByTaskId(
+    resumeUserId,
+    task_id,
+    workflow_id
+  );
+  if (originalConversation) loadConversation(originalConversation);
   selectedTaskId = task_id;
   resumeTaskIdInput.value = task_id || "";
   resumeWorkflowIdInput.value = workflow_id || "";
   resumeStepInput.value = Number(resume_step) || 1;
-  resumeUserIdInput.value = user_id || "test";
+  resumeUserIdInput.value = resumeUserId;
   await resumeTask({ inChat: true });
   if (window.SecurityModule?.loadSecurityApprovals) {
     window.SecurityModule.loadSecurityApprovals();
@@ -7097,7 +7170,6 @@ const deleteTaskById = async (taskId) => {
   try {
     const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}`, {
       method: "DELETE",
-      headers: window.getTaskCleanupHeaders(false),
     });
     if (!res.ok) {
       const err = await res.json();

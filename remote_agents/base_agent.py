@@ -127,6 +127,8 @@ def _canonical_authorized_arguments(
     """Build the outbound arguments from the validated trusted boundary."""
 
     outbound = dict(actual)
+    # Capability markers are never accepted from a model or remote caller.
+    outbound.pop("__trusted_administrator", None)
     if tool_name == "remote_email_tool":
         found, addresses = _find_argument(
             expected, _SECURITY_ARGUMENT_ALIASES["resolved_recipient_addresses"]
@@ -154,7 +156,7 @@ def bind_authorized_remote_tools(context: Dict[str, Any]) -> Token:
                 continue
             tool_name = str(item.get("tool_name") or "").strip()
             arguments = item.get("arguments")
-            if tool_name and isinstance(arguments, dict):
+            if tool_name and tool_name != "*" and isinstance(arguments, dict):
                 manifest.append((tool_name, dict(arguments)))
     # Missing, malformed and explicitly empty manifests all bind to an empty
     # tuple. call_tool therefore fails closed instead of treating None as an
