@@ -34,6 +34,14 @@ class Subject:
         return int(self.attributes.get("clearance_level", 0) or 0)
 
 
+def is_governance_administrator(subject: Subject) -> bool:
+    """Identify a governance administrator from trusted attributes only."""
+
+    grants = {str(item).lower() for item in subject.get_grants()}
+    job_roles = {str(item).lower() for item in subject.get_job_roles()}
+    return "all" in grants or "system_orchestrator" in job_roles
+
+
 @dataclass
 class Object:
     object_type: str
@@ -378,30 +386,19 @@ class PolicyEngine:
         ordinary authorization rules.
         """
 
-        grants = {str(item).lower() for item in subject.get_grants()}
-        job_roles = {str(item).lower() for item in subject.get_job_roles()}
-        return "all" in grants or "system_orchestrator" in job_roles
+        return is_governance_administrator(subject)
 
     @staticmethod
     def _bypasses_environment_constraints(subject: Subject) -> bool:
-        """Allow the system administrator to operate the demo at any time.
+        """Compatibility hook; environment constraints apply to every subject."""
 
-        The bypass is deliberately narrow: ordinary communication and HR
-        roles are still subject to working-hour and network-zone controls.
-        """
-
-        return PolicyEngine._is_governance_administrator(subject)
+        return False
 
     @staticmethod
     def _bypasses_mandatory_review(subject: Subject) -> bool:
-        """Governance administrators may run the local demo without pausing.
+        """Compatibility hook; mandatory review applies to every subject."""
 
-        This bypass is deliberately limited to mandatory human review. It does
-        not turn a policy DENY, scenario mismatch or unsupported operation mode
-        into an ALLOW.
-        """
-
-        return PolicyEngine._is_governance_administrator(subject)
+        return False
 
     def _apply_resource_environment_constraints(
         self,
@@ -410,8 +407,6 @@ class PolicyEngine:
         object: Object,
         scenario: Scenario,
     ) -> None:
-        if self._bypasses_environment_constraints(subject):
-            return
         if (
             object.attributes.get("require_working_hours")
             and not scenario.is_working_hours()

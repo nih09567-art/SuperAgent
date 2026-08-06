@@ -6,7 +6,7 @@
   "notes": [
     "先使用 start-superagent-governance.ps1 启动治理模式。",
     "ALLOW 表示可直接执行；REVIEW_REQUIRED 表示必须由治理审核人批准；DENY 表示禁止。",
-    "admin/system_orchestrator 为本地演示治理管理员，可跳过强制审批，但不能绕过策略拒绝或场景不匹配。",
+    "可信 grants=all/system_orchestrator 属性在底层统一授权全部已注册 Agent 和工具，不依赖用户名；普通用户仍执行完整权限规则。",
     "本评测集不包含任何模型不可用降级。"
   ],
   "cases": [

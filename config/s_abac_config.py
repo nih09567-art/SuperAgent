@@ -290,6 +290,7 @@ RESOURCE_SECURITY_ATTRIBUTES = {
         "allowed_operation_modes": ["delegate", "generate"],
         "scenario_tags": ["document_generation", "employee_proof", "notification_document"],
         "expected_capabilities": ["Document"],
+        "external_side_effect": True,
     },
     "RemoteEmailDispatchAgent": {
         "type": "agent",

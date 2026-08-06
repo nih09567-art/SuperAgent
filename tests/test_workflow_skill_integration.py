@@ -1,6 +1,7 @@
 import asyncio
 from types import SimpleNamespace
 
+import pytest
 from fastapi.testclient import TestClient
 
 from src.manager.executor.base import ExecuteResult, ExecutionStatus
@@ -13,6 +14,7 @@ from src.skills.workflow_skill import (
     set_workflow_skill_manager,
 )
 from src.workflow.graph import CompiledWorkflow
+from src.workflow.coor_task import _collect_planner_stream
 
 
 def _manager(tmp_path, **overrides):
@@ -663,7 +665,7 @@ def test_non_success_agent_status_is_not_distilled(tmp_path, monkeypatch):
     assert "skill_distilled" not in [event["event"] for event in events]
     assert manager.store.list("alice", include_shared=False) == []
     end_event = next(event for event in events if event["event"] == "end_of_workflow")
-    assert end_event["data"]["status"] == "failed"
+    assert end_event["data"]["status"] == "FAILED"
     assert end_event["data"]["messages"][0]["content"] == "workflow failed"
 
 
@@ -978,3 +980,232 @@ def test_data_flow_validation_infers_exact_upstream_bindings(monkeypatch):
             "source_output": "employee.name",
         },
     ]
+
+
+def test_data_flow_validation_materializes_report_fan_in(monkeypatch):
+    import src.workflow.coor_task as coor_task
+
+    class Registry:
+        async def list(self):
+            return [
+                SimpleNamespace(
+                    user_id="share",
+                    agent_name="RemoteBusinessRiskAgent",
+                    requires=[],
+                    produces=["risk.records"],
+                ),
+                SimpleNamespace(
+                    user_id="share",
+                    agent_name="RemoteReportAgent",
+                    requires=["report.sources"],
+                    produces=["report.markdown"],
+                ),
+            ]
+
+    monkeypatch.setattr(
+        coor_task,
+        "agent_manager",
+        SimpleNamespace(agent_registry=Registry()),
+    )
+    steps = [
+        {"step_id": "risk", "agent_name": "RemoteBusinessRiskAgent"},
+        {
+            "step_id": "report",
+            "agent_name": "RemoteReportAgent",
+            "depends_on": ["risk"],
+        },
+    ]
+
+    is_valid, errors = asyncio.run(
+        coor_task._validate_plan_data_flow(steps, "admin")
+    )
+
+    assert is_valid is True
+    assert errors == []
+    assert steps[1]["inputs"] == [
+        {
+            "parameter_name": "report.sources",
+            "source_artifacts": [
+                {"source_step": "risk", "source_output": "risk.records"}
+            ],
+            "assembly": {"schema_ref": "report.sources@v1"},
+        }
+    ]
+
+
+def test_data_flow_validation_canonicalizes_unique_output_alias(monkeypatch):
+    import src.workflow.coor_task as coor_task
+
+    class Registry:
+        async def list(self):
+            return [
+                SimpleNamespace(
+                    user_id="share",
+                    agent_name="RemoteBusinessRiskAgent",
+                    requires=[],
+                    produces=["risk.records"],
+                ),
+                SimpleNamespace(
+                    user_id="share",
+                    agent_name="RemoteReportAgent",
+                    requires=["report.sources"],
+                    produces=["report.markdown"],
+                ),
+            ]
+
+    monkeypatch.setattr(
+        coor_task,
+        "agent_manager",
+        SimpleNamespace(agent_registry=Registry()),
+    )
+    alias = {
+        "source_step": "risk",
+        "source_output": "risk_analysis_data",
+    }
+    steps = [
+        {"step_id": "risk", "agent_name": "RemoteBusinessRiskAgent"},
+        {
+            "step_id": "report",
+            "agent_name": "RemoteReportAgent",
+            "depends_on": ["risk"],
+            "inputs": [
+                {
+                    "parameter_name": "report.sources",
+                    "source_artifacts": [alias],
+                }
+            ],
+        },
+    ]
+
+    is_valid, errors = asyncio.run(
+        coor_task._validate_plan_data_flow(steps, "admin")
+    )
+
+    assert is_valid is True
+    assert errors == []
+    assert alias["source_output"] == "risk.records"
+
+
+def test_data_flow_validation_selects_intent_specific_fan_in_outputs(monkeypatch):
+    import src.workflow.coor_task as coor_task
+
+    class Registry:
+        async def list(self):
+            return [
+                SimpleNamespace(
+                    user_id="share",
+                    agent_name="RemoteHRAssistantAgent",
+                    requires=[],
+                    produces=["employee.info", "employee.salary", "employee.id"],
+                ),
+                SimpleNamespace(
+                    user_id="share",
+                    agent_name="RemoteOfficeAssistantAgent",
+                    requires=[],
+                    produces=[
+                        "application.record_id",
+                        "employee.leave_records",
+                        "employee.travel_records",
+                    ],
+                ),
+                SimpleNamespace(
+                    user_id="share",
+                    agent_name="RemoteReportAgent",
+                    requires=["report.sources"],
+                    produces=["report.markdown"],
+                ),
+            ]
+
+    monkeypatch.setattr(
+        coor_task,
+        "agent_manager",
+        SimpleNamespace(agent_registry=Registry()),
+    )
+    steps = [
+        {
+            "step_id": "hr",
+            "agent_name": "RemoteHRAssistantAgent",
+            "intents": ["employee_information_query"],
+        },
+        {
+            "step_id": "leave",
+            "agent_name": "RemoteOfficeAssistantAgent",
+            "intents": ["leave_record_query"],
+        },
+        {
+            "step_id": "report",
+            "agent_name": "RemoteReportAgent",
+            "depends_on": ["hr", "leave"],
+        },
+    ]
+
+    is_valid, errors = asyncio.run(
+        coor_task._validate_plan_data_flow(steps, "admin")
+    )
+
+    assert is_valid is True
+    assert errors == []
+    assert steps[2]["inputs"][0]["source_artifacts"] == [
+        {"source_step": "hr", "source_output": "employee.info"},
+        {"source_step": "leave", "source_output": "employee.leave_records"},
+    ]
+
+
+def test_planner_stream_retries_one_transient_disconnect():
+    class FlakyPlanner:
+        calls = 0
+
+        def astream(self, _messages):
+            self.calls += 1
+
+            async def _chunks():
+                if self.calls == 1:
+                    raise RuntimeError(
+                        "peer closed connection without sending complete message body "
+                        "(incomplete chunked read)"
+                    )
+                yield SimpleNamespace(content='{"steps": []}')
+
+            return _chunks()
+
+    events = []
+
+    async def handle_event(event):
+        events.append(event)
+
+    async def collect():
+        planner = FlakyPlanner()
+        result = await _collect_planner_stream(
+            planner, [], handle_event, max_attempts=2
+        )
+        return planner, result
+
+    planner, (content, chunks) = asyncio.run(collect())
+
+    assert planner.calls == 2
+    assert content == '{"steps": []}'
+    assert chunks == 1
+    assert [event["event"] for event in events] == ["planner_retry", "planner_delta"]
+
+
+def test_planner_stream_does_not_retry_non_transport_error():
+    class BrokenPlanner:
+        calls = 0
+
+        def astream(self, _messages):
+            self.calls += 1
+
+            async def _chunks():
+                raise ValueError("invalid planner configuration")
+                yield  # pragma: no cover
+
+            return _chunks()
+
+    planner = BrokenPlanner()
+
+    async def collect():
+        await _collect_planner_stream(planner, [], None, max_attempts=2)
+
+    with pytest.raises(ValueError, match="invalid planner configuration"):
+        asyncio.run(collect())
+    assert planner.calls == 1

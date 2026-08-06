@@ -3477,6 +3477,76 @@ button.small {
   font-size: 13px;
 }
 
+.sec-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.sec-section-header h3 {
+  margin: 0;
+}
+
+button.sec-collapse-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 11px;
+  border-radius: 10px;
+  font-size: 12px;
+}
+
+.sec-collapse-icon {
+  width: 14px;
+  text-align: center;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.sec-advanced-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 18px;
+  font-weight: 700;
+  text-align: left;
+  cursor: pointer;
+}
+
+.sec-advanced-toggle-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.sec-advanced-content {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(20, 24, 40, 0.08);
+}
+
+.sec-advanced-content h4 {
+  margin: 0 0 10px;
+}
+
+.sec-tool-grid[hidden],
+.sec-advanced-content[hidden],
+#securityLastDeniedCard[hidden] {
+  display: none;
+}
+
 .sec-tool-grid {
   display: flex;
   flex-direction: column;

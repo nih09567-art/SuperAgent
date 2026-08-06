@@ -48,6 +48,33 @@ def test_catalog_registers_and_validates_business_schemas() -> None:
     assert registry.has("policy.info@v2")
     assert registry.has("report.sources@v1")
     assert registry.has("report.markdown@v1")
+    assert registry.has("document.content@v1")
+
+
+def test_document_content_accepts_a_validated_markdown_source() -> None:
+    registry = register_agent_schemas(SchemaRegistry())
+
+    valid, errors = registry.validate(
+        {
+            "title": "公司年假制度说明文档",
+            "instruction": "将 Markdown 摘要转换为正式 Word 说明文档",
+            "sources": [
+                {
+                    "logical_name": "report.markdown",
+                    "schema_ref": "report.markdown@v1",
+                    "payload": {
+                        "title": "年假制度摘要",
+                        "markdown": "# 年假制度",
+                        "source_count": 1,
+                    },
+                }
+            ],
+        },
+        "document.content@v1",
+    )
+
+    assert valid is True
+    assert errors == []
 
 
 def test_policy_scope_enum_fails_closed() -> None:
@@ -591,3 +618,24 @@ def test_report_source_items_require_logical_name_schema_and_payload() -> None:
     assert not valid
     assert any("schema_ref" in error for error in errors)
     assert any("payload" in error for error in errors)
+
+
+def test_report_sources_accept_schema_valid_markdown_payload() -> None:
+    registry = register_agent_schemas(SchemaRegistry())
+
+    valid, errors = registry.validate(
+        {
+            "sources": [
+                {
+                    "logical_name": "research.markdown",
+                    "schema_ref": "markdown_text_result@v1",
+                    "payload": "# 李娜公开信息\n\n已核验来源摘要。",
+                }
+            ],
+            "instruction": "整理为简短报告",
+            "title": "李娜公开信息报告",
+        },
+        "report.sources@v1",
+    )
+
+    assert valid, errors

@@ -47,17 +47,31 @@ def _upstream_report(messages: List[Dict[str, Any]]) -> str:
 
 
 def _resolved_upstream_content(brief: Dict[str, Any]) -> str:
-    resolved = brief.get("resolved_inputs") or {}
-    if not isinstance(resolved, dict):
-        return ""
-    for value in resolved.values():
+    def extract(value: Any) -> str:
         if isinstance(value, dict):
             for key in ("markdown", "answer", "content", "message"):
                 candidate = value.get(key)
                 if candidate not in (None, ""):
                     return str(candidate)
+            sources = value.get("sources")
+            if isinstance(sources, list):
+                for source in sources:
+                    if not isinstance(source, dict):
+                        continue
+                    candidate = extract(source.get("payload"))
+                    if candidate:
+                        return candidate
         elif value not in (None, ""):
             return str(value)
+        return ""
+
+    resolved = brief.get("resolved_inputs") or {}
+    if not isinstance(resolved, dict):
+        return ""
+    for value in resolved.values():
+        candidate = extract(value)
+        if candidate:
+            return candidate
     return ""
 
 

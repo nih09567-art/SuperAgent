@@ -213,7 +213,7 @@ def build_dag_recovery_plan(
         classification = classify_failure(
             getattr(result, "error", None),
             getattr(result, "metrics", None),
-            read_only=bool(step and step.is_read_only),
+            read_only=bool(step and not step.requires_external_receipt),
         )
         classifications[sid] = {
             "category": classification.category.value,
@@ -232,7 +232,7 @@ def build_dag_recovery_plan(
         if (
             sid not in completed_steps
             or step is None
-            or step.is_read_only
+            or not step.requires_external_receipt
         ):
             continue
         contract = getattr(step, "compensation_action", None)

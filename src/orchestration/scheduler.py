@@ -52,6 +52,8 @@ from src.orchestration.failure_mapper import (
     failure_from_exception,
     failure_from_step_result,
     make_failure,
+    public_execution_reason,
+    public_policy_reason,
 )
 from src.orchestration.schema_registry import get_schema_registry
 from src.orchestration.store import ArtifactNotFoundError, ArtifactStore
@@ -131,6 +133,12 @@ def _external_operation_id(exec_result: Any, artifact: Any) -> Optional[str]:
         ("message", "id"),
         ("event", "id"),
         ("meeting", "id"),
+        # RemoteMeetingManagerAgent wraps the provider response in
+        # ``meeting_info`` (or ``result`` when multiple tools are exposed).
+        # These paths still terminate at the meeting provider's own id, so an
+        # unrelated nested object id cannot accidentally confirm the receipt.
+        ("meeting_info", "meeting", "id"),
+        ("result", "meeting", "id"),
         ("submission", "id"),
         ("resource", "id"),
         ("business_outcome", "external_op_id"),
@@ -656,7 +664,7 @@ class TaskScheduler:
             except Exception as exc:  # noqa: BLE001 - critical write failed
                 metrics = dict(result.metrics or {})
                 metrics["persistence_failed"] = True
-                if result.is_success and not step.is_read_only:
+                if result.is_success and step.requires_external_receipt:
                     metrics["needs_reconciliation"] = True
                 result = StepResult(
                     step_id=step.step_id,
@@ -935,6 +943,7 @@ class TaskScheduler:
                             "AGENT_EXECUTION_FAILED",
                             step_id=step.step_id,
                             agent_id=selected_agent,
+                            message=public_execution_reason(error),
                             retryable=retryable,
                             details_safe={
                                 "reason_code": classification.reason_code,
@@ -1381,7 +1390,7 @@ class TaskScheduler:
         # can never both execute the same side effect.
         idem_key: Optional[str] = None
         claim_id: Optional[str] = None
-        if self.receipt_store is not None and not step.is_read_only:
+        if self.receipt_store is not None and step.requires_external_receipt:
             idem_key = idempotency_key(step_ctx.get(
                 "task_id", ""), step.step_id, inputs)
             # Surface the key everywhere a downstream provider/tool can dedupe:
@@ -1845,6 +1854,7 @@ class TaskScheduler:
             return None
 
         decision = str(policy_result.get("decision") or "DENY").upper()
+        public_reason = public_policy_reason(payload)
         metrics: Dict[str, Any] = {
             "selected_agent": selected_agent,
             "governance_decision": decision,
@@ -1857,7 +1867,8 @@ class TaskScheduler:
                     "approval_signature": payload.get("approval_signature"),
                 }
             )
-            error = policy_result.get("reason") or "human approval required"
+            error = public_reason
+            action = "请在安全页审批该操作；审批通过后，从原失败步骤继续任务。"
         else:
             metrics.update(
                 {
@@ -1865,12 +1876,22 @@ class TaskScheduler:
                     "permission_payload": payload,
                 }
             )
-            error = policy_result.get("reason") or "permission denied"
+            error = public_reason
+            action = "请管理员补充对应角色、授权项或资源权限后，再从该步骤重试。"
+        failure = make_failure(
+            "AGENT_DISPATCH_DENIED",
+            step_id=step.step_id,
+            agent_id=selected_agent,
+            message=public_reason,
+            action=action,
+            retryable=False,
+        )
         return StepResult(
             step_id=step.step_id,
             status=StepStatus.FAILED,
             error=str(error),
             metrics=metrics,
+            failure=failure,
         )
 
     def _needs_reconciliation(

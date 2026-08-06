@@ -280,7 +280,7 @@ def test_explicit_allow_policy_cannot_bypass_resource_mandatory_review():
     assert result["human_review_required"] is True
 
 
-def test_governance_admin_bypasses_review_but_not_policy_evaluation():
+def test_governance_admin_still_requires_mandatory_review():
     engine = PolicyEngine()
     subject = SecurityContextBuilder.subject_for_user("admin")
     object_ = SecurityContextBuilder.object_for_tool("remote_salary_info_tool")
@@ -300,8 +300,39 @@ def test_governance_admin_bypasses_review_but_not_policy_evaluation():
 
     result = engine.evaluate(subject, object_, scenario, action)
 
-    assert result["allowed"] is True
-    assert result["decision"] == "ALLOW"
+    assert result["allowed"] is False
+    assert result["decision"] == "REVIEW_REQUIRED"
+    assert result["human_review_required"] is True
+
+
+def test_governance_admin_cannot_bypass_resource_and_operation_rules():
+    engine = PolicyEngine()
+    subject = Subject(
+        subject_type="user",
+        id="trusted-operator",
+        attributes={"job_role": "system_orchestrator", "grants": ["all"]},
+    )
+    result = engine.evaluate(
+        subject,
+        Object(
+            object_type="tool",
+            id="unregistered_or_restricted_tool",
+            attributes={
+                "allowed_roles": ["NoSuchRole"],
+                "allowed_operation_modes": ["read"],
+                "requires_approval": True,
+            },
+        ),
+        Scenario(
+            task_scenario={"operation_mode": "delete"},
+            environment={"time": "off_hours", "network_zone": "external"},
+        ),
+        Action("delete", {"operation_mode": "delete", "irreversible": True}),
+    )
+
+    assert result["allowed"] is False
+    assert result["decision"] == "REVIEW_REQUIRED"
+    assert result["human_review_required"] is True
 
 
 def test_explicit_communication_policy_preserves_email_review_requirement():

@@ -123,6 +123,24 @@ def test_risk_report_and_send_plan_matches_profile() -> None:
     ) == []
 
 
+def test_business_risk_registry_exposes_report_input() -> None:
+    root = Path(__file__).resolve().parents[1]
+    registry = json.loads(
+        (root / "mock_remote_registry.json").read_text(encoding="utf-8-sig")
+    )
+    risk = next(
+        item
+        for item in registry["resources"]
+        if item.get("type") == "agent"
+        and item.get("name") == "RemoteBusinessRiskAgent"
+    )
+
+    assert risk["metadata"]["produces"] == ["risk.records"]
+    assert risk["metadata"]["output_schema_refs"]["risk.records"] == (
+        "structured_agent_result@v1"
+    )
+
+
 def test_public_information_research_and_report_plan_matches_profile() -> None:
     profile = {
         "subtasks": [

@@ -59,6 +59,41 @@ def _normalize_task_graph(task_graph: Any) -> Any:
     return task_graph
 
 
+def _execution_graph_view(task_graph: Any) -> Any:
+    """Return the security-relevant graph representation used for rebuild checks.
+
+    ``operation_mode_source`` and ``operation_mode_reason`` are diagnostic
+    provenance only; neither field is consumed by the scheduler.  Their text
+    may legitimately change when the same operation mode is derived from a
+    newer trusted TaskProfile instead of the Agent configuration.  Comparing
+    them made otherwise identical approved graphs fail before execution.
+
+    The actual ``operation_mode`` and every executable/security-relevant field
+    remain in this view and therefore continue to fail closed on drift.
+    """
+
+    normalized = _normalize_task_graph(task_graph)
+    if not isinstance(normalized, dict):
+        return normalized
+    comparable = dict(normalized)
+    steps = comparable.get("steps")
+    if not isinstance(steps, list):
+        return comparable
+    comparable["steps"] = []
+    for step in steps:
+        if not isinstance(step, dict):
+            comparable["steps"].append(step)
+            continue
+        comparable["steps"].append(
+            {
+                key: value
+                for key, value in step.items()
+                if key not in {"operation_mode_source", "operation_mode_reason"}
+            }
+        )
+    return comparable
+
+
 def plan_hash(planning_steps: List[Dict[str, Any]]) -> str:
     """Stable hash over the planning steps (order-sensitive, key-canonical).
 
@@ -207,16 +242,16 @@ def verify_snapshot_for_execution(
        never from the snapshot itself, so a snapshot stripped of its Contract
        fields (or taken before an Agent adopted a Contract) cannot demote that
        Agent to the schema-free legacy path;
-    5. the full graph rebuilt from trusted request identity, goal, current
+    5. the execution-relevant graph rebuilt from trusted request identity, goal, current
        planning steps, trusted TaskProfile subtasks, and current Agent Contracts
-       must be byte-identical
-       (after normalization) to the stored graph -- any drift in the spec,
-       operation modes, preferred resources, dependencies, Contract, or output
-       bindings is rejected.
+       must be byte-identical (after normalization) to the stored graph. Any
+       drift in the spec, operation modes, preferred resources, dependencies,
+       Contract, or output bindings is rejected. Diagnostic-only operation-mode
+       provenance text is excluded because it cannot affect execution.
 
     On success the stored (approved) task graph dict is returned for injection.
-    On ANY mismatch ``None`` is returned so the caller refuses execution and
-    never falls back to a legacy path.
+    Any executable-field mismatch fails closed for every caller and requires a
+    new plan plus explicit approval.
     """
     if not isinstance(snapshot, dict):
         return None, "no_snapshot"
@@ -287,8 +322,8 @@ def verify_snapshot_for_execution(
     except Exception as exc:  # noqa: BLE001 - cannot rebuild -> refuse
         return None, f"rebuild failed (replan required): {exc}"
 
-    if _canonical(_normalize_task_graph(rebuilt)) != _canonical(
-        _normalize_task_graph(snap_graph)
+    if _canonical(_execution_graph_view(rebuilt)) != _canonical(
+        _execution_graph_view(snap_graph)
     ):
         return None, "task_graph mismatch vs current plan (replan required)"
     return snap_graph, "ok"
