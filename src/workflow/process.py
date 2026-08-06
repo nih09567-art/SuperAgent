@@ -81,24 +81,6 @@ def _normalize_planning_steps(raw: Any) -> list:
     return []
 
 
-def _allows_trusted_plan_refresh(user_id: Any) -> bool:
-    """Return whether trusted S-ABAC attributes permit plan replacement.
-
-    This deliberately does not special-case the literal username ``admin``.
-    The authority follows the same ``all`` / ``system_orchestrator`` attributes
-    used by the permission engine.
-    """
-
-    try:
-        from src.security.context import SecurityContextBuilder
-        from src.security.policy import is_governance_administrator
-
-        subject = SecurityContextBuilder.subject_for_user(str(user_id or ""))
-    except Exception:
-        return False
-    return is_governance_administrator(subject)
-
-
 def _resume_step_evidence(raw: Any, resume_step: int | None) -> dict[str, Any]:
     """Keep only durable legacy evidence produced before the resume frontier."""
 
@@ -286,19 +268,8 @@ def load_production_task_graph(
     snapshot = load_plan_snapshot(workflow_id)
     if not snapshot:
         return False, "no_snapshot"
-    allow_trusted_plan_refresh = _allows_trusted_plan_refresh(
-        state.get("user_id")
-    )
     current_steps = _normalize_planning_steps(
         cache.get_planning_steps(workflow_id))
-    if not current_steps and allow_trusted_plan_refresh:
-        # A freshly restarted Web worker may not have repopulated the workflow
-        # cache yet. The durable, integrity-checked snapshot is a safe fallback
-        # for the trusted administrator; never reinterpret an empty cache as an
-        # intentional request to replace a real plan with an empty graph.
-        current_steps = _normalize_planning_steps(
-            snapshot.get("planning_steps")
-        )
     if not current_steps:
         reason = "current planning steps unavailable (replan required)"
         state["task_graph_rejection_reason"] = reason
@@ -321,7 +292,6 @@ def load_production_task_graph(
         ),
         current_agent_produces=current_agent_produces,
         subtasks=(state.get("task_profile") or {}).get("subtasks"),
-        allow_trusted_plan_update=allow_trusted_plan_refresh,
     )
     if task_graph is None:
         logger.warning("plan snapshot rejected for %s: %s",
@@ -330,27 +300,6 @@ def load_production_task_graph(
         return False, reason
     state.pop("task_graph_rejection_reason", None)
     state["task_graph"] = task_graph
-    if reason == "trusted_administrator_current_plan":
-        # The trusted administrator explicitly owns the current plan. Refresh
-        # the durable approval artifact so subsequent runs compare against the
-        # same graph. Snapshot persistence is audit support here and must not
-        # turn a valid trusted-admin execution back into a false rejection.
-        try:
-            from src.orchestration.plan_snapshot import save_plan_snapshot
-
-            save_plan_snapshot(
-                workflow_id=workflow_id,
-                user_id=state.get("user_id"),
-                planning_steps=current_steps,
-                task_graph=task_graph,
-            )
-            state["task_graph_refresh_reason"] = reason
-        except Exception as exc:  # noqa: BLE001 - execution remains authorized
-            logger.warning(
-                "trusted administrator graph refresh could not be persisted for %s: %s",
-                workflow_id,
-                exc,
-            )
     return True, "loaded"
 
 
@@ -747,6 +696,15 @@ async def run_agent_workflow(
                 reason = "Workflow preparation failed"
             logger.warning(
                 "S-ABAC workflow preparation blocked execution: %s", exc)
+            if task_id:
+                task_logger_loader = getattr(TaskLogger, "load", None)
+                reserved_task = (
+                    task_logger_loader(task_id)
+                    if callable(task_logger_loader)
+                    else None
+                )
+                if reserved_task is not None:
+                    reserved_task.log_workflow_terminal("FAILED", error=error_text)
             yield {
                 "event": "workflow_error",
                 "data": {
@@ -995,9 +953,20 @@ async def _process_workflow(
                 task_id=task_id, workflow_id=workflow_id, user_query=user_query)
             task_logger.set_execution_phase(execution_phase)  # 设置执行阶段
     else:
-        task_logger = TaskLogger(
-            task_id=task_id, workflow_id=workflow_id, user_query=user_query)
-        task_logger.set_execution_phase(execution_phase)  # 设置执行阶段
+        task_logger_loader = getattr(TaskLogger, "load", None)
+        existing_logger = (
+            task_logger_loader(task_id) if callable(task_logger_loader) else None
+        )
+        if existing_logger and existing_logger.status == "reserved":
+            task_logger = existing_logger
+            task_logger.activate_reserved_execution()
+            task_logger.set_execution_phase(execution_phase)
+        elif existing_logger:
+            raise RuntimeError(f"task id already exists: {task_id}")
+        else:
+            task_logger = TaskLogger(
+                task_id=task_id, workflow_id=workflow_id, user_query=user_query)
+            task_logger.set_execution_phase(execution_phase)  # 设置执行阶段
 
     def _reset_resume_evidence(target_state: dict[str, Any]) -> None:
         """Drop stale terminal evidence and keep only pre-resume step evidence."""

@@ -204,6 +204,7 @@ class Server:
                 {"role": item["role"], "content": redact_secrets(item["content"])}
                 for item in incoming_messages
             ],
+            task_id=request.execution_task_id,
         )
         assistant_buffers: Dict[str, str] = {}
         actual_workflow_id = request.workflow_id

@@ -207,18 +207,6 @@ class PolicyEngine:
             "decision": "DENY",
         }
 
-        if is_governance_administrator(subject):
-            result.update(
-                {
-                    "allowed": True,
-                    "reason": "Trusted governance administrator attributes",
-                    "decision": "ALLOW",
-                }
-            )
-            self._finalize_result(result)
-            self._log_audit(subject, object, scenario, action, result, None, None)
-            return result
-
         matched_policy: Optional[Policy] = None
         matched_rule: Optional[Dict[str, Any]] = None
         for policy in self.policies:
@@ -402,24 +390,15 @@ class PolicyEngine:
 
     @staticmethod
     def _bypasses_environment_constraints(subject: Subject) -> bool:
-        """Allow the system administrator to operate the demo at any time.
+        """Compatibility hook; environment constraints apply to every subject."""
 
-        The bypass is deliberately narrow: ordinary communication and HR
-        roles are still subject to working-hour and network-zone controls.
-        """
-
-        return PolicyEngine._is_governance_administrator(subject)
+        return False
 
     @staticmethod
     def _bypasses_mandatory_review(subject: Subject) -> bool:
-        """Governance administrators may run the local demo without pausing.
+        """Compatibility hook; mandatory review applies to every subject."""
 
-        This bypass is deliberately limited to mandatory human review. It does
-        not turn a policy DENY, scenario mismatch or unsupported operation mode
-        into an ALLOW.
-        """
-
-        return PolicyEngine._is_governance_administrator(subject)
+        return False
 
     def _apply_resource_environment_constraints(
         self,
@@ -428,8 +407,6 @@ class PolicyEngine:
         object: Object,
         scenario: Scenario,
     ) -> None:
-        if self._bypasses_environment_constraints(subject):
-            return
         if (
             object.attributes.get("require_working_hours")
             and not scenario.is_working_hours()

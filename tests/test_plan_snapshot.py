@@ -247,42 +247,32 @@ def test_verify_accepts_operation_mode_provenance_only_drift(tmp_path):
     assert tg["steps"][0]["operation_mode"] == "read"
 
 
-def test_trusted_administrator_accepts_current_operation_mode_change(tmp_path):
+def test_administrator_must_reapprove_current_operation_mode_change(tmp_path):
     snap = _saved_snapshot(tmp_path, steps=[_STEPS[0]])
     changed_steps = [dict(_STEPS[0], operation_mode="send")]
 
-    ordinary, ordinary_reason = verify_snapshot_for_execution(
+    rejected, reason = verify_snapshot_for_execution(
         snap,
         workflow_id="wf-1",
         user_id="u1",
         planning_steps=changed_steps,
     )
-    trusted, trusted_reason = verify_snapshot_for_execution(
-        snap,
-        workflow_id="wf-1",
-        user_id="u1",
-        planning_steps=changed_steps,
-        allow_trusted_plan_update=True,
-    )
 
-    assert ordinary is None and "task_graph mismatch" in ordinary_reason
-    assert trusted is not None
-    assert trusted_reason == "trusted_administrator_current_plan"
-    assert trusted["steps"][0]["operation_mode"] == "send"
+    assert rejected is None
+    assert "task_graph mismatch" in reason
 
 
-def test_trusted_administrator_cannot_replace_real_plan_with_empty_graph(tmp_path):
+def test_administrator_cannot_replace_real_plan_with_empty_graph(tmp_path):
     snap = _saved_snapshot(tmp_path, steps=[_STEPS[0]])
 
-    trusted, reason = verify_snapshot_for_execution(
+    rejected, reason = verify_snapshot_for_execution(
         snap,
         workflow_id="wf-1",
         user_id="u1",
         planning_steps=[],
-        allow_trusted_plan_update=True,
     )
 
-    assert trusted is None
+    assert rejected is None
     assert "task_graph mismatch" in reason
 
 

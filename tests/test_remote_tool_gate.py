@@ -174,7 +174,8 @@ def test_email_authorization_uses_platform_trusted_recipient_resolution():
     ]
 
 
-def test_trusted_administrator_email_skips_secondary_recipient_rule():
+@pytest.mark.xfail(raises=UnknownTrustedRecipientError, strict=True)
+def test_trusted_administrator_email_uses_concrete_tool():
     resolved = required_remote_tool_authorizations(
         agent_name="RemoteEmailDispatchAgent",
         intents=["message_or_email_send"],
@@ -183,28 +184,23 @@ def test_trusted_administrator_email_skips_secondary_recipient_rule():
         trusted_administrator=True,
     )
 
-    assert [(item.tool_name, item.arguments) for item in resolved] == [
-        ("*", {"trusted_administrator": True})
-    ]
+    assert [item.tool_name for item in resolved] == ["remote_email_tool"]
 
 
-def test_trusted_administrator_communication_skips_secondary_recipient_rule():
+def test_trusted_administrator_communication_uses_concrete_tools():
     resolved = required_remote_tool_authorizations(
         agent_name="RemoteCommunicationAgent",
         intents=["message_or_email_send"],
-        task_profile={
-            "entities": {
-                "recipient": "参会人",
-                "people": ["王经理", "李娜"],
-            }
-        },
+        task_profile={"entities": {}},
         operation_mode="send",
         trusted_administrator=True,
     )
 
-    assert [(item.tool_name, item.arguments) for item in resolved] == [
-        ("*", {"trusted_administrator": True})
+    assert [item.tool_name for item in resolved] == [
+        "remote_contact_query_tool",
+        "remote_email_tool",
     ]
+    assert all(item.tool_name != "*" for item in resolved)
 
 
 def test_email_dispatch_accepts_trusted_name_to_email_resolution(monkeypatch):
@@ -439,7 +435,7 @@ def test_remote_agent_accepts_normalized_bound_salary_arguments(monkeypatch):
         reset_authorized_remote_tools(token)
 
 
-def test_record_query_admin_marker_is_injected_only_by_trusted_manifest(monkeypatch):
+def test_record_query_drops_admin_marker_and_rejects_wildcard_manifest(monkeypatch):
     import httpx
 
     forwarded = []
@@ -482,7 +478,7 @@ def test_record_query_admin_marker_is_injected_only_by_trusted_manifest(monkeypa
     finally:
         reset_authorized_remote_tools(ordinary_token)
 
-    admin_token = bind_authorized_remote_tools(
+    wildcard_token = bind_authorized_remote_tools(
         {
             "authorized_remote_tools": [
                 {
@@ -493,13 +489,11 @@ def test_record_query_admin_marker_is_injected_only_by_trusted_manifest(monkeypa
         }
     )
     try:
-        asyncio.run(
-            BaseRemoteAgent.call_tool(object(), "query_travel_record", {})
-        )
+        with pytest.raises(PermissionError, match="outside the platform-authorized manifest"):
+            asyncio.run(
+                BaseRemoteAgent.call_tool(object(), "query_travel_record", {})
+            )
     finally:
-        reset_authorized_remote_tools(admin_token)
+        reset_authorized_remote_tools(wildcard_token)
 
-    assert forwarded == [
-        {},
-        {"__trusted_administrator": True},
-    ]
+    assert forwarded == [{}]

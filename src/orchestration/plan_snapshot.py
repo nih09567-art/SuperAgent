@@ -226,7 +226,6 @@ def verify_snapshot_for_execution(
     current_agent_contracts: Optional[Dict[str, Any]] = None,
     current_agent_produces: Optional[Dict[str, List[str]]] = None,
     subtasks: Optional[List[Dict[str, Any]]] = None,
-    allow_trusted_plan_update: bool = False,
 ) -> Tuple[Optional[Dict[str, Any]], str]:
     """Authoritative production gate: return ``(task_graph, reason)`` or ``(None, reason)``.
 
@@ -251,10 +250,8 @@ def verify_snapshot_for_execution(
        provenance text is excluded because it cannot affect execution.
 
     On success the stored (approved) task graph dict is returned for injection.
-    A caller that has already authenticated trusted governance-administrator
-    attributes may set ``allow_trusted_plan_update``; in that case a valid graph
-    rebuilt from the current trusted plan and registry replaces a stale graph.
-    Ordinary callers still fail closed on every executable-field mismatch.
+    Any executable-field mismatch fails closed for every caller and requires a
+    new plan plus explicit approval.
     """
     if not isinstance(snapshot, dict):
         return None, "no_snapshot"
@@ -328,7 +325,5 @@ def verify_snapshot_for_execution(
     if _canonical(_execution_graph_view(rebuilt)) != _canonical(
         _execution_graph_view(snap_graph)
     ):
-        if allow_trusted_plan_update and rebuilt.get("steps"):
-            return rebuilt, "trusted_administrator_current_plan"
         return None, "task_graph mismatch vs current plan (replan required)"
     return snap_graph, "ok"

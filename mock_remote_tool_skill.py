@@ -1978,10 +1978,7 @@ async def tool(req: ToolRequest, authorization: Optional[str] = Header(default=N
             employee_name = req.arguments.get("employee_name")
             filters = req.arguments.get("filters", {})
 
-            trusted_administrator = (
-                req.arguments.get("__trusted_administrator") is True
-            )
-            if not employee_id and not employee_name and not trusted_administrator:
+            if not employee_id and not employee_name:
                 raise ValueError("employee_id or employee_name is required")
 
             # Load all records
@@ -2073,10 +2070,7 @@ async def tool(req: ToolRequest, authorization: Optional[str] = Header(default=N
             employee_name = req.arguments.get("employee_name")
             filters = req.arguments.get("filters", {})
 
-            trusted_administrator = (
-                req.arguments.get("__trusted_administrator") is True
-            )
-            if not employee_id and not employee_name and not trusted_administrator:
+            if not employee_id and not employee_name:
                 raise ValueError("employee_id or employee_name is required")
 
             # Load all records

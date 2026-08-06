@@ -703,7 +703,7 @@ function bindSecurityCollapseButton(buttonId, contentId, defaultCollapsed) {
 }
 
 function initSecurityTab() {
-    bindSecurityCollapseButton("toggleToolAccessBtn", "toolAccessGrid", true);
+    bindSecurityCollapseButton("toggleToolAccessBtn", "toolAccessGrid", false);
     bindSecurityCollapseButton(
         "toggleAdvancedSecurityBtn",
         "advancedSecurityContent",

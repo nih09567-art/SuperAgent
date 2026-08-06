@@ -48,6 +48,12 @@ _INTENT_TOOL_MAP: dict[tuple[str, str], tuple[str, ...]] = {
     ("RemoteTodoAgent", "schedule_management"): ("remote_todo_query_tool",),
 }
 
+_ADDITIONAL_AGENT_INTENTS: dict[str, tuple[str, ...]] = {
+    # These tools are selected by operation mode in the resolver below.
+    "RemoteOfficeAssistantAgent": ("travel_service",),
+    "RemoteHRCalendarAgent": ("schedule_management",),
+}
+
 
 def _as_mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
@@ -85,26 +91,31 @@ def required_remote_tool_authorizations(
     intents: Iterable[str],
     task_profile: Any,
     operation_mode: str = "read",
+    include_all_tools: bool = False,
     trusted_administrator: bool = False,
 ) -> list[RemoteToolAuthorization]:
     """Resolve governed remote tools from trusted scheduler-owned fields."""
 
-    if trusted_administrator:
-        # Bottom-layer capability: a governance administrator may use every
-        # tool exposed by the selected registered Agent.  This wildcard is
-        # created only from trusted subject attributes in the scheduler; the
-        # remote service never derives it from a username or model output.
-        return [
-            RemoteToolAuthorization(
-                tool_name="*",
-                arguments={"trusted_administrator": True},
-            )
-        ]
-
+    # Kept as a compatibility alias for callers that already identify a
+    # trusted administrator. It expands only to concrete mapped tools; it
+    # never creates a wildcard or bypasses S-ABAC.
+    include_all_tools = include_all_tools or bool(trusted_administrator)
     profile = _as_mapping(task_profile)
     resolved: list[RemoteToolAuthorization] = []
     seen: set[str] = set()
-    for raw_intent in intents:
+    requested_intents = [str(raw_intent or "").strip() for raw_intent in intents]
+    if include_all_tools:
+        # Expand to concrete tools owned by this registered Agent.  This is a
+        # capability enumeration only; each entry is still evaluated by the
+        # normal S-ABAC enforcement hook before it reaches the remote Agent.
+        expanded: list[str] = []
+        for candidate_agent, candidate_intent in _INTENT_TOOL_MAP:
+            if candidate_agent == str(agent_name):
+                expanded.append(candidate_intent)
+        expanded.extend(_ADDITIONAL_AGENT_INTENTS.get(str(agent_name), ()))
+        requested_intents = list(dict.fromkeys(expanded))
+
+    for raw_intent in requested_intents:
         intent = str(raw_intent or "").strip()
         tool_names = _INTENT_TOOL_MAP.get((str(agent_name), intent), ())
         mode = str(operation_mode or "read").lower()

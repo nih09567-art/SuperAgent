@@ -100,8 +100,6 @@ def _arguments_match_authorization(
     expected: Dict[str, Any],
     actual: Dict[str, Any],
 ) -> bool:
-    if expected.get("trusted_administrator") is True:
-        return True
     keys = _TOOL_SECURITY_ARGUMENTS.get(tool_name, frozenset())
     for key in keys:
         aliases = _SECURITY_ARGUMENT_ALIASES[key]
@@ -129,20 +127,9 @@ def _canonical_authorized_arguments(
     """Build the outbound arguments from the validated trusted boundary."""
 
     outbound = dict(actual)
-    # This capability bit is platform-owned. A model/user supplied value is
-    # always discarded; only the scheduler's trusted-administrator manifest
-    # may inject it for scoped record queries.
+    # Capability markers are never accepted from a model or remote caller.
     outbound.pop("__trusted_administrator", None)
-    if (
-        expected.get("trusted_administrator") is True
-        and tool_name in {"query_leave_record", "query_travel_record"}
-    ):
-        outbound["__trusted_administrator"] = True
     if tool_name == "remote_email_tool":
-        if expected.get("trusted_administrator") is True:
-            if not str(outbound.get("to") or "").strip():
-                raise ValueError("Remote email recipient is required")
-            return outbound
         found, addresses = _find_argument(
             expected, _SECURITY_ARGUMENT_ALIASES["resolved_recipient_addresses"]
         )
@@ -169,7 +156,7 @@ def bind_authorized_remote_tools(context: Dict[str, Any]) -> Token:
                 continue
             tool_name = str(item.get("tool_name") or "").strip()
             arguments = item.get("arguments")
-            if tool_name and isinstance(arguments, dict):
+            if tool_name and tool_name != "*" and isinstance(arguments, dict):
                 manifest.append((tool_name, dict(arguments)))
     # Missing, malformed and explicitly empty manifests all bind to an empty
     # tuple. call_tool therefore fails closed instead of treating None as an
@@ -301,7 +288,7 @@ class BaseRemoteAgent(ABC):
         manifest = _authorized_remote_tools.get()
         matching_entries = [
             expected for authorized_tool, expected in manifest
-            if authorized_tool in {tool_name, "*"}
+            if authorized_tool == tool_name
         ]
         if not matching_entries:
             raise PermissionError(

@@ -358,34 +358,25 @@ class RemoteExecutor(AgentExecutor):
                 })
 
         idempotency_key = (context.metadata or {}).get("idempotency_key")
-        authorized_remote_tools = (context.metadata or {}).get(
+        raw_authorized_remote_tools = (context.metadata or {}).get(
             "authorized_remote_tools", []
         )
-        if not authorized_remote_tools:
-            # Legacy execution does not pass through the TaskGraph scheduler's
-            # manifest builder. Preserve the same trusted-attribute capability
-            # at the final remote boundary so a governance administrator can
-            # invoke every tool exposed by the selected registered Agent.
-            # This deliberately does not inspect the username.
-            try:
-                from src.security.context import SecurityContextBuilder
-                from src.security.policy import is_governance_administrator
-
-                subject = SecurityContextBuilder.subject_for_user(
-                    str(context.user_id or "")
-                )
-                if is_governance_administrator(subject):
-                    authorized_remote_tools = [
-                        {
-                            "tool_name": "*",
-                            "arguments": {"trusted_administrator": True},
-                            "decision": "ALLOW",
-                        }
-                    ]
-            except Exception:
-                # Unknown/malformed ordinary subjects remain deny-by-default.
-                # The remote boundary will return the concrete manifest error.
-                pass
+        # Only concrete, structured entries may cross the remote boundary.
+        # In particular, discard legacy or caller-supplied wildcard entries.
+        authorized_remote_tools = [
+            item
+            for item in (
+                raw_authorized_remote_tools
+                if isinstance(raw_authorized_remote_tools, list)
+                else []
+            )
+            if isinstance(item, dict)
+            and str(item.get("tool_name") or "").strip()
+            and str(item.get("tool_name") or "").strip() != "*"
+            and isinstance(item.get("arguments"), dict)
+        ]
+        # Missing and empty manifests remain deny-by-default.  Legacy remote
+        # execution must not synthesize an administrator wildcard.
 
         request = {
             "agent_name": agent.agent_name,

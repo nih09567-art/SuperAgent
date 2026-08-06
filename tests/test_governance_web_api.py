@@ -1,8 +1,10 @@
 from concurrent.futures import ThreadPoolExecutor
 from fastapi.testclient import TestClient
+import json
 import pytest
 import threading
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import src.service.web_app as web_app
 import src.orchestration.reconciliation as reconciliation_module
@@ -912,7 +914,46 @@ def test_deleting_legacy_conversation_removes_orphan_security_records_only(
     assert get_reconciliation_store().list(task_id="legacy-task") == []
 
 
-def test_workflow_run_requires_no_browser_cleanup_credential(monkeypatch):
+def _production_authorization_fields(
+    client, *, user_id: str, workflow_id: str
+):
+    credential = f"execution-key-{user_id}"
+    with patch.object(
+        web_app,
+        "EXECUTION_USER_API_KEYS_JSON",
+        json.dumps({user_id: credential}),
+    ):
+        response = client.post(
+            "/api/workflows/execution-authorizations",
+            headers={
+                "Authorization": f"Bearer {credential}",
+                "Idempotency-Key": "confirmation-governance-request",
+            },
+            json={
+                "user_id": user_id,
+                "workflow_id": workflow_id,
+                "plan_hash": "a" * 64,
+                "user_query": "test",
+            },
+        )
+    if response.status_code != 200:
+        return response, {}
+    data = response.json()
+    return response, {
+        "execution_task_id": data["task_id"],
+        "execution_attempt_id": data["execution_attempt_id"],
+        "execution_idempotency_key": data["execution_idempotency_key"],
+        "execution_plan_hash": data["execution_plan_hash"],
+        "execution_authorization_token": data["execution_authorization_token"],
+    }
+
+
+def test_workflow_run_requires_no_browser_cleanup_credential(tmp_path, monkeypatch):
+    import src.robust.task_logger as task_logger_module
+
+    monkeypatch.setattr(
+        task_logger_module, "checkpoints_dir", tmp_path / "checkpoints"
+    )
     class FakeServer:
         async def _run_agent_workflow(self, _body):
             yield {
@@ -921,8 +962,16 @@ def test_workflow_run_requires_no_browser_cleanup_credential(monkeypatch):
             }
 
     monkeypatch.setattr(web_app, "Server", FakeServer)
+    monkeypatch.setattr(
+        web_app, "_server_execution_plan_hash", lambda _user, _workflow: "a" * 64
+    )
+    client = TestClient(create_app())
+    authorization, identity = _production_authorization_fields(
+        client, user_id="u1", workflow_id="u1:wf"
+    )
+    assert authorization.status_code == 200
 
-    response = TestClient(create_app()).post(
+    response = client.post(
         "/api/workflows/run",
         json={
             "user_id": "u1",
@@ -934,6 +983,7 @@ def test_workflow_run_requires_no_browser_cleanup_credential(monkeypatch):
             "coor_agents": None,
             "workmode": "production",
             "workflow_id": "u1:wf",
+            **identity,
         },
     )
 
@@ -978,7 +1028,6 @@ def test_deleting_user_history_removes_all_orphan_queues_for_that_user_only(
         agent_name="RemoteEmailDispatchAgent",
         error="unknown",
     )
-
     response = TestClient(create_app()).delete(
         "/api/conversation-history",
         params={"user_id": "u1"},

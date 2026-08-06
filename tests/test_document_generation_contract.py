@@ -85,7 +85,7 @@ def test_high_sensitivity_record_query_rejects_missing_employee_scope(
         ("query_travel_record", "_load_travel_applications"),
     ],
 )
-def test_trusted_administrator_can_query_unscoped_records(
+def test_administrator_marker_cannot_query_unscoped_records(
     monkeypatch, tool_name, loader_name
 ) -> None:
     records = [{"employee_id": "E001", "employee_name": "李娜"}]
@@ -101,8 +101,9 @@ def test_trusted_administrator_can_query_unscoped_records(
 
     assert response.status_code == 200
     result = response.json()["result"]
-    assert result["status"] == "success"
-    assert result["records"] == records
+    assert result["status"] == "failed"
+    assert result["error"] == "employee_id or employee_name is required"
+    assert "records" not in result
 
 
 def test_document_save_failure_is_not_reported_as_success(

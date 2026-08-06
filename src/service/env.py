@@ -219,6 +219,10 @@ WORKFLOW_SKILL_ADMIN_API_KEY = os.getenv("WORKFLOW_SKILL_ADMIN_API_KEY")
 # bodies never choose the approver/operator identity.
 GOVERNANCE_ADMIN_ACTOR_ID = os.getenv("GOVERNANCE_ADMIN_ACTOR_ID", "admin")
 
+# JSON object mapping authenticated execution principals to API credentials.
+# Example: {"hr_manager":"a-long-random-secret"}
+EXECUTION_USER_API_KEYS_JSON = os.getenv("EXECUTION_USER_API_KEYS_JSON", "")
+
 if not DEBUG:
     logging.basicConfig(
         level=logging.WARNING,

@@ -14,8 +14,6 @@ import src.orchestration.runtime as runtime_mod
 import src.workflow.process as proc
 from src.orchestration.plan_snapshot import save_plan_snapshot
 from src.orchestration.plan_to_task_graph import plan_to_task_graph
-from src.security.context import SecurityContextBuilder
-from src.security.policy import Subject
 from src.skills.workflow_skill import (
     WorkflowSkillManager,
     WorkflowSkillSettings,
@@ -27,10 +25,15 @@ _STEPS = [{"agent_name": "RemoteHRAssistantAgent", "title": "查询王强信息"
 
 @pytest.fixture(autouse=True)
 def _isolate(tmp_path, monkeypatch):
+    import src.robust.task_logger as task_logger_module
+
     monkeypatch.setenv("PLAN_SNAPSHOT_DIR", str(tmp_path / "plan_snapshots"))
     monkeypatch.setenv("ARTIFACT_PAYLOAD_STORE_DIR",
                        str(tmp_path / "artifacts"))
     monkeypatch.setenv("RECEIPT_STORE_DIR", str(tmp_path / "receipts"))
+    monkeypatch.setattr(
+        task_logger_module, "checkpoints_dir", tmp_path / "checkpoints"
+    )
 
 
 def _drive(workflow, state, *, task_id, execution_phase):
@@ -56,26 +59,6 @@ def _production_state():
         "task_profile": {"task_type": "GENERAL"},
         "risk_profile": "LOW",
     }
-
-
-def test_trusted_plan_refresh_is_attribute_driven_not_username(monkeypatch):
-    def _subject_for_user(user_id):
-        return Subject(
-            subject_type="user",
-            id=user_id,
-            attributes={
-                "job_role": "system_orchestrator",
-                "grants": ["all"],
-            },
-        )
-
-    monkeypatch.setattr(
-        SecurityContextBuilder,
-        "subject_for_user",
-        staticmethod(_subject_for_user),
-    )
-
-    assert proc._allows_trusted_plan_refresh("operator-with-any-name") is True
 
 
 def test_t12_production_enters_scheduler_via_snapshot(monkeypatch):
