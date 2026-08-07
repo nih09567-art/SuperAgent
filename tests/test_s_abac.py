@@ -10,7 +10,11 @@ import src.security.enforcement as enforcement
 import src.security.scenario_analyzer as scenario_analyzer
 from src.security.approval import ApprovalStore
 from src.security.context import SecurityContextBuilder, UnknownSecurityUserError
-from src.security.enforcement import PermissionDeniedError, enforce_tool_call
+from src.security.enforcement import (
+    ApprovalRequiredError,
+    PermissionDeniedError,
+    enforce_tool_call,
+)
 from src.security.policy import Action, Object, PolicyEngine, Scenario, Subject
 from src.security.scenario_analyzer import analyze_object_fit, analyze_task_context
 from src.workflow.coor_task import _extract_plan_steps, _fallback_plan_steps
@@ -912,7 +916,12 @@ def test_scenario_analyzer_promotes_uncertain_positive_reason_to_match():
     assert merged["fit"] == "match"
 
 
-def test_enforcement_uses_business_goal_for_object_fit_query():
+def test_enforcement_uses_business_goal_for_object_fit_query(monkeypatch):
+    # Keep this test independent from a developer's .env.  The salary tool is
+    # intentionally approval-gated; this case only verifies that object-fit
+    # analysis receives the stable business goal before that gate is applied.
+    monkeypatch.setattr(enforcement, "S_ABAC_ENABLED", True)
+
     class DummyContext:
         def __init__(self):
             self.user_id = "hr_manager"
@@ -956,14 +965,17 @@ def test_enforcement_uses_business_goal_for_object_fit_query():
     try:
         context = DummyContext()
         agent = SimpleNamespace(agent_name="RemoteHRAssistantAgent")
-        __import__("asyncio").run(
-            enforce_tool_call(
-                agent=agent,
-                tool_name="remote_salary_info_tool",
-                arguments={"employee_id": "E001"},
-                context=context,
+        try:
+            __import__("asyncio").run(
+                enforce_tool_call(
+                    agent=agent,
+                    tool_name="remote_salary_info_tool",
+                    arguments={"employee_id": "E001"},
+                    context=context,
+                )
             )
-        )
+        except ApprovalRequiredError:
+            pass
     finally:
         scenario_analyzer.analyze_object_fit = original
         enforcement_module.analyze_object_fit = original_enforcement
@@ -998,6 +1010,30 @@ def test_scenario_from_context_prefers_original_user_query_for_execution():
     assert scenario.task_scenario["goal"] == "查询员工 E001 的工资信息"
     assert scenario.task_scenario["business_goal"] == "查询员工 E001 的工资信息"
     assert scenario.task_scenario["task_type"] == "HR"
+
+
+def test_scenario_time_override_is_limited_to_explicit_http_e2e(monkeypatch):
+    import src.security.context as context_module
+
+    class OffHoursDatetime:
+        @classmethod
+        def now(cls):
+            return SimpleNamespace(hour=22)
+
+    monkeypatch.setattr(context_module, "datetime", OffHoursDatetime)
+    monkeypatch.setenv("S_ABAC_E2E_TIME_OVERRIDE", "working_hours")
+    monkeypatch.delenv("RUN_ANNUAL_LEAVE_HTTP_E2E", raising=False)
+
+    ordinary = SecurityContextBuilder.scenario_from_context(
+        SimpleNamespace(metadata={}, workflow_mode="production")
+    )
+    assert ordinary.environment["time"] == "off_hours"
+
+    monkeypatch.setenv("RUN_ANNUAL_LEAVE_HTTP_E2E", "1")
+    acceptance = SecurityContextBuilder.scenario_from_context(
+        SimpleNamespace(metadata={}, workflow_mode="production")
+    )
+    assert acceptance.environment["time"] == "working_hours"
 
 def test_fallback_plan_steps_generates_coder_step_for_engineering_task():
     state = {

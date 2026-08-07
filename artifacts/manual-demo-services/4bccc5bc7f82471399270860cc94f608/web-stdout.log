@@ -1,0 +1,37 @@
++-----------------------------------------------------------------------------+
+|                                                                             |
+|    ____                    _                    _                           |
+|   / ___|___  _ __ ___  __ _| |_ ___  _ __ ___  | |                          |
+|  | |   / _ \| '__/ _ \/ _` | __/ _ \| '__/ _ \ | |                          |
+|  | |__| (_) | | |  __/ (_| | || (_) | | |  __/ |_|                          |
+|   \____\___/|_|  \___|\__,_|\__\___/|_|  \___| (_)                          |
+|                                                                             |
++-----------------------------------------------------------------------------+
+ Welcome to CoorAgent! CoorAgent is an AI agent collaboration community. Here, 
+  you can create specific agents with a single sentence and collaborate with   
+other agents to complete complex tasks. Agents can be combined freely, creating
+ infinite possibilities. You can also publish your agents to the community and 
+                            share them to anyone!\n                            
+Server initialized successfully
+INFO:     127.0.0.1:58559 - "GET /api/health/ready HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57158 - "GET /api/health/ready HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57769 - "GET / HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57769 - "GET /static/styles.css?v=20260803-decision-history-1 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54355 - "GET /static/app.js?v=20260804-security-collapsible-1 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55475 - "GET /static/security.js?v=20260804-security-collapsible-1 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52517 - "GET /static/mermaid.min.js HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:49347 - "GET / HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49347 - "GET /static/styles.css?v=20260803-decision-history-1 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55410 - "GET /static/mermaid.min.js HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62101 - "GET /static/app.js?v=20260804-security-collapsible-1 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58204 - "GET /static/security.js?v=20260804-security-collapsible-1 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55410 - "GET /api/health/ready HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55410 - "GET /api/security/users/admin/precheck HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55410 - "GET /api/security/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58204 - "GET /api/security/policies HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49347 - "GET /api/security/approvals HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62101 - "GET /api/security/users HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64534 - "GET /api/security/users/admin/precheck HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61207 - "GET /api/security/reconciliations HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64534 - "GET /api/security/users/admin HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53186 - "POST /api/workflows/run HTTP/1.1" 401 Unauthorized

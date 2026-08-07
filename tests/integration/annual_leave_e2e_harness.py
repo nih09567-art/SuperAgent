@@ -394,6 +394,8 @@ class AnnualLeaveServiceManager:
                 "APP_ENV": "production",
                 "ORCHESTRATION_SCHEDULER_ENABLED": "1",
                 "S_ABAC_ENABLED": "1" if self.s_abac_enabled else "0",
+                "RUN_ANNUAL_LEAVE_HTTP_E2E": "1",
+                "S_ABAC_E2E_TIME_OVERRIDE": "working_hours",
                 "INTENT_RECOGNITION_MODE": "rule",
                 "EXECUTION_USER_API_KEYS_JSON": json.dumps(
                     {EXECUTION_USER_ID: EXECUTION_USER_API_KEY}
@@ -549,6 +551,25 @@ def _request_body(
         "original_user_query": query,
         "instruction": instruction,
     }
+
+
+def _service_log_text(service_manager: Any, service_name: str) -> str:
+    return "\n".join(
+        path.read_text(encoding="utf-8", errors="replace")
+        for service in service_manager.running
+        if service.spec.name == service_name
+        for path in (service.stdout_path, service.stderr_path)
+        if path.exists()
+    )
+
+
+def _mock_email_count(service_manager: Any) -> int:
+    payload = json.loads(
+        (service_manager.log_dir / "mock-email-log.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    return len(payload.get("emails") or [])
 
 
 def consume_workflow_sse(
@@ -1443,6 +1464,15 @@ def run_dynamic_five_agent_workflow(
             f"unsupported dynamic five-Agent approval decision: {approval_decision}"
         )
     run_dir.mkdir(parents=True, exist_ok=False)
+    email_agent_marker = "Received request for agent: RemoteEmailDispatchAgent"
+    email_tool_marker = "[TOOL] remote_email_tool called"
+    email_agent_baseline = _service_log_text(
+        service_manager, "remote-agent"
+    ).count(email_agent_marker)
+    email_tool_baseline = _service_log_text(
+        service_manager, "remote-tool"
+    ).count(email_tool_marker)
+    mock_email_baseline = _mock_email_count(service_manager)
     workflow_id = f"{EXECUTION_USER_ID}:annual_leave_five_{uuid.uuid4().hex}"
     started_at_utc = _utc_now()
     timeline: list[dict[str, Any]] = []
@@ -1529,14 +1559,10 @@ def run_dynamic_five_agent_workflow(
         raise AnnualLeaveE2EError(
             f"pre-approval Artifacts were {set(before_artifacts)!r}"
         )
-    agent_log_before = "\n".join(
-        path.read_text(encoding="utf-8", errors="replace")
-        for service in service_manager.running
-        if service.spec.name == "remote-agent"
-        for path in (service.stdout_path, service.stderr_path)
-        if path.exists()
-    )
-    if "Received request for agent: RemoteEmailDispatchAgent" in agent_log_before:
+    email_agent_before = _service_log_text(
+        service_manager, "remote-agent"
+    ).count(email_agent_marker)
+    if email_agent_before != email_agent_baseline:
         raise AnnualLeaveE2EError("Email Agent ran before approval")
 
     pending = _http_json(
@@ -1612,30 +1638,17 @@ def run_dynamic_five_agent_workflow(
                     f"Artifact {logical_name} failed schema validation"
                 )
 
-        agent_log_after = "\n".join(
-            path.read_text(encoding="utf-8", errors="replace")
-            for service in service_manager.running
-            if service.spec.name == "remote-agent"
-            for path in (service.stdout_path, service.stderr_path)
-            if path.exists()
-        )
-        if "Received request for agent: RemoteEmailDispatchAgent" in agent_log_after:
+        email_agent_after = _service_log_text(
+            service_manager, "remote-agent"
+        ).count(email_agent_marker)
+        if email_agent_after != email_agent_baseline:
             raise AnnualLeaveE2EError("Email Agent ran after approval rejection")
-        tool_log = "\n".join(
-            path.read_text(encoding="utf-8", errors="replace")
-            for service in service_manager.running
-            if service.spec.name == "remote-tool"
-            for path in (service.stdout_path, service.stderr_path)
-            if path.exists()
-        )
-        if "[TOOL] remote_email_tool called" in tool_log:
+        email_tool_after = _service_log_text(
+            service_manager, "remote-tool"
+        ).count(email_tool_marker)
+        if email_tool_after != email_tool_baseline:
             raise AnnualLeaveE2EError("mock Email tool ran after approval rejection")
-        mock_email_log = json.loads(
-            (service_manager.log_dir / "mock-email-log.json").read_text(
-                encoding="utf-8"
-            )
-        )
-        if mock_email_log.get("emails"):
+        if _mock_email_count(service_manager) != mock_email_baseline:
             raise AnnualLeaveE2EError(
                 "mock Email provider recorded a send after approval rejection"
             )
@@ -1830,31 +1843,17 @@ def run_dynamic_five_agent_workflow(
     if not receipt.payload.get("idempotency_key"):
         raise AnnualLeaveE2EError("Email receipt omitted its idempotency key")
 
-    agent_log_after = "\n".join(
-        path.read_text(encoding="utf-8", errors="replace")
-        for service in service_manager.running
-        if service.spec.name == "remote-agent"
-        for path in (service.stdout_path, service.stderr_path)
-        if path.exists()
-    )
-    if (
-        agent_log_after.count("Received request for agent: RemoteEmailDispatchAgent")
-        != 1
-    ):
+    email_agent_after = _service_log_text(
+        service_manager, "remote-agent"
+    ).count(email_agent_marker)
+    if email_agent_after - email_agent_baseline != 1:
         raise AnnualLeaveE2EError("Email Agent was not invoked exactly once")
-    tool_log = "\n".join(
-        path.read_text(encoding="utf-8", errors="replace")
-        for service in service_manager.running
-        if service.spec.name == "remote-tool"
-        for path in (service.stdout_path, service.stderr_path)
-        if path.exists()
-    )
-    if tool_log.count("[TOOL] remote_email_tool called") != 1:
+    email_tool_after = _service_log_text(
+        service_manager, "remote-tool"
+    ).count(email_tool_marker)
+    if email_tool_after - email_tool_baseline != 1:
         raise AnnualLeaveE2EError("mock Email tool was not invoked exactly once")
-    mock_email_log = json.loads(
-        (service_manager.log_dir / "mock-email-log.json").read_text(encoding="utf-8")
-    )
-    if len(mock_email_log.get("emails") or []) != 1:
+    if _mock_email_count(service_manager) - mock_email_baseline != 1:
         raise AnnualLeaveE2EError(
             "mock Email provider did not persist exactly one send"
         )
