@@ -9,6 +9,14 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
 
+# Reflection is allowed to time out, but a timed-out synchronous model call may
+# continue running in its worker. Keep those workers bounded across all skills
+# instead of creating one executor (and one potentially leaked thread) per call.
+_REFLECTION_EXECUTOR = ThreadPoolExecutor(
+    max_workers=2, thread_name_prefix="agent-skill-reflection"
+)
+
+
 @dataclass(frozen=True, slots=True)
 class SkillReflectionResult:
     is_reusable: bool
@@ -86,19 +94,20 @@ class SkillReflection:
             return SkillReflectionResult(
                 False, "", {}, 0.0, ("reflection_model_unavailable",), valid=False
             )
+        future = None
         try:
-            executor = ThreadPoolExecutor(max_workers=1)
-            future = executor.submit(self.model.invoke, prompt)
-            try:
-                raw_result = future.result(timeout=self.timeout_seconds)
-            finally:
-                executor.shutdown(wait=False, cancel_futures=True)
+            future = _REFLECTION_EXECUTOR.submit(self.model.invoke, prompt)
+            raw_result = future.result(timeout=self.timeout_seconds)
             result = _coerce(_parse_content(raw_result))
             accepted = result.is_reusable and result.confidence >= self.min_confidence
             if not accepted:
                 return result
             return result
         except FutureTimeoutError:
+            if future is not None:
+                # This removes queued work. A call already running cannot be
+                # forcefully stopped, but remains bounded by the shared pool.
+                future.cancel()
             return SkillReflectionResult(
                 False, "", {}, 0.0, ("reflection_timeout",), valid=False
             )

@@ -54,6 +54,7 @@ from src.skills.execution_evidence import (
     build_legacy_evidence,
     load_execution_evidence,
 )
+from src.skills.execution_trace import build_execution_trace
 
 logging.basicConfig(
     level=logging.WARNING,
@@ -98,6 +99,26 @@ def enable_debug_logging():
 
 
 logger = logging.getLogger(__name__)
+
+
+# LLM reflection is post-terminal bookkeeping. Track tasks so tests and
+# controlled shutdowns can drain them, while production requests do not wait
+# for a reasoning model before emitting the workflow terminal event.
+_AGENT_SKILL_BACKGROUND_TASKS: set[asyncio.Task[Any]] = set()
+
+
+def _track_agent_skill_background_task(task: asyncio.Task[Any]) -> None:
+    _AGENT_SKILL_BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_AGENT_SKILL_BACKGROUND_TASKS.discard)
+
+
+async def wait_for_agent_skill_background_tasks() -> None:
+    """Drain currently scheduled Skill reflection jobs (primarily for tests)."""
+
+    while _AGENT_SKILL_BACKGROUND_TASKS:
+        await asyncio.gather(
+            *_AGENT_SKILL_BACKGROUND_TASKS.copy(), return_exceptions=True
+        )
 
 
 def _normalize_planning_steps(raw: Any) -> list:
@@ -1314,6 +1335,20 @@ async def _process_workflow(
                 source_conversation = _skill_source_conversation(
                     source_state, task_logger
                 )
+                execution_trace = build_execution_trace(
+                    history=getattr(task_logger, "history", []) or [],
+                    runtime_events=getattr(
+                        task_logger, "skill_execution_trace_events", []
+                    ) or [],
+                    planning_steps=planning_steps,
+                    task_profile=(
+                        getattr(task_logger, "task_profile", {})
+                        or source_state.get("task_profile")
+                        or {}
+                    ),
+                    task_id=str(getattr(task_logger, "task_id", "")),
+                    workflow_id=str(getattr(task_logger, "workflow_id", "")),
+                )
                 sliced_evidence = slice_agent_skill_evidence(
                     user_id=user_id,
                     evidence=evidence,
@@ -1326,6 +1361,7 @@ async def _process_workflow(
                     agent_contracts=contract_fingerprints,
                     agent_capabilities=capability_bindings,
                     source_conversations=(source_conversation,),
+                    execution_trace=execution_trace,
                 )
                 for step_evidence in sliced_evidence:
                     reflected = agent_skill_manager.reflect(
@@ -1463,6 +1499,39 @@ async def _process_workflow(
         # Whole-workflow Skill automation has been retired. Step/Agent Skill
         # reflection, promotion and reuse accounting above is authoritative.
         return evidence, events
+
+    async def _run_agent_skill_completion_in_background(
+        source_state: dict[str, Any], *, execution_failed: bool
+    ) -> None:
+        try:
+            _, events = await asyncio.to_thread(
+                _complete_workflow_skill,
+                dict(source_state),
+                execution_failed=execution_failed,
+            )
+            # Skill events are persisted in the task log for later Web/API
+            # inspection. They are deliberately not sent before the terminal
+            # event, because that would put model latency back on the SSE path.
+            if hasattr(task_logger, "log_event"):
+                for skill_event in events:
+                    task_logger.log_event(
+                        node_name="agent_skill",
+                        event=str(skill_event.get("event") or "agent_skill_event"),
+                        extra={"skill_event": skill_event.get("data") or {}},
+                    )
+        except Exception as exc:
+            logger.warning("Background Agent Skill completion failed: %s", exc)
+
+    def _schedule_agent_skill_completion(
+        source_state: dict[str, Any], *, execution_failed: bool
+    ) -> None:
+        _track_agent_skill_background_task(
+            asyncio.create_task(
+                _run_agent_skill_completion_in_background(
+                    source_state, execution_failed=execution_failed
+                )
+            )
+        )
 
     # Initialize hook system (controlled by AUTO_RECOVERY_ENABLED)
     hook_engine = None
@@ -1700,12 +1769,13 @@ async def _process_workflow(
                             (terminal_event or {}).get("data", {}).get("status")
                             != WorkflowStatus.SUCCEEDED.value
                         )
-                        _, skill_events = _complete_workflow_skill(
-                            state,
+                        _resolve_skill_execution_evidence(
+                            state, execution_failed=scheduler_failed
+                        )
+                        _schedule_agent_skill_completion(
+                            dict(state),
                             execution_failed=scheduler_failed,
                         )
-                        for skill_event in skill_events:
-                            yield skill_event
                     except Exception as exc:
                         logger.warning(
                             "Scheduler workflow skill completion failed: %s", exc
@@ -1747,12 +1817,10 @@ async def _process_workflow(
                 )
                 if state.get("workflow_mode") == "production":
                     try:
-                        _, skill_events = _complete_workflow_skill(
-                            state,
-                            execution_failed=True,
+                        _resolve_skill_execution_evidence(state, execution_failed=True)
+                        _schedule_agent_skill_completion(
+                            dict(state), execution_failed=True
                         )
-                        for skill_event in skill_events:
-                            yield skill_event
                     except Exception as exc:
                         logger.warning(
                             "Scheduler gate skill failure recording failed: %s", exc
@@ -1837,6 +1905,12 @@ async def _process_workflow(
 
             if hasattr(command, "update") and command.update:
                 for key, value in command.update.items():
+                    if key == "skill_execution_trace_events":
+                        if hasattr(task_logger, "add_skill_execution_trace_events"):
+                            task_logger.add_skill_execution_trace_events(
+                                value if isinstance(value, list) else []
+                            )
+                        continue
                     if key != "messages":
                         state[key] = value
 
@@ -2006,12 +2080,9 @@ async def _process_workflow(
 
         if state.get("workflow_mode") == "production":
             try:
-                skill_execution_evidence, skill_events = _complete_workflow_skill(
-                    state,
-                    execution_failed=execution_failed,
+                _schedule_agent_skill_completion(
+                    dict(state), execution_failed=execution_failed
                 )
-                for skill_event in skill_events:
-                    yield skill_event
             except Exception as exc:
                 logger.warning("Workflow skill completion failed: %s", exc)
 

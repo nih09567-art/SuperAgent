@@ -118,6 +118,7 @@ class TaskLogger:
         self.agent_contract_fingerprints: Dict[str, str] = {}
         self.agent_capability_bindings: Dict[str, List[str]] = {}
         self.skill_execution_evidence: Dict[str, Any] = {}
+        self.skill_execution_trace_events: List[Dict[str, Any]] = []
         self.failures: List[Dict[str, Any]] = []
         self.execution_attempt_id: str = ""
         self.execution_idempotency_key: str = ""
@@ -571,6 +572,16 @@ class TaskLogger:
         self.skill_execution_evidence = dict(evidence or {})
         self._flush()
 
+    def add_skill_execution_trace_events(
+        self, events: List[Dict[str, Any]]
+    ) -> None:
+        """Append sanitized, audit-only Skill trace events outside checkpoints."""
+
+        for event in events or []:
+            if isinstance(event, dict):
+                self.skill_execution_trace_events.append(dict(event))
+        self._flush()
+
     @staticmethod
     def determine_execution_phase(workmode: str, instruction_history: List[str]) -> str:
         """
@@ -604,6 +615,7 @@ class TaskLogger:
             "agent_contract_fingerprints": self.agent_contract_fingerprints,
             "agent_capability_bindings": self.agent_capability_bindings,
             "skill_execution_evidence": self.skill_execution_evidence,
+            "skill_execution_trace_events": self.skill_execution_trace_events,
             "failures": self.failures,
             "execution_attempt_id": self.execution_attempt_id,
             "execution_idempotency_key": self.execution_idempotency_key,
@@ -660,6 +672,9 @@ class TaskLogger:
             )
             inst.skill_execution_evidence = data.get(
                 "skill_execution_evidence", {}
+            )
+            inst.skill_execution_trace_events = data.get(
+                "skill_execution_trace_events", []
             )
             inst.failures = data.get("failures", [])
             inst.execution_attempt_id = data.get("execution_attempt_id", "")

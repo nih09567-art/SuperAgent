@@ -1,4 +1,5 @@
 import asyncio
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -681,6 +682,7 @@ def test_failed_workflow_distills_independent_successful_agent_step(
         AgentSkillStatus,
         AgentSkillStore,
     )
+    from src.skills.reflection import SkillReflection
 
     settings = AgentSkillSettings(
         enabled=True,
@@ -689,9 +691,30 @@ def test_failed_workflow_distills_independent_successful_agent_step(
         promotion_success_threshold=2,
         store_path=tmp_path / "agent-skills.sqlite3",
     )
+    reflection_release = threading.Event()
+
+    class DeterministicReflectionModel:
+        def invoke(self, _prompt):
+            reflection_release.wait(timeout=2.0)
+            return SimpleNamespace(
+                tool_calls=[],
+                content={
+                    "is_reusable": True,
+                    "workflow_family": "routine_metrics_lookup",
+                    "normalized_procedure": {
+                        "steps": ["resolve_scope", "read_metrics"]
+                    },
+                    "confidence": 0.95,
+                    "reasons": ["stable office procedure"],
+                    "risk_notes": [],
+                    "model_version": "test-reflector-v1",
+                },
+            )
+
     agent_manager = AgentSkillManager(
         settings=settings,
         store=AgentSkillStore(settings.store_path),
+        reflection=SkillReflection(DeterministicReflectionModel()),
     )
     workflow_manager = _manager(tmp_path, auto_distill_enabled=False)
     fake_cache = _FakeCache()
@@ -795,7 +818,9 @@ def test_failed_workflow_distills_independent_successful_agent_step(
     }
 
     async def run():
-        return [
+        loop = asyncio.get_running_loop()
+        started_at = loop.time()
+        events = [
             event
             async for event in process._process_workflow(
                 workflow,
@@ -804,13 +829,18 @@ def test_failed_workflow_distills_independent_successful_agent_step(
                 execution_phase="execution",
             )
         ]
+        terminal_elapsed = loop.time() - started_at
+        reflection_release.set()
+        await process.wait_for_agent_skill_background_tasks()
+        return events, terminal_elapsed
 
-    events = asyncio.run(run())
+    events, terminal_elapsed = asyncio.run(run())
+    assert terminal_elapsed < 1.0
     candidates = agent_manager.store.list("alice")
     assert [item.recipe.agent_name for item in candidates] == ["MetricsReaderAgent"]
     assert candidates[0].status == AgentSkillStatus.CANDIDATE
-    event = next(item for item in events if item["event"] == "agent_skill_candidate")
-    assert event["data"]["step_id"] == "read_metrics"
+    assert events[-1]["event"] == "end_of_workflow"
+    assert not any(item["event"] == "agent_skill_candidate" for item in events)
 
 
 def test_resume_discards_previous_skill_execution_evidence(tmp_path, monkeypatch):

@@ -39,6 +39,7 @@ from src.skills.agent_skill import (
     bind_agent_skills,
     get_agent_skill_manager,
 )
+from src.skills.execution_trace import make_trace_event
 from config.global_variables import artifact_capture_enabled
 
 try:
@@ -1657,7 +1658,41 @@ async def agent_proxy_node(state: State) -> Command[Literal["publisher", "__end_
         }
     ]
 
+    trace_events = [
+        make_trace_event(
+            kind="agent_proxy_call",
+            request={
+                "messages": messages_to_send,
+                "execution_context": execution_brief,
+                "context_metadata": context.metadata,
+            },
+            status="started",
+            node_name="agent_proxy",
+            agent_name=_agent.agent_name,
+            step_id=selected_skill_step_id,
+        )
+    ]
     execute_result = await execute_agent(_agent, messages_to_send, context)
+    trace_events.append(
+        make_trace_event(
+            kind="remote_agent_response",
+            request={
+                "authorized_remote_tools": context.metadata.get(
+                    "authorized_remote_tools", []
+                )
+            },
+            response={
+                "status": getattr(execute_result.status, "value", execute_result.status),
+                "result": execute_result.result,
+                "error": execute_result.error,
+                "metadata": execute_result.metadata,
+            },
+            status="succeeded" if execute_result.is_success else "failed",
+            node_name="agent_proxy",
+            agent_name=_agent.agent_name,
+            step_id=selected_skill_step_id,
+        )
+    )
     if not execute_result.is_success:
         error_detail = execute_result.error or "Unknown executor error"
         logger.warning("Agent '%s' execution failed: %s", _agent.agent_name, error_detail)
@@ -1825,6 +1860,7 @@ async def agent_proxy_node(state: State) -> Command[Literal["publisher", "__end_
             or not execute_result.is_success,
             "skill_step_evidence": skill_step_evidence,
             "agent_skill_applied_steps": agent_skill_applied_steps,
+            "skill_execution_trace_events": trace_events,
         },
         # A failed Agent cannot produce a valid dependency for publisher or any
         # subsequent Agent. End the legacy loop after recording the failure.

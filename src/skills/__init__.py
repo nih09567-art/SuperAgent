@@ -50,6 +50,12 @@ from .agent_skill import (
     slice_agent_skill_evidence,
 )
 from .reflection import SkillReflection, SkillReflectionResult
+from .execution_trace import (
+    build_execution_trace,
+    make_trace_event,
+    normalize_execution_trace,
+    trace_summary,
+)
 
 __all__ = [
     "Skill",
@@ -99,4 +105,8 @@ __all__ = [
     "slice_agent_skill_evidence",
     "SkillReflection",
     "SkillReflectionResult",
+    "build_execution_trace",
+    "make_trace_event",
+    "normalize_execution_trace",
+    "trace_summary",
 ]

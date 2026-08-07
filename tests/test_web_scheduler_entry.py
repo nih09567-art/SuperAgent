@@ -215,7 +215,9 @@ def test_reused_skill_plan_survives_web_confirm_and_enters_scheduler(monkeypatch
     )
 
 
-def test_scheduler_distills_before_terminal_event(tmp_path, monkeypatch):
+def test_scheduler_terminal_does_not_run_retired_workflow_distillation(
+    tmp_path, monkeypatch
+):
     task_id = "task-scheduler-distill"
     graph = plan_to_task_graph(
         _STEPS,
@@ -289,10 +291,9 @@ def test_scheduler_distills_before_terminal_event(tmp_path, monkeypatch):
     )
 
     names = [event["event"] for event in events]
-    assert "skill_distilled" in names
     assert names[-1] == "end_of_workflow"
-    assert names.index("skill_distilled") < names.index("end_of_workflow")
-    assert manager.store.list("u1", include_shared=False)[0].evidence_count == 1
+    assert "skill_distilled" not in names
+    assert manager.store.list("u1", include_shared=False) == []
 
 
 def test_prepopulated_graph_cannot_bypass_missing_snapshot(monkeypatch):
@@ -497,6 +498,11 @@ def test_profiled_graph_without_subtask_bindings_fails_closed(monkeypatch):
         lambda _workflow_id: _STEPS,
         raising=False,
     )
+
+    async def _empty_trusted_registry(_user_id):
+        return {}, {}
+
+    monkeypatch.setattr(proc, "_trusted_registry_contract_data", _empty_trusted_registry)
 
     entered = {"value": False}
 

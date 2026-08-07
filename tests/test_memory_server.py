@@ -148,7 +148,11 @@ def test_web_aligned_launch_request_uses_memory_and_captures_stream(monkeypatch)
     }
 
     with TestClient(app) as client:
-        response = client.post("/api/workflows/run", json=payload)
+        response = client.post(
+            "/api/workflows/run",
+            headers={"X-Authenticated-User": "alice"},
+            json=payload,
+        )
 
     assert response.status_code == 200
     assert "event: start_of_workflow" in response.text
@@ -237,7 +241,11 @@ def test_web_reports_typed_error_for_oversized_current_request(monkeypatch):
     }
 
     with TestClient(app) as client:
-        response = client.post("/api/workflows/run", json=payload)
+        response = client.post(
+            "/api/workflows/run",
+            headers={"X-Authenticated-User": "alice"},
+            json=payload,
+        )
 
     assert response.status_code == 200
     assert "CURRENT_REQUEST_CONTEXT_OVERFLOW" in response.text

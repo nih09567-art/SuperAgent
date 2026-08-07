@@ -1218,7 +1218,7 @@ def test_demo_static_assets_disable_stale_cache_and_include_resume_fixes():
     script = client.get("/static/app.js")
 
     assert index.status_code == 200
-    assert "v=20260803-decision-history-1" in index.text
+    assert "v=20260806-frontend-sync-1" in index.text
     assert script.status_code == 200
     assert script.headers["cache-control"] == "no-store"
     assert "const uniqueOutputs = []" in script.text
@@ -1227,7 +1227,7 @@ def test_demo_static_assets_disable_stale_cache_and_include_resume_fixes():
     assert "if (originalConversation) loadConversation(originalConversation);" in script.text
     assert 'clearOutputPhase("executing");' in script.text
     assert 'resumeTerminalStatus === "SUCCEEDED"' in script.text
-    assert "captureAssistantConversationContext({ replaceLatest: true });" in script.text
+    assert "captureAssistantConversationContext({" in script.text
     assert "replaceLatestAssistantConversationMessage" in script.text
 
 

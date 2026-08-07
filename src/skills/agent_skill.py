@@ -1,8 +1,8 @@
 """Evidence-based distillation and reuse of one planned Agent step.
 
-Agent skills are invocation recipes, not replayable traces. They store typed
-shape, contract, and verification metadata while excluding historical request
-values and Agent outputs.
+Agent skills remain invocation recipes. Complete observable execution traces
+are retained separately as audit-only payloads and are never replayed into an
+Agent prompt.
 """
 
 from __future__ import annotations
@@ -28,6 +28,7 @@ from src.skills.execution_evidence import (
     VerificationStatus,
 )
 from src.skills.reflection import SkillReflection, SkillReflectionResult
+from src.skills.execution_trace import normalize_execution_trace, trace_summary
 from src.memory.utils import redact_secrets
 
 
@@ -356,6 +357,7 @@ class AgentSkillEvidence(BaseModel):
     needs_reconciliation: bool = False
     artifact_refs: tuple[dict[str, Any], ...] = ()
     source_conversations: tuple[dict[str, Any], ...] = ()
+    execution_trace: dict[str, Any] = Field(default_factory=dict)
     reflection_accepted: bool = False
     reflection_family: str = ""
     reflection_procedure: dict[str, Any] = Field(default_factory=dict)
@@ -478,6 +480,7 @@ class AgentSkillCard(BaseModel):
     confidence: float = 0.5
     provenance: AgentSkillProvenance = Field(default_factory=AgentSkillProvenance)
     source_conversations: list[dict[str, Any]] = Field(default_factory=list)
+    execution_traces: list[dict[str, Any]] = Field(default_factory=list)
     aggregate_reflection_accepted: bool = False
     aggregate_reflection_reasons: list[str] = Field(default_factory=list)
     aggregate_reflection_model_version: str = ""
@@ -554,6 +557,7 @@ class AgentSkillStore:
     def __init__(self, path: str | Path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.audit_dir = self.path.parent / "agent_skill_audit"
         self._lock = threading.RLock()
         self._initialize()
 
@@ -664,6 +668,58 @@ class AgentSkillStore:
                 ),
             )
             return cursor.rowcount > 0
+
+    def save_execution_trace(
+        self,
+        *,
+        user_id: str,
+        evidence_id: str,
+        trace: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Persist a sanitized audit payload outside the reusable Skill card."""
+
+        if not trace or trace.get("audit_only") is not True:
+            return {}
+        user_bucket = hashlib.sha256(user_id.encode("utf-8")).hexdigest()[:16]
+        safe_evidence_id = re.sub(r"[^A-Za-z0-9_.-]", "_", evidence_id)[:180]
+        relative = Path("agent_skill_audit") / user_bucket / f"{safe_evidence_id}.json"
+        target = self.path.parent / relative
+        payload = normalize_execution_trace(trace)
+        with self._lock:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            temporary = target.with_suffix(".tmp")
+            temporary.write_text(_json(payload), encoding="utf-8")
+            temporary.replace(target)
+        return trace_summary(payload, relative.as_posix())
+
+    def read_execution_trace(
+        self, *, user_id: str, trace_id: str
+    ) -> dict[str, Any] | None:
+        """Read one audit payload while enforcing the user bucket boundary."""
+
+        user_bucket = hashlib.sha256(user_id.encode("utf-8")).hexdigest()[:16]
+        bucket = self.audit_dir / user_bucket
+        if not bucket.exists():
+            return None
+        with self._lock:
+            for path in bucket.glob("*.json"):
+                try:
+                    payload = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    continue
+                expires_at = str(payload.get("retention_expires_at") or "")
+                if expires_at:
+                    try:
+                        if datetime.fromisoformat(expires_at) <= datetime.now(UTC):
+                            continue
+                    except ValueError:
+                        continue
+                if (
+                    isinstance(payload, dict)
+                    and str(payload.get("trace_id") or "") == str(trace_id)
+                ):
+                    return payload
+        return None
 
     def list_evidence(
         self,
@@ -916,8 +972,9 @@ class AgentSkillManager:
             if isinstance(item, Mapping)
         )
         evidence = evidence.model_copy(update={"source_conversations": sanitized_sources})
+        reflection_evidence = evidence.model_copy(update={"execution_trace": {}})
         result = self.reflection.reflect_trace(
-            evidence, source_conversations=sanitized_sources
+            reflection_evidence, source_conversations=sanitized_sources
         )
         return evidence.model_copy(
             update={
@@ -945,6 +1002,13 @@ class AgentSkillManager:
             raise ValueError(
                 "agent step evidence is not eligible: " + ",".join(decision.reasons)
             )
+        if evidence.execution_trace.get("events"):
+            summary = self.store.save_execution_trace(
+                user_id=evidence.user_id,
+                evidence_id=evidence.evidence_id,
+                trace=evidence.execution_trace,
+            )
+            evidence = evidence.model_copy(update={"execution_trace": summary})
         family_signature = _family_signature(evidence)
         signature = _implementation_signature(evidence)
         before = self.store.get_by_signature(evidence.user_id, signature)
@@ -1051,6 +1115,11 @@ class AgentSkillManager:
                 conversation
                 for item in supporting
                 for conversation in item.source_conversations
+            ][:10],
+            execution_traces=[
+                dict(item.execution_trace)
+                for item in supporting
+                if item.execution_trace
             ][:10],
             aggregate_reflection_accepted=bool(
                 aggregate_reflection.valid
@@ -1290,6 +1359,7 @@ def slice_agent_skill_evidence(
     agent_contracts: Mapping[str, str],
     agent_capabilities: Mapping[str, Sequence[str]] | None = None,
     source_conversations: Sequence[Mapping[str, Any]] = (),
+    execution_trace: Mapping[str, Any] | None = None,
 ) -> list[AgentSkillEvidence]:
     plan: dict[str, Mapping[str, Any]] = {}
     agent_to_steps: dict[str, list[str]] = {}
@@ -1396,6 +1466,9 @@ def slice_agent_skill_evidence(
             artifact_refs=refs,
             source_conversations=tuple(
                 dict(item) for item in source_conversations if isinstance(item, Mapping)
+            ),
+            execution_trace=(
+                dict(execution_trace) if isinstance(execution_trace, Mapping) else {}
             ),
         )
         if evaluate_agent_skill_evidence(candidate).contributes:

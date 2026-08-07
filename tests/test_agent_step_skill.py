@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import threading
 from copy import deepcopy
 
 import pytest
@@ -23,6 +25,7 @@ from src.skills.execution_evidence import (
     VerificationStatus,
 )
 from src.skills.reflection import SkillReflection
+from src.skills.execution_trace import build_execution_trace, make_trace_event
 
 
 class _ReflectionModel:
@@ -150,6 +153,131 @@ def test_agent_skill_evidence_forbids_raw_execution_payloads():
         AgentSkillEvidence.model_validate(payload)
 
 
+def test_execution_trace_retains_observable_payload_and_redacts_secrets():
+    event = make_trace_event(
+        kind="remote_agent_response",
+        request={
+            "tool_name": "salary_lookup",
+            "arguments": {"employee_id": "E-100", "auth": "Bearer abcdefghijklmnop"},
+            "chain_of_thought": "private planner scratchpad",
+        },
+        response={"result": {"employee_id": "E-100", "amount": 42000}},
+        agent_name="HrAgent",
+        step_id="salary_lookup",
+        status="succeeded",
+    )
+
+    serialized = str(event)
+    assert "salary_lookup" in serialized
+    assert "42000" in serialized
+    assert "abcdefghijklmnop" not in serialized
+    assert "private planner scratchpad" not in serialized
+    assert event["payload_hash"]
+    assert event["redaction_applied"] is True
+    assert set(event["redaction_flags"]) == {
+        "hidden_reasoning_omitted",
+        "secret_redacted",
+    }
+
+
+def test_skill_persists_full_trace_in_audit_store_and_only_reference_in_card(
+    tmp_path,
+):
+    manager = _manager(tmp_path)
+    event = make_trace_event(
+        kind="remote_agent_response",
+        request={"tool_name": "metrics_lookup", "arguments": {"month": "2026-08"}},
+        response={"result": {"revenue": 12345, "region": "east"}},
+        agent_name="MetricsReaderAgent",
+        step_id="read_metrics",
+        status="succeeded",
+    )
+    trace = build_execution_trace(
+        runtime_events=[event],
+        planning_steps=[{"step_id": "read_metrics", "agent_name": "MetricsReaderAgent"}],
+        task_profile={"task_type": "metrics_lookup"},
+        task_id="task-audit",
+        workflow_id="wf-audit",
+    )
+    evidence = _read_evidence("task-audit").model_copy(
+        update={"execution_trace": trace}
+    )
+
+    result = manager.distill(evidence)
+    stored = manager.store.list_evidence("alice")[0]
+    trace_ref = stored.execution_trace
+    audit_path = manager.store.path.parent / trace_ref["audit_ref"]
+
+    assert audit_path.exists()
+    audit_payload = json.loads(audit_path.read_text(encoding="utf-8"))
+    remote_event = next(
+        item
+        for item in audit_payload["events"]
+        if item["kind"] == "remote_agent_response"
+    )
+    assert remote_event["response"]["result"]["revenue"] == 12345
+    assert trace_ref["audit_only"] is True
+    assert trace_ref["trace_hash"] == audit_payload["trace_hash"]
+    assert "events" not in trace_ref
+    assert result.card.execution_traces == [trace_ref]
+    assert (
+        manager.store.read_execution_trace(
+            user_id="alice", trace_id=trace_ref["trace_id"]
+        )
+        == audit_payload
+    )
+    assert (
+        manager.store.read_execution_trace(
+            user_id="bob", trace_id=trace_ref["trace_id"]
+        )
+        is None
+    )
+
+
+def test_reflection_prompt_excludes_audit_trace_body(tmp_path):
+    class _PromptCaptureModel(_ReflectionModel):
+        def __init__(self):
+            super().__init__()
+            self.prompt = ""
+
+        def invoke(self, prompt):
+            self.prompt = prompt
+            return super().invoke(prompt)
+
+    model = _PromptCaptureModel()
+    settings = AgentSkillSettings(
+        enabled=True,
+        reuse_enabled=True,
+        auto_distill_enabled=True,
+        store_path=tmp_path / "prompt.sqlite3",
+    )
+    manager = AgentSkillManager(
+        settings=settings,
+        store=AgentSkillStore(settings.store_path),
+        reflection=SkillReflection(model),
+    )
+    evidence = _read_evidence("task-prompt").model_copy(
+        update={
+            "execution_trace": build_execution_trace(
+                runtime_events=[
+                    make_trace_event(
+                        kind="remote_agent_response",
+                        response={"private_marker": "DO_NOT_INJECT_AUDIT_PAYLOAD"},
+                    )
+                ],
+                task_id="task-prompt",
+            )
+        }
+    )
+
+    reflected = manager.reflect(
+        evidence, source_conversations=evidence.source_conversations
+    )
+
+    assert reflected.reflection_accepted is True
+    assert "DO_NOT_INJECT_AUDIT_PAYLOAD" not in model.prompt
+
+
 def test_agent_skill_reflection_rejection_is_fail_closed(tmp_path):
     manager = _manager(tmp_path)
     rejected = manager.reflect(
@@ -184,6 +312,30 @@ def test_agent_skill_reflection_invalid_output_is_fail_closed(tmp_path):
     rejected = manager.reflect(_read_evidence("task-invalid"))
     assert rejected.reflection_accepted is False
     assert "reflection_invalid" in rejected.reflection_reasons[0]
+
+
+def test_reflection_timeouts_use_bounded_shared_workers():
+    release = threading.Event()
+    lock = threading.Lock()
+    started = 0
+
+    class BlockingModel:
+        def invoke(self, _prompt):
+            nonlocal started
+            with lock:
+                started += 1
+            release.wait(timeout=1.0)
+            return _ReflectionModel().invoke(_prompt)
+
+    reflection = SkillReflection(BlockingModel(), timeout_seconds=0.01)
+    try:
+        results = [reflection.reflect_trace({}) for _ in range(6)]
+    finally:
+        release.set()
+
+    assert all(result.valid is False for result in results)
+    assert all(result.reasons == ("reflection_timeout",) for result in results)
+    assert 1 <= started <= 2
 
 
 def test_aggregate_reflection_can_keep_two_traces_as_candidate(tmp_path):

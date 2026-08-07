@@ -3,6 +3,7 @@ import hashlib
 import hmac
 import json
 import math
+import os
 import secrets
 import shutil
 import time
@@ -597,12 +598,31 @@ def _delete_task_runtime_records(task_id: str) -> dict[str, int]:
         receipt_store._path.unlink()
         counts["receipts"] = 1
 
-    artifact_store = ArtifactPayloadStore(normalized)
-    artifact_dir_existed = artifact_store._dir.exists() and any(
-        artifact_store._dir.iterdir()
+    # ArtifactPayloadStore creates its per-task directory in ``__init__``.
+    # Cleanup must be a no-op for tasks that never produced artifacts; creating
+    # a new directory here can fail under a read-only/protected store root.
+    artifact_root = Path(
+        os.getenv("ARTIFACT_PAYLOAD_STORE_DIR", "store/artifacts")
     )
-    artifact_store.clear()
-    counts["artifacts"] = int(artifact_dir_existed)
+    artifact_key = "".join(
+        char if char.isalnum() or char in ("-", "_") else "_"
+        for char in normalized
+    )
+    artifact_dir = artifact_root / artifact_key
+    if artifact_dir.exists():
+        try:
+            artifact_files = list(artifact_dir.iterdir())
+            for artifact_file in artifact_files:
+                if artifact_file.is_file() or artifact_file.is_symlink():
+                    artifact_file.unlink()
+                elif artifact_file.is_dir():
+                    shutil.rmtree(artifact_file)
+            counts["artifacts"] = int(bool(artifact_files))
+        except OSError as exc:
+            # A stale protected directory should not prevent deletion of the
+            # task's other operational records. It will be reaped by the store
+            # maintenance job when permissions are available.
+            logger.warning("Could not clear artifact payloads for %s: %s", normalized, exc)
 
     counts["governance_events"] = int(
         get_governance_event_store().delete(normalized)
@@ -2035,6 +2055,19 @@ def create_app() -> FastAPI:
             implementation_signature=implementation_signature,
         )
         return [item.model_dump(mode="json") for item in evidence]
+
+    @app.get("/api/agent-skills/traces/{trace_id}")
+    def get_agent_skill_trace(
+        trace_id: str,
+        user_id: str,
+        _authorized: None = Depends(_authorize_workflow_skill_api),
+    ):
+        trace = get_agent_skill_manager().store.read_execution_trace(
+            user_id=user_id, trace_id=trace_id
+        )
+        if trace is None:
+            raise HTTPException(status_code=404, detail="Agent Skill trace not found")
+        return trace
 
     @app.get("/api/agent-skills/{skill_id}")
     def get_agent_skill(

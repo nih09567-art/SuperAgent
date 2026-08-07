@@ -53,6 +53,7 @@ from src.skills.execution_evidence import (
     aggregate_evidence,
     build_scheduler_evidence,
 )
+from src.skills.execution_trace import make_trace_event
 
 logger = logging.getLogger(__name__)
 
@@ -764,7 +765,7 @@ def _scheduler_assigned_step_payload(step: Any) -> dict[str, Any]:
     }
 
 
-def _make_real_execute_step(state: dict) -> ExecuteStep:
+def _make_real_execute_step(state: dict, task_logger: Any = None) -> ExecuteStep:
     """Build the production ``execute_step`` mirroring ``agent_proxy_node``."""
 
     async def _execute_step(*, step, selected_agent, inputs, context) -> Any:
@@ -861,7 +862,53 @@ def _make_real_execute_step(state: dict) -> ExecuteStep:
                 + json.dumps(brief, ensure_ascii=False, default=str),
             }
         ]
-        return await execute_agent(agent, messages, exec_ctx)
+        request_event = make_trace_event(
+            kind="agent_proxy_call",
+            request={
+                "messages": messages,
+                "execution_context": brief,
+                "context_metadata": getattr(exec_ctx, "metadata", {}) or {},
+                "authorized_remote_tools": (
+                    context.get("authorized_remote_tools", [])
+                    if isinstance(context, dict)
+                    else []
+                ),
+            },
+            status="started",
+            node_name="scheduler",
+            agent_name=selected_agent,
+            step_id=step.step_id,
+        )
+        execute_result = await execute_agent(agent, messages, exec_ctx)
+        response_event = make_trace_event(
+            kind="remote_agent_response",
+            request={
+                "authorized_remote_tools": (
+                    context.get("authorized_remote_tools", [])
+                    if isinstance(context, dict)
+                    else []
+                )
+            },
+            response={
+                "status": getattr(
+                    execute_result.status, "value", execute_result.status
+                ),
+                "result": execute_result.result,
+                "error": execute_result.error,
+                "metadata": execute_result.metadata,
+            },
+            status="succeeded" if execute_result.is_success else "failed",
+            node_name="scheduler",
+            agent_name=selected_agent,
+            step_id=step.step_id,
+        )
+        if task_logger is not None and hasattr(
+            task_logger, "add_skill_execution_trace_events"
+        ):
+            task_logger.add_skill_execution_trace_events(
+                [request_event, response_event]
+            )
+        return execute_result
 
     return _execute_step
 
@@ -1137,7 +1184,7 @@ async def run_scheduler_workflow(
     else:
         agents, authorized = [], set()
 
-    execute = execute_step or _make_real_execute_step(state)
+    execute = execute_step or _make_real_execute_step(state, task_logger=task_logger)
     authorize = authorize_step
     if authorize is None and execute_step is None:
         authorize = _make_real_authorize_step(state)
