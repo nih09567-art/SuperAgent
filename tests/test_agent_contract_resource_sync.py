@@ -7,7 +7,10 @@ from pathlib import Path
 from src.manager.registry.agent_registry import AgentRegistry
 from src.manager.registry.resource_registry import ResourceRegistry, ResourceSpec
 from src.manager.registry.resource_sync import sync_remote_agents
-from src.orchestrator.department_router import build_agent_cards
+from src.orchestrator.department_router import (
+    build_agent_cards,
+    eligible_planning_agent_cards,
+)
 
 
 def test_remote_contract_fields_survive_resource_sync(tmp_path) -> None:
@@ -43,6 +46,7 @@ def test_remote_contract_fields_survive_resource_sync(tmp_path) -> None:
     assert card.contract_version == "1.0"
     assert card.produces[0].name == "policy.info"
     assert card.output_schema_refs == {"policy.info": "policy.info@v2"}
+    assert card.planning_eligible is True
 
 
 def test_legacy_remote_agent_still_registers_without_contract(tmp_path) -> None:
@@ -67,6 +71,52 @@ def test_legacy_remote_agent_still_registers_without_contract(tmp_path) -> None:
     assert agent.agent_contract is None
     assert agent.requires == []
     assert agent.produces == []
+    card = build_agent_cards([agent])[0]
+    assert card.planning_eligible is False
+    assert eligible_planning_agent_cards([card]) == []
+
+
+def test_planning_only_contract_enters_pool_without_changing_legacy_runtime(
+    tmp_path,
+) -> None:
+    resources = ResourceRegistry()
+    agents = AgentRegistry(tmp_path / "agents", tmp_path / "prompts")
+    spec = ResourceSpec(
+        type="agent",
+        name="RemoteOfficeAssistantAgent",
+        server_id="remote-demo",
+        endpoint="http://127.0.0.1:8010/agent",
+        metadata={
+            "contract_activation": "planning",
+            "contract_version": "1.0",
+            "requires": ["employee.info"],
+            "produces": ["employee.leave_records"],
+            "legacy_produces": ["employee.leave_records", "employee.travel_records"],
+            "input_schema_refs": {"employee.info": "employee.info@v1"},
+            "output_schema_refs": {
+                "employee.leave_records": "employee.leave_records@v1"
+            },
+            "planning_selected_tools": ["query_leave_record"],
+            "selected_tools": [{"name": "query_leave_record"}],
+        },
+    )
+
+    async def scenario():
+        await resources.register(spec, persist=False)
+        assert await sync_remote_agents(resources, agents) == 1
+        return await agents.get("RemoteOfficeAssistantAgent")
+
+    agent = asyncio.run(scenario())
+    card = build_agent_cards([agent])[0]
+
+    assert agent.agent_contract is None
+    assert agent.requires == []
+    assert agent.produces == ["employee.leave_records", "employee.travel_records"]
+    assert card.planning_eligible is True
+    assert card.requires[0].name == "employee.info"
+    assert card.produces[0].name == "employee.leave_records"
+    assert card.planning_tool_scopes == ["query_leave_record"]
+    assert eligible_planning_agent_cards([card]) == [card]
 
 
 def test_remote_contract_with_missing_schema_ref_fails_closed(tmp_path) -> None:
@@ -107,6 +157,63 @@ def test_remote_contract_with_missing_schema_ref_fails_closed(tmp_path) -> None:
     assert count == 1
     assert broken_agent is None
     assert healthy_agent is not None
+
+
+def test_remote_contract_with_unknown_schema_ref_fails_closed(tmp_path) -> None:
+    resources = ResourceRegistry()
+    agents = AgentRegistry(tmp_path / "agents", tmp_path / "prompts")
+    spec = ResourceSpec(
+        type="agent",
+        name="InventedSchemaAgent",
+        server_id="remote-demo",
+        endpoint="http://127.0.0.1:8010/agent",
+        metadata={
+            "contract_version": "1.0",
+            "produces": ["invented.output"],
+            "output_schema_refs": {"invented.output": "invented.output@v99"},
+        },
+    )
+
+    async def scenario():
+        await resources.register(spec, persist=False)
+        count = await sync_remote_agents(resources, agents)
+        return count, await agents.get("InventedSchemaAgent")
+
+    count, agent = asyncio.run(scenario())
+
+    assert count == 0
+    assert agent is None
+
+
+def test_remote_contract_with_invented_planning_tool_fails_closed(tmp_path) -> None:
+    resources = ResourceRegistry()
+    agents = AgentRegistry(tmp_path / "agents", tmp_path / "prompts")
+    spec = ResourceSpec(
+        type="agent",
+        name="InventedPlanningToolAgent",
+        server_id="remote-demo",
+        endpoint="http://127.0.0.1:8010/agent",
+        metadata={
+            "contract_activation": "planning",
+            "contract_version": "1.0",
+            "produces": ["employee.leave_records"],
+            "output_schema_refs": {
+                "employee.leave_records": "employee.leave_records@v1"
+            },
+            "planning_selected_tools": ["invented_tool"],
+            "selected_tools": [{"name": "query_leave_record"}],
+        },
+    )
+
+    async def scenario():
+        await resources.register(spec, persist=False)
+        count = await sync_remote_agents(resources, agents)
+        return count, await agents.get("InventedPlanningToolAgent")
+
+    count, agent = asyncio.run(scenario())
+
+    assert count == 0
+    assert agent is None
 
 
 def test_legacy_produces_coexist_with_contract(tmp_path) -> None:
@@ -193,7 +300,7 @@ def test_mock_registry_requires_are_satisfiable() -> None:
     agent in mock_remote_registry.json, or legacy plans become unsolvable.
     Synthetic fan-in inputs are assembled by the planner from multiple
     upstream Artifacts, so no single agent declares them in produces."""
-    synthetic_fanin_inputs = {"report.sources"}
+    synthetic_fanin_inputs = {"report.sources", "email.dispatch.request"}
     registry_path = Path(__file__).resolve().parents[1] / "mock_remote_registry.json"
     entries = json.loads(registry_path.read_text(encoding="utf-8-sig"))["resources"]
     agents = [item for item in entries if item.get("type") == "agent"]
@@ -214,3 +321,43 @@ def test_mock_registry_requires_are_satisfiable() -> None:
     assert not unsatisfiable, (
         f"registry declares requires nobody produces: {unsatisfiable}"
     )
+
+
+def test_mock_registry_exposes_the_five_contract_backed_planning_agents(
+    tmp_path,
+) -> None:
+    registry_path = Path(__file__).resolve().parents[1] / "mock_remote_registry.json"
+    entries = json.loads(registry_path.read_text(encoding="utf-8-sig"))["resources"]
+    resources = ResourceRegistry()
+    agents = AgentRegistry(tmp_path / "agents", tmp_path / "prompts")
+
+    async def scenario():
+        for item in entries:
+            if item.get("type") == "agent":
+                await resources.register(ResourceSpec(**item), persist=False)
+        await sync_remote_agents(resources, agents)
+        registered = await agents.list()
+        return registered, build_agent_cards(registered)
+
+    registered, cards = asyncio.run(scenario())
+    registered_by_name = {agent.agent_name: agent for agent in registered}
+    planning_cards = {
+        card.agent_id: card for card in eligible_planning_agent_cards(cards)
+    }
+    expected = {
+        "RemoteHRAssistantAgent",
+        "RemoteKnowledgeAgent",
+        "RemoteOfficeAssistantAgent",
+        "RemoteReportAgent",
+        "RemoteEmailDispatchAgent",
+    }
+
+    assert expected <= set(planning_cards)
+    assert planning_cards["RemoteOfficeAssistantAgent"].planning_tool_scopes == [
+        "query_leave_record"
+    ]
+    assert planning_cards["RemoteEmailDispatchAgent"].planning_tool_scopes == [
+        "remote_email_tool"
+    ]
+    assert registered_by_name["RemoteOfficeAssistantAgent"].agent_contract is not None
+    assert registered_by_name["RemoteEmailDispatchAgent"].agent_contract is not None

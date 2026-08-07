@@ -216,6 +216,42 @@ def test_planner_security_metadata_cannot_override_trusted_authorization_profile
     )
 
 
+def test_trusted_subtask_type_can_match_declared_resource_capability():
+    state = {
+        "workflow_id": "wf",
+        "user_id": "admin",
+        "task_profile": {
+            "risk_profile": "HIGH",
+            "subtasks": [
+                {
+                    "id": "subtask_leave",
+                    "intent": "leave_record_query",
+                    "task_type": "HR",
+                    "goal": "查询员工请假记录",
+                    "data_scope": ["employee.leave_records"],
+                    "expected_capabilities": ["HR", "Office"],
+                    "scenario_tags": ["leave_record_query", "leave_request"],
+                }
+            ],
+        },
+    }
+    step = TaskStep(
+        step_id="leave",
+        agent_name="RemoteOfficeAssistantAgent",
+        preferred_resource_id="RemoteOfficeAssistantAgent",
+        operation_mode="read",
+        subtask_ids=["subtask_leave"],
+    )
+
+    context = _build_execution_context(
+        state, step, "RemoteOfficeAssistantAgent"
+    )
+    profile = context.metadata["task_profile"]
+
+    assert profile["task_type"] == "HR"
+    assert profile["trusted_resource_fit"]["fit"] == "match"
+
+
 def test_missing_trusted_subtask_binding_cannot_use_selected_agent_profile():
     state = {
         "workflow_id": "wf",

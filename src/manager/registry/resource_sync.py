@@ -4,9 +4,11 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
 from src.contracts.agent_contract import AgentContract, DataContractRef
+from src.contracts.agent_schema_catalog import AGENT_SCHEMA_CATALOG
 from src.interface.agent import Agent, AgentSource, LLMType
 from src.interface.mcp import Tool
 from src.manager.registry.resource_registry import ResourceRegistry, ResourceSpec
+from src.orchestration.output_contracts import OUTPUT_SCHEMAS
 
 logger = logging.getLogger(__name__)
 
@@ -141,6 +143,8 @@ async def sync_remote_agents(resource_registry: ResourceRegistry, agent_registry
         input_schema_refs = metadata.get("input_schema_refs", {})
         output_schema_refs = metadata.get("output_schema_refs", {})
         parameter_mapping = metadata.get("parameter_mapping", {})
+        contract_activation = metadata.get("contract_activation", "runtime")
+        planning_selected_tools = metadata.get("planning_selected_tools", [])
         agent_contract = None
         if contract_version:
             missing_input_refs = [
@@ -151,23 +155,40 @@ async def sync_remote_agents(resource_registry: ResourceRegistry, agent_registry
             ]
             unknown_optional_requires = optional_requires - set(requires)
             unknown_optional_produces = optional_produces - set(produces)
+            referenced_schemas = set(input_schema_refs.values()) | set(
+                output_schema_refs.values()
+            )
+            known_schemas = set(AGENT_SCHEMA_CATALOG) | set(OUTPUT_SCHEMAS)
+            unknown_schema_refs = sorted(referenced_schemas - known_schemas)
+            selected_tool_names = {tool.name for tool in selected_tools}
+            unknown_planning_tools = sorted(
+                set(planning_selected_tools) - selected_tool_names
+            )
             if (
                 missing_input_refs
                 or missing_output_refs
                 or unknown_optional_requires
                 or unknown_optional_produces
+                or unknown_schema_refs
+                or unknown_planning_tools
+                or contract_activation not in {"runtime", "planning"}
             ):
                 # Fail closed for this Agent only: refuse to register it, but
                 # never let one bad registry entry break the whole batch.
                 logger.error(
                     "Invalid Agent contract for %s: missing schema refs for "
                     "requires=%s, produces=%s; unknown optional requires=%s, "
-                    "produces=%s; agent not registered",
+                    "produces=%s; unknown schemas=%s; unknown planning "
+                    "tools=%s; activation=%r; "
+                    "agent not registered",
                     agent_name,
                     missing_input_refs,
                     missing_output_refs,
                     sorted(unknown_optional_requires),
                     sorted(unknown_optional_produces),
+                    unknown_schema_refs,
+                    unknown_planning_tools,
+                    contract_activation,
                 )
                 continue
             agent_contract = AgentContract(
@@ -190,6 +211,16 @@ async def sync_remote_agents(resource_registry: ResourceRegistry, agent_registry
                 ],
             )
 
+        runtime_requires = (
+            requires
+            if contract_activation == "runtime"
+            else metadata.get("legacy_requires", [])
+        )
+        runtime_produces = (
+            produces
+            if contract_activation == "runtime"
+            else []
+        )
         agent = Agent(
             user_id=default_user_id,
             agent_name=agent_name,
@@ -201,13 +232,17 @@ async def sync_remote_agents(resource_registry: ResourceRegistry, agent_registry
             source=AgentSource.REMOTE,
             endpoint=spec.endpoint,
             api_key=(spec.auth or {}).get("api_key"),
-            requires=requires,
-            produces=produces
-            + [name for name in legacy_produces if name not in produces],
+            requires=runtime_requires,
+            produces=runtime_produces
+            + [name for name in legacy_produces if name not in runtime_produces],
             contract_version=contract_version,
             input_schema_refs=input_schema_refs,
             output_schema_refs=output_schema_refs,
-            agent_contract=agent_contract,
+            agent_contract=(
+                agent_contract if contract_activation == "runtime" else None
+            ),
+            planning_agent_contract=agent_contract,
+            planning_selected_tools=planning_selected_tools,
             parameter_mapping=parameter_mapping,
         )
 

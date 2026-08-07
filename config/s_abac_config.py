@@ -304,6 +304,8 @@ RESOURCE_SECURITY_ATTRIBUTES = {
         "expected_capabilities": ["Communication"],
         "require_working_hours": True,
         "require_internal_network": True,
+        "requires_approval": False,
+        "external_side_effect": True,
     },
     "RemoteCommunicationAgent": {
         "type": "agent",

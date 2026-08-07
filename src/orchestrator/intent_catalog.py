@@ -22,7 +22,10 @@ INTENT_CATALOG: dict[str, dict[str, Any]] = {
         "label": "查询员工基础信息",
         "description": "查询员工身份、部门、岗位等基础档案",
         "task_type": "HR",
-        "keywords": ("员工", "人员", "人事", "花名册", "基本信息", "个人信息", "employee", "personnel"),
+        "keywords": (
+            "员工", "人员", "人事", "花名册", "基本信息", "个人信息",
+            "工龄", "司龄", "入职年限", "employee", "personnel",
+        ),
         "examples": ("查询员工基本信息", "查一下人员档案"),
         "counter_examples": ("员工请假制度", "员工培训政策"),
         "capabilities": ("HR",),

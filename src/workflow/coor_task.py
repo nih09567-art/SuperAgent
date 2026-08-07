@@ -8,6 +8,7 @@ from typing import Any, Dict, Literal, Optional
 try:
     from langgraph.types import Command
 except Exception:  # pragma: no cover - optional dependency in lightweight test env
+
     class Command:  # type: ignore
         def __class_getitem__(cls, _item):
             return cls
@@ -15,6 +16,7 @@ except Exception:  # pragma: no cover - optional dependency in lightweight test 
         def __init__(self, update=None, goto=None):
             self.update = update or {}
             self.goto = goto
+
 
 from src.interface.agent import COORDINATOR, PLANNER, PUBLISHER
 from src.llm.agents import AGENT_LLM_MAP
@@ -27,22 +29,31 @@ from src.manager.executor.base import ExecutionContext
 from src.manager.executor.factory import execute_agent
 from src.security.enforcement import enforce_agent_dispatch
 from config.global_variables import artifact_capture_enabled
+from src.orchestration.contract_planning import (
+    ContractClosure,
+    validate_plan_candidate_closure,
+)
 
 try:
     from src.llm.llm import get_llm_by_type
 except Exception:  # pragma: no cover - optional dependency in lightweight test env
+
     def get_llm_by_type(*args, **kwargs):  # type: ignore
         raise RuntimeError("LLM dependencies are not installed")
+
 
 try:
     from src.prompts.template import apply_prompt_template
 except Exception:  # pragma: no cover - optional dependency in lightweight test env
+
     def apply_prompt_template(*args, **kwargs):  # type: ignore
         return []
+
 
 try:
     from src.tools.search import get_search_status, is_search_available, tavily_tool
 except Exception:  # pragma: no cover - optional dependency in lightweight test env
+
     class _NoopTavilyTool:  # type: ignore
         def invoke(self, *args, **kwargs):
             return []
@@ -126,9 +137,7 @@ async def _collect_planner_stream(
         chunk_count = 0
         try:
             async for chunk in llm.astream(messages):
-                chunk_text = _stringify_stream_chunk(
-                    getattr(chunk, "content", "")
-                )
+                chunk_text = _stringify_stream_chunk(getattr(chunk, "content", ""))
                 if not chunk_text:
                     continue
                 content += chunk_text
@@ -195,8 +204,7 @@ def _search_before_planning(state: State) -> list[dict]:
     """Run optional planning search without turning an unavailable provider into a task failure."""
     if not is_search_available():
         status = get_search_status()
-        logger.warning("Search before planning skipped: %s",
-                       status.get("reason"))
+        logger.warning("Search before planning skipped: %s", status.get("reason"))
         return []
 
     user_messages = [
@@ -206,8 +214,7 @@ def _search_before_planning(state: State) -> list[dict]:
     ]
     query = next((item for item in user_messages if item.strip()), "")
     if not query:
-        logger.warning(
-            "Search before planning skipped: no user query was found")
+        logger.warning("Search before planning skipped: no user query was found")
         return []
 
     try:
@@ -216,13 +223,14 @@ def _search_before_planning(state: State) -> list[dict]:
             config={"configurable": {"user_id": state.get("user_id")}},
         )
     except Exception as exc:
-        logger.warning(
-            "Search before planning failed and was skipped: %s", exc)
+        logger.warning("Search before planning failed and was skipped: %s", exc)
         return []
 
     if not isinstance(result, list):
         logger.warning(
-            "Search before planning returned an unexpected result type: %s", type(result).__name__)
+            "Search before planning returned an unexpected result type: %s",
+            type(result).__name__,
+        )
         return []
     return [item for item in result if isinstance(item, dict)]
 
@@ -239,9 +247,8 @@ def _append_search_context(messages, searched_content: list[dict]):
         for elem in searched_content
     ]
     enriched = deepcopy(messages)
-    enriched[-1]["content"] += (
-        "\n\n# Relevant Search Results\n\n"
-        + json.dumps(normalized, ensure_ascii=False)
+    enriched[-1]["content"] += "\n\n# Relevant Search Results\n\n" + json.dumps(
+        normalized, ensure_ascii=False
     )
     return enriched
 
@@ -287,6 +294,9 @@ def _ensure_scenario_prompt_defaults(prompt_state: dict) -> dict:
             indent=2,
         )
 
+    if not prompt_state.get("PLANNING_AGENT_CARDS_TEXT"):
+        prompt_state["PLANNING_AGENT_CARDS_TEXT"] = "[]"
+
     return prompt_state
 
 
@@ -306,12 +316,12 @@ def _extract_plan_steps(content: str) -> list | None:
     first_obj = text.find("{")
     last_obj = text.rfind("}")
     if first_obj >= 0 and last_obj > first_obj:
-        candidates.append(text[first_obj: last_obj + 1])
+        candidates.append(text[first_obj : last_obj + 1])
 
     first_arr = text.find("[")
     last_arr = text.rfind("]")
     if first_arr >= 0 and last_arr > first_arr:
-        candidates.append(text[first_arr: last_arr + 1])
+        candidates.append(text[first_arr : last_arr + 1])
 
     for candidate in candidates:
         parsed = _try_parse(candidate)
@@ -320,7 +330,9 @@ def _extract_plan_steps(content: str) -> list | None:
         if isinstance(parsed, dict):
             if "steps" in parsed and isinstance(parsed.get("steps"), list):
                 return parsed.get("steps")
-            if "planning_steps" in parsed and isinstance(parsed.get("planning_steps"), list):
+            if "planning_steps" in parsed and isinstance(
+                parsed.get("planning_steps"), list
+            ):
                 return parsed.get("planning_steps")
         if isinstance(parsed, list):
             return parsed
@@ -330,7 +342,9 @@ def _extract_plan_steps(content: str) -> list | None:
 def _fallback_plan_steps(state: State) -> list[dict] | None:
     task_type = str(state.get("task_type") or "").upper()
     expected_capabilities = {
-        str(item).lower() for item in (state.get("expected_capabilities") or []) if item is not None
+        str(item).lower()
+        for item in (state.get("expected_capabilities") or [])
+        if item is not None
     }
     user_query = str(state.get("USER_QUERY") or "")
     team_members = set(state.get("TEAM_MEMBERS") or [])
@@ -339,7 +353,18 @@ def _fallback_plan_steps(state: State) -> list[dict] | None:
     is_engineering_task = (
         task_type == "ENGINEERING"
         or "engineering" in expected_capabilities
-        or any(token in lowered for token in ("python", "script", "json", "code", "program", "bash", "shell"))
+        or any(
+            token in lowered
+            for token in (
+                "python",
+                "script",
+                "json",
+                "code",
+                "program",
+                "bash",
+                "shell",
+            )
+        )
     )
 
     if is_engineering_task and "coder" in team_members:
@@ -415,14 +440,24 @@ def _infer_step_intents(step: dict) -> set[str]:
         token in text for token in ("员工", "人员", "基础信息", "个人信息", "employee")
     ):
         intents.add("employee_information_query")
-    if "salary_query" in compatible and any(token in text for token in ("薪资", "工资", "收入")):
+    if "salary_query" in compatible and any(
+        token in text for token in ("薪资", "工资", "收入")
+    ):
         intents.add("salary_query")
     if "leave_record_query" in compatible and any(
-        token in text for token in ("请假记录", "休假记录", "请假申请记录", "考勤记录", "leave record")
+        token in text
+        for token in (
+            "请假记录",
+            "休假记录",
+            "请假申请记录",
+            "考勤记录",
+            "leave record",
+        )
     ):
         intents.add("leave_record_query")
     if "information_research" in compatible and any(
-        token in text for token in ("搜索", "检索", "公开信息", "调研", "研究", "资料", "research")
+        token in text
+        for token in ("搜索", "检索", "公开信息", "调研", "研究", "资料", "research")
     ):
         intents.add("information_research")
     if "knowledge_lookup" in compatible and any(
@@ -430,20 +465,30 @@ def _infer_step_intents(step: dict) -> set[str]:
     ):
         intents.add("knowledge_lookup")
     if "risk_analysis" in compatible and any(
-        token in text for token in ("风险", "授信", "信用", "合规", "风控", "risk", "credit")
+        token in text
+        for token in ("风险", "授信", "信用", "合规", "风控", "risk", "credit")
     ):
         intents.add("risk_analysis")
     if "document_generation" in compatible and any(
-        token in text for token in ("文档", "证明", "申请书", "请假书", "请假条", "docx", "word")
+        token in text
+        for token in ("文档", "证明", "申请书", "请假书", "请假条", "docx", "word")
     ):
         intents.add("document_generation")
-    if "report_generation" in compatible and any(token in text for token in ("报告", "总结", "汇报")):
+    if "report_generation" in compatible and any(
+        token in text for token in ("报告", "总结", "汇报")
+    ):
         intents.add("report_generation")
-    if "message_or_email_send" in compatible and any(token in text for token in ("发送", "发给", "邮件", "通知")):
+    if "message_or_email_send" in compatible and any(
+        token in text for token in ("发送", "发给", "邮件", "通知")
+    ):
         intents.add("message_or_email_send")
-    if "meeting_arrangement" in compatible and any(token in text for token in ("会议", "开会", "参会")):
+    if "meeting_arrangement" in compatible and any(
+        token in text for token in ("会议", "开会", "参会")
+    ):
         intents.add("meeting_arrangement")
-    if "schedule_management" in compatible and any(token in text for token in ("日程", "待办", "提醒", "有空")):
+    if "schedule_management" in compatible and any(
+        token in text for token in ("日程", "待办", "提醒", "有空")
+    ):
         intents.add("schedule_management")
     if "weather_query" in compatible and any(
         token in text for token in ("天气", "气温", "温度", "weather")
@@ -476,7 +521,9 @@ def _primary_output_for_step(step: dict, produced_outputs: list[str]) -> str | N
 
 
 def _plan_has_intent(steps: list[dict], intent: str) -> bool:
-    return any(intent in _infer_step_intents(step) for step in steps if isinstance(step, dict))
+    return any(
+        intent in _infer_step_intents(step) for step in steps if isinstance(step, dict)
+    )
 
 
 def _first_step_index_for_intent(steps: list[dict], intent: str) -> int:
@@ -491,9 +538,9 @@ def _string_list(value) -> list[str]:
     if value is None:
         return []
     raw_items = value if isinstance(value, (list, tuple, set)) else [value]
-    return list(dict.fromkeys(
-        str(item).strip() for item in raw_items if str(item).strip()
-    ))
+    return list(
+        dict.fromkeys(str(item).strip() for item in raw_items if str(item).strip())
+    )
 
 
 def _step_subtask_ids(step: dict) -> list[str]:
@@ -522,6 +569,18 @@ def _scheduler_profile_validation_state(state: State) -> State:
         ORCHESTRATION_SCHEDULER_ENABLED
     )
     return validation_state
+
+
+def _contract_closure_errors(steps: list, state: State) -> list[str]:
+    raw = state.get("contract_closure") or {}
+    if not isinstance(raw, dict) or not raw.get("complete"):
+        return []
+    closure = ContractClosure(
+        target_outputs=tuple(_string_list(raw.get("target_outputs"))),
+        selected_agent_ids=tuple(_string_list(raw.get("selected_agent_ids"))),
+        missing_outputs=tuple(_string_list(raw.get("missing_outputs"))),
+    )
+    return validate_plan_candidate_closure(steps, closure)
 
 
 def _validate_plan_against_task_profile(steps: list, state: State) -> list[str]:
@@ -560,13 +619,9 @@ def _validate_plan_against_task_profile(steps: list, state: State) -> list[str]:
     # 同一个 Agent 能一次完成多个兼容逻辑任务时，允许一个 step 覆盖多个
     # subtask_ids；但每个逻辑子任务仍必须且只能被覆盖一次。
     structured_steps = [
-        step for step in steps
-        if isinstance(step, dict) and _step_subtask_ids(step)
+        step for step in steps if isinstance(step, dict) and _step_subtask_ids(step)
     ]
-    if (
-        state.get("_require_trusted_subtask_bindings")
-        and not structured_steps
-    ):
+    if state.get("_require_trusted_subtask_bindings") and not structured_steps:
         errors.append(
             "调度器模式下，TaskProfile 存在子任务时，"
             "每个执行步骤必须包含可验证的 subtask_ids"
@@ -627,7 +682,8 @@ def _validate_plan_against_task_profile(steps: list, state: State) -> list[str]:
             if not isinstance(step, dict):
                 continue
             covered_ids = [
-                subtask_id for subtask_id in _step_subtask_ids(step)
+                subtask_id
+                for subtask_id in _step_subtask_ids(step)
                 if subtask_id in subtask_by_id
             ]
             if not covered_ids:
@@ -681,8 +737,10 @@ def _validate_plan_against_task_profile(steps: list, state: State) -> list[str]:
             continue
         intent = str(subtask.get("intent") or "")
         if intent and not _plan_has_intent(steps, intent):
-            expected_agents = "、".join(
-                _PROFILE_INTENT_AGENT_PREFERENCES.get(intent, ())) or "匹配该意图的 Agent"
+            expected_agents = (
+                "、".join(_PROFILE_INTENT_AGENT_PREFERENCES.get(intent, ()))
+                or "匹配该意图的 Agent"
+            )
             errors.append(f"缺少意图 {intent} 的独立步骤，应由 {expected_agents} 执行")
             continue
         current_index = _first_step_index_for_intent(steps, intent)
@@ -691,13 +749,13 @@ def _validate_plan_against_task_profile(steps: list, state: State) -> list[str]:
             dependency_intent = str((dependency or {}).get("intent") or "")
             if not dependency_intent:
                 continue
-            dependency_index = _first_step_index_for_intent(
-                steps, dependency_intent)
+            dependency_index = _first_step_index_for_intent(steps, dependency_intent)
             # 两个逻辑意图可由同一 Agent 在同一步内完成；仅后置才是错误。
             if dependency_index > current_index:
                 errors.append(
                     f"意图 {dependency_intent} 必须在 {intent} 之前或同一执行步骤内完成"
                 )
+    errors.extend(_contract_closure_errors(steps, state))
     return list(dict.fromkeys(errors))
 
 
@@ -718,9 +776,33 @@ async def _validate_plan_data_flow(steps: list, user_id: str) -> tuple[bool, lis
     agents = await agent_manager.agent_registry.list()
     for agent in agents:
         if agent.user_id == "share" or agent.user_id == user_id:
+            planning_contract = getattr(
+                agent, "planning_agent_contract", None
+            ) or getattr(agent, "agent_contract", None)
             agent_metadata[agent.agent_name] = {
-                "requires": getattr(agent, "requires", []),
-                "produces": getattr(agent, "produces", []),
+                "requires": (
+                    [ref.name for ref in planning_contract.requires if ref.required]
+                    if planning_contract
+                    else getattr(agent, "requires", [])
+                ),
+                "produces": (
+                    [ref.name for ref in planning_contract.produces]
+                    if planning_contract
+                    else getattr(agent, "produces", [])
+                ),
+                "input_schema_refs": (
+                    dict(planning_contract.input_schema_refs)
+                    if planning_contract
+                    else dict(getattr(agent, "input_schema_refs", {}) or {})
+                ),
+                "output_schema_refs": (
+                    dict(planning_contract.output_schema_refs)
+                    if planning_contract
+                    else dict(getattr(agent, "output_schema_refs", {}) or {})
+                ),
+                "planning_tools": _string_list(
+                    getattr(agent, "planning_selected_tools", [])
+                ),
             }
 
     # Track what data is available at each step and where it came from. This
@@ -749,7 +831,8 @@ async def _validate_plan_data_flow(steps: list, user_id: str) -> tuple[bool, lis
         metadata = agent_metadata.get(agent_name)
         if not metadata:
             logger.warning(
-                f"Step {step_idx + 1}: Agent '{agent_name}' not found in registry")
+                f"Step {step_idx + 1}: Agent '{agent_name}' not found in registry"
+            )
             errors.append(
                 f"Step {step_idx + 1}: Agent '{agent_name}' is not available for this user"
             )
@@ -757,11 +840,47 @@ async def _validate_plan_data_flow(steps: list, user_id: str) -> tuple[bool, lis
 
         required_params = _string_list(metadata["requires"])
         produced_outputs = _string_list(metadata["produces"])
+        declared_outputs = _string_list(
+            step.get("expected_outputs") or step.get("produces")
+        )
+        undeclared_outputs = sorted(set(declared_outputs) - set(produced_outputs))
+        if undeclared_outputs:
+            errors.append(
+                f"Step {step_idx + 1} ({agent_name}): outputs not declared by "
+                f"trusted Contract: {undeclared_outputs}"
+            )
+        if not declared_outputs:
+            intent_outputs = [
+                _INTENT_PRIMARY_OUTPUTS[intent]
+                for intent in (
+                    set(_step_declared_intents(step)) | _infer_step_intents(step)
+                )
+                if _INTENT_PRIMARY_OUTPUTS.get(intent) in produced_outputs
+            ]
+            declared_outputs = list(dict.fromkeys(intent_outputs))
+            if not declared_outputs and len(produced_outputs) == 1:
+                declared_outputs = list(produced_outputs)
+            if declared_outputs:
+                step["expected_outputs"] = declared_outputs
+
+        requested_tools = _string_list(
+            step.get("planning_tools")
+            or step.get("tool_names")
+            or step.get("tool_name")
+        )
+        allowed_tools = set(metadata.get("planning_tools") or [])
+        if requested_tools and allowed_tools:
+            invented_tools = sorted(set(requested_tools) - allowed_tools)
+            if invented_tools:
+                errors.append(
+                    f"Step {step_idx + 1} ({agent_name}): tools outside trusted "
+                    f"planning scope: {invented_tools}"
+                )
 
         # If agent has no requirements, it's autonomous
         if not required_params:
             # Add this agent's outputs to available data
-            for output in produced_outputs:
+            for output in declared_outputs or produced_outputs:
                 available_outputs.add(output)
                 available_output_sources[output] = str(
                     step.get("step_id") or agent_name
@@ -782,15 +901,49 @@ async def _validate_plan_data_flow(steps: list, user_id: str) -> tuple[bool, lis
         # deterministically from those prior steps.  Each source is accepted
         # only when its registered Agent has one unambiguous typed output.
         existing_params = {
-            item.get("parameter_name")
-            for item in inputs
-            if isinstance(item, dict)
+            item.get("parameter_name") for item in inputs if isinstance(item, dict)
         }
-        if "report.sources" in required_params and "report.sources" not in existing_params:
+        if (
+            "email.dispatch.request" in required_params
+            and "email.dispatch.request" not in existing_params
+        ):
+            report_source = None
+            for prev_step in reversed(steps[:step_idx]):
+                prev_metadata = agent_metadata.get(prev_step.get("agent_name")) or {}
+                prev_outputs = _string_list(
+                    prev_step.get("expected_outputs") or prev_metadata.get("produces")
+                )
+                if "report.markdown" in prev_outputs:
+                    report_source = str(
+                        prev_step.get("step_id") or prev_step.get("agent_name")
+                    )
+                    break
+            if report_source:
+                inputs.append(
+                    {
+                        "parameter_name": "email.dispatch.request",
+                        "source_artifacts": [
+                            {
+                                "source_step": report_source,
+                                "source_output": "report.markdown",
+                            }
+                        ],
+                        "assembly": {
+                            "schema_ref": "email.dispatch.request@v1",
+                            "title": "邮件发送请求",
+                            "instruction": (
+                                "审批通过后由平台补充 approval_id 和幂等键"
+                            ),
+                        },
+                    }
+                )
+                existing_params.add("email.dispatch.request")
+        if (
+            "report.sources" in required_params
+            and "report.sources" not in existing_params
+        ):
             dependency_refs = {
-                str(value)
-                for value in (step.get("depends_on") or [])
-                if str(value)
+                str(value) for value in (step.get("depends_on") or []) if str(value)
             }
             source_artifacts = []
             for prev_step in steps[:step_idx]:
@@ -804,16 +957,13 @@ async def _validate_plan_data_flow(steps: list, user_id: str) -> tuple[bool, lis
                     continue
                 prev_metadata = agent_metadata.get(prev_step.get("agent_name")) or {}
                 prev_outputs = _string_list(prev_metadata.get("produces"))
-                source_output = _primary_output_for_step(
-                    prev_step, prev_outputs
-                )
+                source_output = _primary_output_for_step(prev_step, prev_outputs)
                 if not source_output:
                     continue
                 source_artifacts.append(
                     {
                         "source_step": str(
-                            prev_step.get("step_id")
-                            or prev_step.get("agent_name")
+                            prev_step.get("step_id") or prev_step.get("agent_name")
                         ),
                         "source_output": source_output,
                     }
@@ -832,7 +982,9 @@ async def _validate_plan_data_flow(steps: list, user_id: str) -> tuple[bool, lis
             param_name = input_mapping.get("parameter_name")
             source_artifacts = input_mapping.get("source_artifacts")
             if isinstance(source_artifacts, list):
-                if input_mapping.get("source_step") or input_mapping.get("source_output"):
+                if input_mapping.get("source_step") or input_mapping.get(
+                    "source_output"
+                ):
                     errors.append(
                         f"Step {step_idx + 1} ({agent_name}): Input mapping mixes "
                         "source_artifacts with source_step/source_output"
@@ -885,9 +1037,7 @@ async def _validate_plan_data_flow(steps: list, user_id: str) -> tuple[bool, lis
                         source_metadata
                         and source_output not in source_metadata["produces"]
                     ):
-                        canonical_outputs = _string_list(
-                            source_metadata["produces"]
-                        )
+                        canonical_outputs = _string_list(source_metadata["produces"])
                         canonical_output = _primary_output_for_step(
                             source_candidate, canonical_outputs
                         )
@@ -967,11 +1117,9 @@ async def _validate_plan_data_flow(steps: list, user_id: str) -> tuple[bool, lis
             )
 
         # Add this agent's outputs to available data
-        for output in produced_outputs:
+        for output in declared_outputs or produced_outputs:
             available_outputs.add(output)
-            available_output_sources[output] = str(
-                step.get("step_id") or agent_name
-            )
+            available_output_sources[output] = str(step.get("step_id") or agent_name)
 
     is_valid = len(errors) == 0
     return is_valid, errors
@@ -981,14 +1129,11 @@ async def publisher_node(
     state: State,
 ) -> Command[Literal["agent_proxy", "__end__"]]:
     """Publisher node."""
-    logger.info("publisher evaluating next action in %s mode ",
-                state["workflow_mode"])
+    logger.info("publisher evaluating next action in %s mode ", state["workflow_mode"])
 
     if state["workflow_mode"] == "launch":
-        cache.restore_system_node(
-            state["workflow_id"], PUBLISHER, state["user_id"])
-        messages = _sanitize_messages(
-            apply_prompt_template("publisher", state))
+        cache.restore_system_node(state["workflow_id"], PUBLISHER, state["user_id"])
+        messages = _sanitize_messages(apply_prompt_template("publisher", state))
         response = await (
             get_llm_by_type(AGENT_LLM_MAP["publisher"])
             .with_structured_output(Router)
@@ -999,17 +1144,22 @@ async def publisher_node(
             agent = response["next"]
         except Exception as e:
             try:
-                preview = response.model_dump() if hasattr(
-                    response, "model_dump") else response
+                preview = (
+                    response.model_dump()
+                    if hasattr(response, "model_dump")
+                    else response
+                )
                 try:
                     preview_str = json.dumps(preview, ensure_ascii=False)
                 except Exception:
                     preview_str = str(preview)
                 logger.error(
-                    f"publisher response parse error: {e}; response={preview_str}")
+                    f"publisher response parse error: {e}; response={preview_str}"
+                )
             except Exception as inner:
                 logger.error(
-                    f"publisher response parse error and printing failed: {inner}")
+                    f"publisher response parse error and printing failed: {inner}"
+                )
             raise
 
         if agent == "FINISH":
@@ -1020,8 +1170,7 @@ async def publisher_node(
             )
             return Command(goto=goto, update={"next": goto})
 
-        cache.restore_system_node(
-            state["workflow_id"], agent, state["user_id"])
+        cache.restore_system_node(state["workflow_id"], agent, state["user_id"])
         goto = "agent_proxy"
 
         logger.info("publisher delegating to: %s ", agent)
@@ -1102,6 +1251,7 @@ async def agent_proxy_node(state: State) -> Command[Literal["publisher", "__end_
         for step in current_plan
         if isinstance(step, dict) and step.get("agent_name") == state["next"]
     ]
+
     # Keep the plan's concrete operation mode for evidence and authorization.
     # Collapsing approve/delete into generic write/send would allow a weaker
     # receipt to satisfy a contract that explicitly requires a trusted verifier.
@@ -1110,8 +1260,16 @@ async def agent_proxy_node(state: State) -> Command[Literal["publisher", "__end_
         if mode in {"query", "lookup", "search"}:
             return "read"
         if mode in {
-            "read", "write", "send", "delete", "update", "create",
-            "submit", "approve", "execute", "export",
+            "read",
+            "write",
+            "send",
+            "delete",
+            "update",
+            "create",
+            "submit",
+            "approve",
+            "execute",
+            "export",
         }:
             return mode
         return "write" if mode else ""
@@ -1134,7 +1292,9 @@ async def agent_proxy_node(state: State) -> Command[Literal["publisher", "__end_
         for step in assigned_steps
         if isinstance(step, dict) and step.get("operation_mode")
     ]
-    fallback_mode = _normalize_legacy_operation_mode(state.get("operation_mode")) or "read"
+    fallback_mode = (
+        _normalize_legacy_operation_mode(state.get("operation_mode")) or "read"
+    )
     selected_step, step_operation_mode = max(
         normalized_step_modes or [(None, fallback_mode)],
         key=lambda item: mode_rank.get(item[1], 2),
@@ -1148,9 +1308,7 @@ async def agent_proxy_node(state: State) -> Command[Literal["publisher", "__end_
         dict(selected_contract) if isinstance(selected_contract, dict) else {}
     )
     step_risk_level = str(
-        (selected_step or {}).get("risk_level")
-        or state.get("risk_profile")
-        or "LOW"
+        (selected_step or {}).get("risk_level") or state.get("risk_profile") or "LOW"
     )
     context.metadata["operation_mode"] = step_operation_mode
     context.metadata["risk_level"] = step_risk_level
@@ -1179,8 +1337,12 @@ async def agent_proxy_node(state: State) -> Command[Literal["publisher", "__end_
     execute_result = await execute_agent(_agent, messages_to_send, context)
     if not execute_result.is_success:
         error_detail = execute_result.error or "Unknown executor error"
-        logger.warning("Agent '%s' execution failed: %s", _agent.agent_name, error_detail)
-    response_content = execute_result.result if execute_result.is_success else execute_result.error
+        logger.warning(
+            "Agent '%s' execution failed: %s", _agent.agent_name, error_detail
+        )
+    response_content = (
+        execute_result.result if execute_result.is_success else execute_result.error
+    )
     if response_content is None:
         response_content = ""
     raw_payload = response_content
@@ -1237,9 +1399,7 @@ async def agent_proxy_node(state: State) -> Command[Literal["publisher", "__end_
             if not isinstance(step_results, dict):
                 step_results = {}
             captured_status = (
-                StepStatus.SUCCEEDED
-                if execute_result.is_success
-                else StepStatus.FAILED
+                StepStatus.SUCCEEDED if execute_result.is_success else StepStatus.FAILED
             )
             step_results[step_key] = StepResult(
                 step_id=step_key,
@@ -1288,9 +1448,7 @@ async def agent_proxy_node(state: State) -> Command[Literal["publisher", "__end_
                 else ""
             ) or step_operation_mode
             evidence_risk = str(
-                (assigned_step or {}).get("risk_level")
-                or step_risk_level
-                or "LOW"
+                (assigned_step or {}).get("risk_level") or step_risk_level or "LOW"
             )
             raw_contract = (
                 assigned_step.get("verification_contract")
@@ -1333,10 +1491,12 @@ async def agent_proxy_node(state: State) -> Command[Literal["publisher", "__end_
                 {
                     # LangChain 消息 content 只接受字符串或内容块列表，不能直接放 dict。
                     # 序列化后仍可在 Publisher 上下文中保留完整结构化结果。
-                    "content": json.dumps(structured_result, ensure_ascii=False, default=str),
+                    "content": json.dumps(
+                        structured_result, ensure_ascii=False, default=str
+                    ),
                     "tool": "agent_proxy",
                     "role": "assistant",
-                }
+                },
             ],
             "processing_agent_name": _agent.agent_name,
             "agent_name": _agent.agent_name,
@@ -1366,34 +1526,6 @@ async def _finalize_validated_plan(
     TaskGraph/PlanSnapshot that production execution requires.
     """
 
-    trusted_scenario_contract_id = None
-    if steps:
-        # The annual-leave defense workflow has a fixed evidence contract.  A
-        # real Planner may choose the right Agents and edges while emitting
-        # positional step IDs; normalize only that explicitly scoped shape so
-        # launch and production persist the same stable IDs.
-        try:
-            from src.orchestration.plan_to_task_graph import (
-                canonicalize_annual_leave_plan,
-                trusted_scenario_contract_for_plan,
-            )
-
-            trusted_scenario_contract_id = trusted_scenario_contract_for_plan(
-                steps,
-                user_query=state.get("original_user_query", "")
-                or state.get("USER_QUERY", ""),
-            )
-            steps = canonicalize_annual_leave_plan(
-                steps,
-                user_query=state.get("original_user_query", "")
-                or state.get("USER_QUERY", ""),
-            )
-        except Exception as canonicalize_exc:  # noqa: BLE001 - planning remains fail-safe
-            logger.warning(
-                "annual-leave plan canonicalization skipped: %s",
-                canonicalize_exc,
-            )
-
     if steps:
         # Recover data-flow ordering the Planner drops for autonomous remote
         # agents. Persisting the corrected steps keeps production snapshot
@@ -1411,29 +1543,20 @@ async def _finalize_validated_plan(
             )
 
     if steps is not None:
-        cache.restore_planning_steps(
-            state["workflow_id"], steps, state["user_id"]
-        )
+        cache.restore_planning_steps(state["workflow_id"], steps, state["user_id"])
         # The final planner message is authoritative for the frontend.
         # Preserve validation errors when a streamed draft was rejected;
         # otherwise the browser may display an executable-looking invalid plan.
         if plan_validation_failed:
             message_content = raw_content
         else:
-            message_content = json.dumps(
-                {"steps": steps}, indent=2, ensure_ascii=False
-            )
-        if (
-            state.get("stop_after_planner")
-            and state.get("workflow_mode") == "launch"
-        ):
+            message_content = json.dumps({"steps": steps}, indent=2, ensure_ascii=False)
+        if state.get("stop_after_planner") and state.get("workflow_mode") == "launch":
             goto = "__end__"
     else:
         logger.warning("Planner response is not a valid JSON")
         goto = "__end__"
-    cache.restore_system_node(
-        state["workflow_id"], goto, state["user_id"]
-    )
+    cache.restore_system_node(state["workflow_id"], goto, state["user_id"])
 
     # When the governed scheduler is enabled, production accepts only a
     # persisted PlanSnapshot re-derived from the current trusted registry.
@@ -1460,12 +1583,8 @@ async def _finalize_validated_plan(
             },
             ensure_ascii=False,
         )
-        cache.restore_planning_steps(
-            state["workflow_id"], [], state["user_id"]
-        )
-        cache.restore_system_node(
-            state["workflow_id"], "__end__", state["user_id"]
-        )
+        cache.restore_planning_steps(state["workflow_id"], [], state["user_id"])
+        cache.restore_system_node(state["workflow_id"], "__end__", state["user_id"])
         return [], blocked_content, "__end__", {}
 
     try:
@@ -1483,25 +1602,18 @@ async def _finalize_validated_plan(
             agent.agent_name: agent.agent_contract
             for agent in registered_agents
             if getattr(agent, "agent_contract", None) is not None
-            and (
-                agent.user_id == "share"
-                or agent.user_id == state.get("user_id")
-            )
+            and (agent.user_id == "share" or agent.user_id == state.get("user_id"))
         }
         produces = {
             agent.agent_name: list(getattr(agent, "produces", []) or [])
             for agent in registered_agents
-            if (
-                agent.user_id == "share"
-                or agent.user_id == state.get("user_id")
-            )
+            if (agent.user_id == "share" or agent.user_id == state.get("user_id"))
         }
         task_graph = plan_to_task_graph(
             steps,
             task_id=state.get("workflow_id") or "task",
             subject=state.get("user_id"),
-            goal=state.get("original_user_query", "")
-            or state.get("USER_QUERY", ""),
+            goal=state.get("original_user_query", "") or state.get("USER_QUERY", ""),
             agent_produces=produces,
             agent_contracts=contracts,
             # Snapshot creation and execution-time verification must derive the
@@ -1510,7 +1622,6 @@ async def _finalize_validated_plan(
             # Agent config while the verification rebuild chose the identical
             # mode from the TaskProfile, causing a false TASK_GRAPH_INVALID.
             subtasks=(state.get("task_profile") or {}).get("subtasks"),
-            trusted_scenario_contract_id=trusted_scenario_contract_id,
         )
         unknown = unknown_operation_modes(task_graph)
         if unknown:
@@ -1534,9 +1645,7 @@ async def _finalize_validated_plan(
             len(task_graph.steps),
         )
     except Exception as exc:  # noqa: BLE001 - scheduler mode must fail closed
-        logger.warning(
-            "scheduler wiring: validated plan finalization failed: %s", exc
-        )
+        logger.warning("scheduler wiring: validated plan finalization failed: %s", exc)
         return _block_scheduler_plan("TaskGraph 或 PlanSnapshot 持久化失败")
 
     return steps, message_content, goto, plan_update
@@ -1559,7 +1668,9 @@ async def planner_node(state: State) -> Command[Literal["publisher", "__end__"]]
     runtime_event_handler = state.get("runtime_event_handler")
 
     if state.get("workflow_mode") == "launch" and state.get("workflow_skill_match"):
-        steps = state.get("planning_steps") or cache.get_planning_steps(state["workflow_id"])
+        steps = state.get("planning_steps") or cache.get_planning_steps(
+            state["workflow_id"]
+        )
         if isinstance(steps, str):
             try:
                 steps = json.loads(steps)
@@ -1584,18 +1695,22 @@ async def planner_node(state: State) -> Command[Literal["publisher", "__end__"]]
             raw_content = json.dumps({"steps": steps}, ensure_ascii=False)
             message_content = json.dumps({"steps": steps}, indent=2, ensure_ascii=False)
             goto = "__end__" if state.get("stop_after_planner") else "publisher"
-            steps, message_content, goto, plan_update = (
-                await _finalize_validated_plan(
-                    state,
-                    steps,
-                    raw_content=raw_content,
-                    message_content=message_content,
-                    goto=goto,
-                )
+            steps, message_content, goto, plan_update = await _finalize_validated_plan(
+                state,
+                steps,
+                raw_content=raw_content,
+                message_content=message_content,
+                goto=goto,
             )
             return Command(
                 update={
-                    "messages": [{"content": message_content, "tool": "planner", "role": "assistant"}],
+                    "messages": [
+                        {
+                            "content": message_content,
+                            "tool": "planner",
+                            "role": "assistant",
+                        }
+                    ],
                     "agent_name": "planner",
                     "full_plan": raw_content,
                     "planning_steps": steps,
@@ -1614,9 +1729,9 @@ async def planner_node(state: State) -> Command[Literal["publisher", "__end__"]]
                         "event": "skill_rejected",
                         "agent_name": "planner",
                         "data": {
-                            "skill_id": (
-                                state.get("workflow_skill_match") or {}
-                            ).get("skill_id", ""),
+                            "skill_id": (state.get("workflow_skill_match") or {}).get(
+                                "skill_id", ""
+                            ),
                             "reason": "current_plan_validation_failed",
                             "errors": validation_errors,
                         },
@@ -1629,24 +1744,23 @@ async def planner_node(state: State) -> Command[Literal["publisher", "__end__"]]
         cache.restore_planning_steps(state["workflow_id"], [], state["user_id"])
 
     routing_decision = state.get("routing_decision") or {}
-    if state["workflow_mode"] == "launch" and routing_decision.get("decision") != "DISPATCH":
+    if (
+        state["workflow_mode"] == "launch"
+        and routing_decision.get("decision") != "DISPATCH"
+    ):
         decision = routing_decision.get("decision", "CLARIFY")
-        reason_codes = routing_decision.get("reason_codes") or [
-            "NO_CAPABLE_AGENT"]
+        reason_codes = routing_decision.get("reason_codes") or ["NO_CAPABLE_AGENT"]
         task_profile = state.get("task_profile") or {}
         missing_fields = task_profile.get("missing_fields") or []
-        thought = (
-            f"主Agent路由决策为 {decision}，原因：{', '.join(reason_codes)}。"
-            + (f" 需要补充字段：{', '.join(missing_fields)}。" if missing_fields else "")
+        thought = f"主Agent路由决策为 {decision}，原因：{', '.join(reason_codes)}。" + (
+            f" 需要补充字段：{', '.join(missing_fields)}。" if missing_fields else ""
         )
         content = json.dumps(
             {"thought": thought, "steps": [], "new_agents_needed": []},
             ensure_ascii=False,
         )
-        cache.restore_planning_steps(
-            state["workflow_id"], [], state["user_id"])
-        cache.restore_system_node(
-            state["workflow_id"], "__end__", state["user_id"])
+        cache.restore_planning_steps(state["workflow_id"], [], state["user_id"])
+        cache.restore_system_node(state["workflow_id"], "__end__", state["user_id"])
         if callable(runtime_event_handler):
             await runtime_event_handler(
                 {
@@ -1661,7 +1775,9 @@ async def planner_node(state: State) -> Command[Literal["publisher", "__end__"]]
             )
         return Command(
             update={
-                "messages": [{"content": content, "tool": "planner", "role": "assistant"}],
+                "messages": [
+                    {"content": content, "tool": "planner", "role": "assistant"}
+                ],
                 "agent_name": "planner",
                 "full_plan": content,
                 "planning_steps": [],
@@ -1677,7 +1793,8 @@ async def planner_node(state: State) -> Command[Literal["publisher", "__end__"]]
             history = [str(history)]
         if history:
             history_text = "\n".join(
-                f"{idx + 1}. {item}" for idx, item in enumerate(history))
+                f"{idx + 1}. {item}" for idx, item in enumerate(history)
+            )
         else:
             history_text = "None"
 
@@ -1697,8 +1814,7 @@ async def planner_node(state: State) -> Command[Literal["publisher", "__end__"]]
 
         prompt_state["INSTRUCTION_HISTORY_TEXT"] = history_text
         prompt_state["CURRENT_PLAN_TEXT"] = current_plan_text
-        messages = _sanitize_messages(
-            apply_prompt_template("planner", prompt_state))
+        messages = _sanitize_messages(apply_prompt_template("planner", prompt_state))
         llm = get_llm_by_type(AGENT_LLM_MAP["planner"])
         if state.get("deep_thinking_mode"):
             llm = get_llm_by_type("reasoning")
@@ -1715,13 +1831,13 @@ async def planner_node(state: State) -> Command[Literal["publisher", "__end__"]]
             logger.info("[PERF] Web search: %.2fs", search_time)
             messages = _append_search_context(messages, searched_content)
 
-        cache.restore_system_node(
-            state["workflow_id"], PLANNER, state["user_id"])
+        cache.restore_system_node(state["workflow_id"], PLANNER, state["user_id"])
 
         # Log LLM call start
         llm_start = time.time()
-        model_type = "reasoning" if state.get(
-            "deep_thinking_mode") else AGENT_LLM_MAP["planner"]
+        model_type = (
+            "reasoning" if state.get("deep_thinking_mode") else AGENT_LLM_MAP["planner"]
+        )
         logger.info("[PERF] Starting LLM call (model: %s)...", model_type)
 
         # Use async streaming with real-time display
@@ -1758,19 +1874,18 @@ async def planner_node(state: State) -> Command[Literal["publisher", "__end__"]]
 
     elif state["workflow_mode"] == "polish" and state.get("polish_target") == "planner":
         polish_start = time.time()
-        state["historical_plan"] = cache.get_planning_steps(
-            state["workflow_id"])
+        state["historical_plan"] = cache.get_planning_steps(state["workflow_id"])
         state["adjustment_instruction"] = state.get("polish_instruction")
 
         messages = _sanitize_messages(
-            apply_prompt_template("planner_polishment", state))
+            apply_prompt_template("planner_polishment", state)
+        )
         llm = get_llm_by_type(AGENT_LLM_MAP["planner"])
         if state.get("deep_thinking_mode"):
             llm = get_llm_by_type("reasoning")
 
         prep_time = time.time()
-        logger.info("[PERF] Polish prompt preparation: %.2fs",
-                    prep_time - polish_start)
+        logger.info("[PERF] Polish prompt preparation: %.2fs", prep_time - polish_start)
 
         if state.get("search_before_planning"):
             search_start = time.time()
@@ -1780,10 +1895,10 @@ async def planner_node(state: State) -> Command[Literal["publisher", "__end__"]]
             messages = _append_search_context(messages, searched_content)
 
         llm_start = time.time()
-        model_type = "reasoning" if state.get(
-            "deep_thinking_mode") else AGENT_LLM_MAP["planner"]
-        logger.info(
-            "[PERF] Polish starting LLM call (model: %s)...", model_type)
+        model_type = (
+            "reasoning" if state.get("deep_thinking_mode") else AGENT_LLM_MAP["planner"]
+        )
+        logger.info("[PERF] Polish starting LLM call (model: %s)...", model_type)
 
         # Use async streaming with real-time display for polish mode
         polish_content, chunk_count = await _collect_planner_stream(
@@ -1820,20 +1935,26 @@ async def planner_node(state: State) -> Command[Literal["publisher", "__end__"]]
         parse_time = time.time() - parse_start
         logger.info("[PERF] JSON parsing: %.2fs", parse_time)
 
-        if steps is None and state["workflow_mode"] == "launch" and retry_messages and retry_llm:
+        if (
+            steps is None
+            and state["workflow_mode"] == "launch"
+            and retry_messages
+            and retry_llm
+        ):
             try:
                 retry_start = time.time()
                 logger.warning("[PERF] JSON parsing failed, retrying...")
 
                 retry_note = (
                     "仅输出JSON格式的计划，不要解释或补充文字。"
-                    "必须使用 {\"steps\": [...]} 结构。"
+                    '必须使用 {"steps": [...]} 结构。'
                 )
                 retry_payload = deepcopy(retry_messages)
                 retry_payload.append({"role": "user", "content": retry_note})
                 retry_response = await retry_llm.ainvoke(retry_payload)
                 retry_content = clean_response_tags(
-                    getattr(retry_response, "content", ""))
+                    getattr(retry_response, "content", "")
+                )
 
                 retry_time = time.time() - retry_start
                 logger.info("[PERF] Retry LLM call: %.2fs", retry_time)
@@ -1844,8 +1965,7 @@ async def planner_node(state: State) -> Command[Literal["publisher", "__end__"]]
                         raw_content = retry_content
                         logger.info("[PERF] Retry succeeded")
                     else:
-                        logger.warning(
-                            "[PERF] Retry failed: still cannot parse JSON")
+                        logger.warning("[PERF] Retry failed: still cannot parse JSON")
             except Exception as exc:
                 logger.warning("[PERF] Retry exception: %s", exc)
 
@@ -1875,10 +1995,12 @@ async def planner_node(state: State) -> Command[Literal["publisher", "__end__"]]
                     try:
                         fix_start = time.time()
                         logger.info(
-                            "[PERF] Attempting to fix plan validation errors...")
+                            "[PERF] Attempting to fix plan validation errors..."
+                        )
 
                         error_summary = "\n".join(
-                            f"- {err}" for err in validation_errors)
+                            f"- {err}" for err in validation_errors
+                        )
                         required_subtask_contract = [
                             {
                                 "subtask_id": str(item.get("id") or ""),
@@ -1925,32 +2047,37 @@ async def planner_node(state: State) -> Command[Literal["publisher", "__end__"]]
 
                         fix_payload = deepcopy(retry_messages)
                         fix_payload.append(
-                            {"role": "assistant", "content": raw_content})
-                        fix_payload.append(
-                            {"role": "user", "content": fix_note})
+                            {"role": "assistant", "content": raw_content}
+                        )
+                        fix_payload.append({"role": "user", "content": fix_note})
 
                         fix_response = await retry_llm.ainvoke(fix_payload)
                         fix_content = clean_response_tags(
-                            getattr(fix_response, "content", ""))
+                            getattr(fix_response, "content", "")
+                        )
 
                         fix_time = time.time() - fix_start
-                        logger.info(
-                            "[PERF] Plan fix LLM call: %.2fs", fix_time)
+                        logger.info("[PERF] Plan fix LLM call: %.2fs", fix_time)
 
                         if fix_content:
                             fixed_steps = _extract_plan_steps(fix_content)
                             if fixed_steps is not None:
                                 # Validate the fixed plan
-                                is_fixed_valid, fixed_errors = await _validate_plan_data_flow(
-                                    fixed_steps, state.get("user_id", "")
+                                is_fixed_valid, fixed_errors = (
+                                    await _validate_plan_data_flow(
+                                        fixed_steps, state.get("user_id", "")
+                                    )
                                 )
-                                fixed_profile_errors = _validate_plan_against_task_profile(
-                                    fixed_steps,
-                                    _scheduler_profile_validation_state(state),
+                                fixed_profile_errors = (
+                                    _validate_plan_against_task_profile(
+                                        fixed_steps,
+                                        _scheduler_profile_validation_state(state),
+                                    )
                                 )
-                                fixed_errors = list(
-                                    fixed_errors) + fixed_profile_errors
-                                is_fixed_valid = is_fixed_valid and not fixed_profile_errors
+                                fixed_errors = list(fixed_errors) + fixed_profile_errors
+                                is_fixed_valid = (
+                                    is_fixed_valid and not fixed_profile_errors
+                                )
                                 if is_fixed_valid:
                                     steps = fixed_steps
                                     raw_content = fix_content
@@ -1964,7 +2091,8 @@ async def planner_node(state: State) -> Command[Literal["publisher", "__end__"]]
                                         logger.warning(f"  - {error}")
                             else:
                                 logger.warning(
-                                    "[PERF] Plan fix failed: cannot parse JSON")
+                                    "[PERF] Plan fix failed: cannot parse JSON"
+                                )
                     except Exception as exc:
                         logger.warning(f"[PERF] Plan fix exception: {exc}")
 
@@ -1981,36 +2109,44 @@ async def planner_node(state: State) -> Command[Literal["publisher", "__end__"]]
                         ensure_ascii=False,
                     )
 
-        if steps == [] and state["workflow_mode"] == "launch" and not plan_validation_failed:
+        if (
+            steps == []
+            and state["workflow_mode"] == "launch"
+            and not plan_validation_failed
+        ):
             fallback_steps = _fallback_plan_steps(state)
             if fallback_steps:
                 steps = fallback_steps
                 raw_content = json.dumps({"steps": steps}, ensure_ascii=False)
                 logger.info(
-                    "[PERF] Applied fallback planner steps for obvious single-agent task")
+                    "[PERF] Applied fallback planner steps for obvious single-agent task"
+                )
 
-        steps, message_content, goto, plan_update = (
-            await _finalize_validated_plan(
-                state,
-                steps,
-                raw_content=raw_content,
-                message_content=message_content,
-                goto=goto,
-                plan_validation_failed=plan_validation_failed,
-            )
+        steps, message_content, goto, plan_update = await _finalize_validated_plan(
+            state,
+            steps,
+            raw_content=raw_content,
+            message_content=message_content,
+            goto=goto,
+            plan_validation_failed=plan_validation_failed,
         )
     else:
         plan_update = {}
 
     total_time = time.time() - start_time
     logger.info("=" * 60)
-    logger.info("[PERF] PLANNER TOTAL TIME: %.2fs (mode: %s)",
-                total_time, state["workflow_mode"])
+    logger.info(
+        "[PERF] PLANNER TOTAL TIME: %.2fs (mode: %s)",
+        total_time,
+        state["workflow_mode"],
+    )
     logger.info("=" * 60)
 
     return Command(
         update={
-            "messages": [{"content": message_content, "tool": "planner", "role": "assistant"}],
+            "messages": [
+                {"content": message_content, "tool": "planner", "role": "assistant"}
+            ],
             "agent_name": "planner",
             "full_plan": raw_content,
             "planning_steps": steps if steps is not None else [],
@@ -2033,7 +2169,11 @@ async def coordinator_node(state: State) -> Command[Literal["planner", "__end__"
         return Command(
             update={
                 "messages": [
-                    {"content": "handover_to_planner", "tool": "coordinator", "role": "assistant"}
+                    {
+                        "content": "handover_to_planner",
+                        "tool": "coordinator",
+                        "role": "assistant",
+                    }
                 ],
                 "agent_name": "coordinator",
             },
@@ -2056,15 +2196,13 @@ async def coordinator_node(state: State) -> Command[Literal["planner", "__end__"
     messages = _sanitize_messages(apply_prompt_template("coordinator", state))
     response = await get_llm_by_type(AGENT_LLM_MAP["coordinator"]).ainvoke(messages)
     if state["workflow_mode"] == "launch":
-        cache.restore_system_node(
-            state["workflow_id"], COORDINATOR, state["user_id"])
+        cache.restore_system_node(state["workflow_id"], COORDINATOR, state["user_id"])
 
     content = clean_response_tags(response.content)  # type: ignore
     if "handover_to_planner" in content:
         goto = "planner"
     if state["workflow_mode"] == "launch":
-        cache.restore_system_node(
-            state["workflow_id"], "planner", state["user_id"])
+        cache.restore_system_node(state["workflow_id"], "planner", state["user_id"])
     return Command(
         update={
             "messages": [

@@ -182,6 +182,40 @@ def test_remote_agent_request_carries_platform_authorized_tool_manifest():
     assert request["security_context"]["authorized_remote_tools"] == manifest
 
 
+def test_remote_request_exposes_only_manifest_authorized_tools():
+    executor = RemoteExecutor()
+    agent = SimpleNamespace(
+        agent_name="RemoteOfficeAssistantAgent",
+        prompt="",
+        selected_tools=[
+            SimpleNamespace(name="save_leave_record", description="", parameters={}),
+            SimpleNamespace(name="query_leave_record", description="", parameters={}),
+        ],
+    )
+    context = ExecutionContext(
+        user_id="admin",
+        workflow_id="wf-office",
+        workflow_mode="production",
+        metadata={
+            "authorized_remote_tools": [
+                {
+                    "tool_name": "query_leave_record",
+                    "arguments": {
+                        "employee_name": "王强",
+                        "intent": "leave_record_query",
+                    },
+                }
+            ]
+        },
+    )
+
+    request = executor._build_request(
+        agent, [{"role": "user", "content": "查询王强请假记录"}], context
+    )
+
+    assert [tool["name"] for tool in request["tools"]] == ["query_leave_record"]
+
+
 def test_legacy_remote_request_does_not_grant_admin_wildcard():
     executor = RemoteExecutor()
     agent = SimpleNamespace(

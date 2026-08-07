@@ -72,9 +72,7 @@ def _trusted_subtask_map(task_profile: Any) -> dict[str, dict[str, Any]]:
     if not raw_subtasks:
         return {}
     if not isinstance(raw_subtasks, list):
-        raise TrustedSubtaskBindingError(
-            "trusted TaskProfile subtasks must be a list"
-        )
+        raise TrustedSubtaskBindingError("trusted TaskProfile subtasks must be a list")
 
     subtasks: dict[str, dict[str, Any]] = {}
     for index, item in enumerate(raw_subtasks):
@@ -97,9 +95,7 @@ def _trusted_subtask_map(task_profile: Any) -> dict[str, dict[str, Any]]:
 
 def _step_subtask_ids(step: Any) -> list[str]:
     raw_ids = (
-        getattr(step, "subtask_ids", None)
-        or getattr(step, "subtask_id", None)
-        or []
+        getattr(step, "subtask_ids", None) or getattr(step, "subtask_id", None) or []
     )
     values = raw_ids if isinstance(raw_ids, (list, tuple, set)) else [raw_ids]
     return [str(item).strip() for item in values if str(item).strip()]
@@ -126,11 +122,7 @@ def _trusted_subtasks_for_step(
             f"step {step_id!r} contains duplicate subtask_ids"
         )
 
-    unknown = [
-        subtask_id
-        for subtask_id in bound_ids
-        if subtask_id not in subtasks
-    ]
+    unknown = [subtask_id for subtask_id in bound_ids if subtask_id not in subtasks]
     if unknown:
         raise TrustedSubtaskBindingError(
             f"step {step_id!r} references unknown trusted subtasks {unknown}"
@@ -153,12 +145,8 @@ def validate_trusted_subtask_bindings(
         for subtask in _trusted_subtasks_for_step(task_profile, step):
             coverage[str(subtask["id"])] += 1
 
-    missing = [
-        subtask_id for subtask_id, count in coverage.items() if count == 0
-    ]
-    duplicated = [
-        subtask_id for subtask_id, count in coverage.items() if count > 1
-    ]
+    missing = [subtask_id for subtask_id, count in coverage.items() if count == 0]
+    duplicated = [subtask_id for subtask_id, count in coverage.items() if count > 1]
     if missing or duplicated:
         details: list[str] = []
         if missing:
@@ -317,9 +305,7 @@ def _safe_recovery_path(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
     return [
-        str(item)
-        for item in value[:3]
-        if isinstance(item, str) and item in allowed
+        str(item) for item in value[:3] if isinstance(item, str) and item in allowed
     ]
 
 
@@ -419,9 +405,7 @@ def _checkpoint_step_result(result: StepResult) -> dict[str, Any]:
 
 def _leaf_step_ids(graph: TaskGraph) -> list[str]:
     dependencies = {
-        dependency
-        for step in graph.steps
-        for dependency in (step.depends_on or [])
+        dependency for step in graph.steps for dependency in (step.depends_on or [])
     }
     return [step.step_id for step in graph.steps if step.step_id not in dependencies]
 
@@ -500,9 +484,7 @@ def _build_step_task_profile(state: dict, step: Any, selected_agent: str) -> dic
     from config.s_abac_config import RESOURCE_SECURITY_ATTRIBUTES
 
     global_profile = dict(state.get("task_profile") or {})
-    trusted_attrs = dict(
-        RESOURCE_SECURITY_ATTRIBUTES.get(selected_agent, {}) or {}
-    )
+    trusted_attrs = dict(RESOURCE_SECURITY_ATTRIBUTES.get(selected_agent, {}) or {})
 
     def _list_value(value: Any) -> list[str]:
         if value is None:
@@ -534,9 +516,9 @@ def _build_step_task_profile(state: dict, step: Any, selected_agent: str) -> dic
         required_capabilities = _list_value(
             trusted_attrs.get("expected_capabilities")
         ) or _list_value(global_profile.get("expected_capabilities"))
-        scenario_tags = _list_value(
-            trusted_attrs.get("scenario_tags")
-        ) or _list_value(global_profile.get("scenario_tags"))
+        scenario_tags = _list_value(trusted_attrs.get("scenario_tags")) or _list_value(
+            global_profile.get("scenario_tags")
+        )
 
     trusted_fit_result: dict[str, Any] = {}
     if trusted_subtasks:
@@ -545,12 +527,16 @@ def _build_step_task_profile(state: dict, step: Any, selected_agent: str) -> dic
             for value in _list_value(trusted_attrs.get("expected_capabilities"))
         }
         resource_tags = {
-            value.lower()
-            for value in _list_value(trusted_attrs.get("scenario_tags"))
+            value.lower() for value in _list_value(trusted_attrs.get("scenario_tags"))
         }
-        resource_task_type = str(
-            trusted_attrs.get("capability_domain") or ""
-        ).strip().lower()
+        resource_task_types = {
+            value.lower()
+            for value in (
+                *_list_value(trusted_attrs.get("capability_domain")),
+                *_list_value(trusted_attrs.get("department_domain")),
+                *_list_value(trusted_attrs.get("expected_capabilities")),
+            )
+        }
         mismatch_reasons: list[str] = []
         if not trusted_attrs:
             mismatch_reasons.append(
@@ -560,34 +546,25 @@ def _build_step_task_profile(state: dict, step: Any, selected_agent: str) -> dic
             subtask_id = str(subtask.get("id") or "")
             expected = {
                 value.lower()
-                for value in _list_value(
-                    subtask.get("expected_capabilities")
-                )
+                for value in _list_value(subtask.get("expected_capabilities"))
             }
             tags = {
-                value.lower()
-                for value in _list_value(subtask.get("scenario_tags"))
+                value.lower() for value in _list_value(subtask.get("scenario_tags"))
             }
-            subtask_task_type = str(
-                subtask.get("task_type") or ""
-            ).strip().lower()
+            subtask_task_type = str(subtask.get("task_type") or "").strip().lower()
             if expected and (
-                not resource_capabilities
-                or expected.isdisjoint(resource_capabilities)
+                not resource_capabilities or expected.isdisjoint(resource_capabilities)
             ):
                 mismatch_reasons.append(
                     f"{subtask_id} capabilities do not match trusted resource"
                 )
-            if tags and (
-                not resource_tags
-                or tags.isdisjoint(resource_tags)
-            ):
+            if tags and (not resource_tags or tags.isdisjoint(resource_tags)):
                 mismatch_reasons.append(
                     f"{subtask_id} scenario tags do not match trusted resource"
                 )
             if subtask_task_type and (
-                not resource_task_type
-                or subtask_task_type != resource_task_type
+                not resource_task_types
+                or subtask_task_type not in resource_task_types
             ):
                 mismatch_reasons.append(
                     f"{subtask_id} task type does not match trusted resource"
@@ -642,9 +619,7 @@ def _build_step_task_profile(state: dict, step: Any, selected_agent: str) -> dic
         ).upper(),
         "expected_capabilities": required_capabilities,
         "scenario_tags": scenario_tags,
-        "operation_mode": str(
-            getattr(step, "operation_mode", "") or "read"
-        ).lower(),
+        "operation_mode": str(getattr(step, "operation_mode", "") or "read").lower(),
         "data_scope": str(
             ",".join(trusted_data_scope)
             or global_profile.get("data_scope")
@@ -672,9 +647,7 @@ def _build_execution_context(state: dict, step, selected_agent):
 
     task_profile = _build_step_task_profile(state, step, selected_agent)
     scenario_fit_cache = dict(state.get("scenario_fit_cache") or {})
-    trusted_resource_fit = dict(
-        task_profile.get("trusted_resource_fit") or {}
-    )
+    trusted_resource_fit = dict(task_profile.get("trusted_resource_fit") or {})
     if trusted_resource_fit:
         # Enforcement looks up ``<object_type>:<object_id>`` before invoking
         # the optional fit analyzer. This trusted entry prevents Planner text
@@ -739,14 +712,12 @@ def _make_real_execute_step(state: dict) -> ExecuteStep:
 
         # Reuse the per-step ExecutionContext built by the injected factory so
         # the same context drives dispatch enforcement and artifact capture.
-        exec_ctx = context.get("execution_context") if isinstance(
-            context, dict) else None
+        exec_ctx = (
+            context.get("execution_context") if isinstance(context, dict) else None
+        )
         if exec_ctx is None:
             exec_ctx = _build_execution_context(state, step, selected_agent)
-        if not (
-            isinstance(context, dict)
-            and context.get("agent_dispatch_authorized")
-        ):
+        if not (isinstance(context, dict) and context.get("agent_dispatch_authorized")):
             await enforce_agent_dispatch(agent, exec_ctx)
 
         brief = {
@@ -768,7 +739,9 @@ def _make_real_execute_step(state: dict) -> ExecuteStep:
             ),
             # Surfaced so an idempotency-aware tool/provider can dedupe an
             # external side effect (e.g. a message id / request key).
-            "idempotency_key": (context.get("idempotency_key") if isinstance(context, dict) else None),
+            "idempotency_key": (
+                context.get("idempotency_key") if isinstance(context, dict) else None
+            ),
             "step": {
                 "step_id": step.step_id,
                 "title": getattr(step, "title", ""),
@@ -797,14 +770,7 @@ def _make_real_authorize_step(state: dict):
 
     async def _authorize_step(*, step, selected_agent, context) -> Any:
         from src.manager import agent_manager
-        from src.security.enforcement import (
-            ApprovalRequiredError,
-            PermissionDeniedError,
-            enforce_agent_dispatch,
-            enforce_tool_call,
-        )
-        from src.security.context import SecurityContextBuilder
-        from src.security.policy import is_governance_administrator
+        from src.security.enforcement import enforce_agent_dispatch, enforce_tool_call
         from src.security.remote_tool_gate import required_remote_tool_authorizations
 
         if not selected_agent:
@@ -813,9 +779,9 @@ def _make_real_authorize_step(state: dict):
         agent = await agent_manager.agent_registry.get(selected_agent)
         if agent is None:
             raise ValueError(f"agent not found in registry: {selected_agent}")
-        exec_ctx = context.get("execution_context") if isinstance(
-            context, dict
-        ) else None
+        exec_ctx = (
+            context.get("execution_context") if isinstance(context, dict) else None
+        )
         if exec_ctx is None:
             exec_ctx = _build_execution_context(state, step, selected_agent)
             if isinstance(context, dict):
@@ -826,34 +792,22 @@ def _make_real_authorize_step(state: dict):
         # levels.  Dispatch permission alone must not authorize all of them.
         # Resolve concrete resources from the server-owned TaskGraph step and
         # enforce each one before the scheduler claims an execution receipt.
-        is_admin = is_governance_administrator(
-            SecurityContextBuilder.subject_for_user(str(state.get("user_id") or ""))
-        )
         requested_intents = list(getattr(step, "intents", []) or [])
         tool_authorizations = required_remote_tool_authorizations(
             agent_name=selected_agent,
             intents=requested_intents,
             task_profile=state.get("task_profile") or {},
             operation_mode=str(getattr(step, "operation_mode", "read")),
-            include_all_tools=is_admin,
         )
         authorized_manifest = []
+        approval_id = None
         for authorization in tool_authorizations:
-            try:
-                result = await enforce_tool_call(
-                    agent=agent,
-                    tool_name=authorization.tool_name,
-                    arguments=authorization.arguments,
-                    context=exec_ctx,
-                )
-            except (PermissionDeniedError, ApprovalRequiredError):
-                # An administrator may enumerate every concrete tool, but
-                # denied/review-required entries remain absent from this
-                # request-scoped manifest. The requested TaskGraph intent is
-                # strict: its denial or pending approval must stop execution.
-                if not is_admin or authorization.arguments.get("intent") in requested_intents:
-                    raise
-                continue
+            result = await enforce_tool_call(
+                agent=agent,
+                tool_name=authorization.tool_name,
+                arguments=authorization.arguments,
+                context=exec_ctx,
+            )
             authorized_manifest.append(
                 {
                     "tool_name": authorization.tool_name,
@@ -861,10 +815,16 @@ def _make_real_authorize_step(state: dict):
                     "decision": result.get("decision", "ALLOW"),
                 }
             )
+            if result.get("approval_id"):
+                approval_id = str(result["approval_id"])
 
         # Empty is a meaningful deny-all manifest. Always propagate it so an
         # unmapped or missing intent cannot silently disable the remote gate.
         exec_ctx.metadata["authorized_remote_tools"] = authorized_manifest
+        if approval_id:
+            exec_ctx.metadata["approval_id"] = approval_id
+            if isinstance(context, dict):
+                context["approval_id"] = approval_id
         if isinstance(context, dict):
             context["authorized_remote_tools"] = authorized_manifest
         return dispatch_result
@@ -897,6 +857,7 @@ async def run_scheduler_workflow(
     state["task_id"] = task_id
     workflow_id = state.get("workflow_id")
     graph = build_task_graph_from_state(state)
+
     def persist_skill_evidence(evidence: SkillExecutionEvidence) -> None:
         payload = evidence.model_dump(mode="json")
         state["skill_execution_evidence"] = payload
@@ -923,7 +884,8 @@ async def run_scheduler_workflow(
                 task_logger.log_workflow_end()
             else:
                 task_logger.log_error(
-                    error=error or f"scheduler workflow ended with status {status_value}",
+                    error=error
+                    or f"scheduler workflow ended with status {status_value}",
                     node_name="scheduler",
                 )
         except Exception as exc:  # noqa: BLE001 - logging must not change execution
@@ -962,8 +924,7 @@ async def run_scheduler_workflow(
     # sensitive payloads do not linger indefinitely on disk. Best-effort -- a
     # cleanup failure must never block or fail a run.
     try:
-        ttl = float(os.getenv("ARTIFACT_PAYLOAD_TTL_SECONDS",
-                    str(7 * 24 * 3600)))
+        ttl = float(os.getenv("ARTIFACT_PAYLOAD_TTL_SECONDS", str(7 * 24 * 3600)))
         payload_store.cleanup_expired(ttl_seconds=ttl)
     except Exception as exc:  # noqa: BLE001 - retention is best-effort
         logger.debug("scheduler: payload retention cleanup skipped: %s", exc)
@@ -977,8 +938,7 @@ async def run_scheduler_workflow(
             payloads = payload_store.load_index(restored_index)
             store.load_state(payloads)
         except (ArtifactStoreCorruption, ArtifactPayloadCorruption) as exc:
-            logger.error(
-                "scheduler: corrupt/missing restored artifacts: %s", exc)
+            logger.error("scheduler: corrupt/missing restored artifacts: %s", exc)
             evidence = aggregate_evidence(
                 task_id=task_id,
                 workflow_id=str(workflow_id or ""),
@@ -1015,7 +975,8 @@ async def run_scheduler_workflow(
             }
             return
     resolver = ArtifactResolver(
-        store, guard=PolicyEngineArtifactGuard(scenario=scenario_ctx))
+        store, guard=PolicyEngineArtifactGuard(scenario=scenario_ctx)
+    )
 
     if redispatch_enabled is None or retry_delay_seconds is None:
         from src.service.env import (
@@ -1041,9 +1002,7 @@ async def run_scheduler_workflow(
         if authorized_agent_ids is None:
             from config.s_abac_demo_users import get_user_available_agents
 
-            available = set(
-                get_user_available_agents(state.get("user_id")) or []
-            )
+            available = set(get_user_available_agents(state.get("user_id")) or [])
             authorized = (
                 trusted_names if "*" in available else trusted_names & available
             )
@@ -1057,9 +1016,7 @@ async def run_scheduler_workflow(
         # the real registry unless the caller injected an explicit trusted set.
         agents, authorized = await _list_agents_and_authorized(state)
         if authorized_agent_ids is not None:
-            authorized &= {
-                str(agent_id) for agent_id in authorized_agent_ids
-            }
+            authorized &= {str(agent_id) for agent_id in authorized_agent_ids}
     else:
         agents, authorized = [], set()
 
@@ -1109,20 +1066,18 @@ async def run_scheduler_workflow(
                 hook_point=hook_point,
                 workflow_status="failed" if error else "running",
                 user_query=str(
-                    state.get("USER_QUERY")
-                    or state.get("original_user_query")
-                    or ""
+                    state.get("USER_QUERY") or state.get("original_user_query") or ""
                 ),
             )
             return await hook_engine.process(context)
         except Exception as exc:  # noqa: BLE001 - observability never fails a step
-            logger.warning(
-                "scheduler hook %s failed: %s", hook_point_value, exc
-            )
+            logger.warning("scheduler hook %s failed: %s", hook_point_value, exc)
             return None
 
     async def on_step_start(*, step, selected_agent, inputs):
-        selected_name = selected_agent or getattr(step, "agent_name", None) or step.step_id
+        selected_name = (
+            selected_agent or getattr(step, "agent_name", None) or step.step_id
+        )
         step_agents[step.step_id] = selected_name
         # Read-only attempts have their own lifecycle below so retries and
         # redispatches cannot be misattributed to the planned Agent.
@@ -1132,7 +1087,9 @@ async def run_scheduler_workflow(
         if task_logger is not None:
             try:
                 task_logger.log_agent_start(
-                    node_name="scheduler", step=current_step, sub_agent_name=selected_name
+                    node_name="scheduler",
+                    step=current_step,
+                    sub_agent_name=selected_name,
                 )
             except Exception:  # noqa: BLE001
                 pass
@@ -1238,9 +1195,7 @@ async def run_scheduler_workflow(
                 "data": {
                     "step_id": step.step_id,
                     "agent_name": f"scheduler【{executed_name}】",
-                    "agent_id": (
-                        f"{workflow_id}_{step.step_id}_{phase}_{attempt}"
-                    ),
+                    "agent_id": (f"{workflow_id}_{step.step_id}_{phase}_{attempt}"),
                     "sub_agent_name": executed_name,
                     "selected_agent": executed_name,
                     "planned_agent": planned_name,
@@ -1297,9 +1252,7 @@ async def run_scheduler_workflow(
                 "data": {
                     "step_id": step.step_id,
                     "agent_name": f"scheduler【{executed_name}】",
-                    "agent_id": (
-                        f"{workflow_id}_{step.step_id}_{phase}_{attempt}"
-                    ),
+                    "agent_id": (f"{workflow_id}_{step.step_id}_{phase}_{attempt}"),
                     "sub_agent_name": executed_name,
                     "selected_agent": executed_name,
                     "planned_agent": planned_name,
@@ -1308,9 +1261,7 @@ async def run_scheduler_workflow(
                     "phase": phase,
                     "status": status_value,
                     "failure": (
-                        failure.model_dump(mode="json")
-                        if failure is not None
-                        else None
+                        failure.model_dump(mode="json") if failure is not None else None
                     ),
                 },
             }
@@ -1353,8 +1304,7 @@ async def run_scheduler_workflow(
         artifacts_index = state.get("artifacts")
         artifacts_updated = False
         if succeeded and result.outputs:
-            artifacts_index = payload_store.save_store_state(
-                store.dump_state())
+            artifacts_index = payload_store.save_store_state(store.dump_state())
             artifacts_updated = True
 
         # (2) Candidate completion set INCLUDING this step, so a checkpoint
@@ -1491,9 +1441,7 @@ async def run_scheduler_workflow(
                     step_id=step.step_id,
                     subject=state.get("user_id"),
                     agent=selected_name,
-                    operation_mode=str(
-                        getattr(step, "operation_mode", "") or ""
-                    ),
+                    operation_mode=str(getattr(step, "operation_mode", "") or ""),
                     risk_level=str(getattr(step, "risk_level", "") or ""),
                     decision="REVIEW_REQUIRED",
                     reason_code="POLICY_REVIEW_REQUIRED",
@@ -1546,9 +1494,7 @@ async def run_scheduler_workflow(
             reason_code=(
                 "RECONCILIATION_REQUIRED"
                 if metrics.get("needs_reconciliation")
-                else "STEP_EXECUTION_FAILED"
-                if not step_succeeded
-                else None
+                else "STEP_EXECUTION_FAILED" if not step_succeeded else None
             ),
             details={"error": result.error, "metrics": _json_safe(metrics)},
         )
@@ -1561,10 +1507,9 @@ async def run_scheduler_workflow(
                 if persisted_receipt:
                     receipt = {**persisted_receipt, **receipt}
             trusted_schema_refs = metrics.get("expected_schema_refs")
-            succeeded_output_repair = (
-                metrics.get("receipt_status") == "SUCCEEDED"
-                and isinstance(trusted_schema_refs, dict)
-            )
+            succeeded_output_repair = metrics.get(
+                "receipt_status"
+            ) == "SUCCEEDED" and isinstance(trusted_schema_refs, dict)
             if not isinstance(trusted_schema_refs, dict) or (
                 not trusted_schema_refs and not succeeded_output_repair
             ):
@@ -1747,7 +1692,11 @@ async def run_scheduler_workflow(
             resolved_outputs: dict[str, Any] = {}
             for output_name, raw_ref in (raw_result.get("outputs") or {}).items():
                 try:
-                    ref = raw_ref if isinstance(raw_ref, ArtifactRef) else ArtifactRef(**raw_ref)
+                    ref = (
+                        raw_ref
+                        if isinstance(raw_ref, ArtifactRef)
+                        else ArtifactRef(**raw_ref)
+                    )
                 except Exception:  # noqa: BLE001 - malformed refs never reach Web
                     unavailable.append(
                         {
@@ -1813,9 +1762,11 @@ async def run_scheduler_workflow(
         retry_delay_seconds=max(0.0, float(retry_delay_seconds)),
     )
     ctx = {
-        "user_query": state.get("USER_QUERY", "") or state.get("original_user_query", ""),
+        "user_query": state.get("USER_QUERY", "")
+        or state.get("original_user_query", ""),
         "task_id": task_id,
         "workflow_id": workflow_id,
+        "task_profile": state.get("task_profile") or {},
         "subject": state.get("user_id"),
         "scenario": scenario_ctx,
         "agents": agents,
@@ -1837,9 +1788,7 @@ async def run_scheduler_workflow(
         if expected and (
             any(name not in refs for name in expected)
             or any(
-                _ref_unavailable(store, refs[name])
-                for name in expected
-                if name in refs
+                _ref_unavailable(store, refs[name]) for name in expected if name in refs
             )
         ):
             # A checkpoint can claim completion after its protected Artifact
@@ -1901,9 +1850,7 @@ async def run_scheduler_workflow(
                             yield await event_queue.get()
                         break
                     try:
-                        event = await asyncio.wait_for(
-                            event_queue.get(), timeout=0.05
-                        )
+                        event = await asyncio.wait_for(event_queue.get(), timeout=0.05)
                         yield event
                     except asyncio.TimeoutError:
                         continue
@@ -1950,9 +1897,7 @@ async def run_scheduler_workflow(
                 reason_code=recovery_plan.reason_code,
                 details=plan_data,
             )
-            await event_queue.put(
-                {"event": "recovery_plan", "data": plan_data}
-            )
+            await event_queue.put({"event": "recovery_plan", "data": plan_data})
             while not event_queue.empty():
                 yield await event_queue.get()
 
@@ -1993,9 +1938,7 @@ async def run_scheduler_workflow(
                 reason_code=recovery_plan.reason_code,
                 details=recovery_data,
             )
-            await event_queue.put(
-                {"event": "recovery_started", "data": recovery_data}
-            )
+            await event_queue.put({"event": "recovery_started", "data": recovery_data})
             while not event_queue.empty():
                 yield await event_queue.get()
             results = None
@@ -2065,18 +2008,16 @@ async def run_scheduler_workflow(
         for failure in (getattr(results, "additional_failures", []) or [])
     )
     if task_logger is not None and hasattr(task_logger, "log_failure"):
-        for failure in (getattr(results, "additional_failures", []) or []):
+        for failure in getattr(results, "additional_failures", []) or []:
             task_logger.log_failure(failure.model_dump(mode="json"))
-    clarifications = [c for c in (
-        getattr(results, "clarifications", []) or []) if c]
+    clarifications = [c for c in (getattr(results, "clarifications", []) or []) if c]
     approval_required_steps = list(
         getattr(results, "approval_required_steps", []) or []
     )
     rejected = list(getattr(results, "rejected_steps", []) or [])
     needs_recon = list(getattr(results, "needs_reconciliation", []) or [])
     terminal = getattr(results, "terminal_status", None)
-    status = str(getattr(terminal, "value", terminal)
-                 or WorkflowStatus.SUCCEEDED.value)
+    status = str(getattr(terminal, "value", terminal) or WorkflowStatus.SUCCEEDED.value)
     await trigger_scheduler_hook(
         "workflow_end",
         error=(
@@ -2109,8 +2050,7 @@ async def run_scheduler_workflow(
     terminal_error = None
     if status != WorkflowStatus.SUCCEEDED.value:
         terminal_error = (
-            f"scheduler workflow ended with status {status}; "
-            f"failed_steps={failed}"
+            f"scheduler workflow ended with status {status}; " f"failed_steps={failed}"
         )
     finalize_task_log(status, error=terminal_error)
     record_governance_event(
@@ -2119,9 +2059,7 @@ async def run_scheduler_workflow(
         workflow_id=str(workflow_id or ""),
         subject=state.get("user_id"),
         decision=status,
-        reason_code=(
-            None if status == WorkflowStatus.SUCCEEDED.value else status
-        ),
+        reason_code=(None if status == WorkflowStatus.SUCCEEDED.value else status),
         details={
             "failed_steps": failed,
             "rejected_steps": rejected,

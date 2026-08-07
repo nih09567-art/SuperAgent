@@ -4,7 +4,6 @@ import asyncio
 import json
 
 from remote_agents.report_agent import RemoteReportAgent
-from src.contracts.scenario_contract import ANNUAL_LEAVE_REPORT_V1
 
 
 class FakeExtractor:
@@ -59,7 +58,6 @@ def test_report_agent_locks_tool_data_to_scheduler_fan_in(monkeypatch) -> None:
         },
     ]
     brief = {
-        "scenario_contract_id": ANNUAL_LEAVE_REPORT_V1,
         "resolved_inputs": {
             "report.sources": {
                 "sources": sources,
@@ -95,7 +93,8 @@ def test_report_agent_locks_tool_data_to_scheduler_fan_in(monkeypatch) -> None:
 
     assert captured["data"] == sources
     assert captured["title"] == "真实汇总"
-    assert captured["instruction"] == "严格使用两个来源"
+    assert captured["instruction"].endswith("严格使用两个来源")
+    assert "不得补造" in captured["instruction"]
     assert result["outputs"]["report.markdown"]["source_count"] == 2
 
 
@@ -109,7 +108,6 @@ def test_report_agent_rejects_duplicate_employee_source_without_policy(
         "payload": {"records": [{"name": "王强"}]},
     }
     brief = {
-        "scenario_contract_id": ANNUAL_LEAVE_REPORT_V1,
         "resolved_inputs": {
             "report.sources": {
                 "sources": [employee, dict(employee)],
@@ -120,7 +118,7 @@ def test_report_agent_rejects_duplicate_employee_source_without_policy(
     }
 
     async def unexpected_call(**_kwargs):
-        raise AssertionError("invalid annual-leave sources must not call the tool")
+        raise AssertionError("duplicate report sources must not call the tool")
 
     monkeypatch.setattr(agent, "call_tool", unexpected_call)
     result = asyncio.run(
@@ -139,7 +137,7 @@ def test_report_agent_rejects_duplicate_employee_source_without_policy(
     )
 
     assert result["status"] == "error"
-    assert result["error"]["code"] == "REPORT_TOOL_ERROR"
+    assert result["error"]["code"] == "INVALID_REPORT_SOURCES"
 
 
 def test_generic_employee_report_accepts_single_structured_source(
@@ -185,3 +183,115 @@ def test_generic_employee_report_accepts_single_structured_source(
     assert result["status"] == "success"
     assert result["outputs"]["report.markdown"]["source_count"] == 1
     assert captured["data"] == [employee]
+
+
+def test_report_agent_rejects_unregistered_source_schema(monkeypatch) -> None:
+    agent = RemoteReportAgent()
+    brief = {
+        "resolved_inputs": {
+            "report.sources": {
+                "sources": [
+                    {
+                        "logical_name": "unsupported.records",
+                        "schema_ref": "unsupported.records@v1",
+                        "payload": {"records": []},
+                    }
+                ],
+                "title": "未知来源汇总",
+                "instruction": "生成汇总",
+            }
+        }
+    }
+
+    async def unexpected_call(**_kwargs):
+        raise AssertionError("unregistered source must not call the report tool")
+
+    monkeypatch.setattr(agent, "call_tool", unexpected_call)
+    result = asyncio.run(
+        agent.execute(
+            tools=[{"name": "remote_report_builder_tool"}],
+            messages=[
+                {
+                    "role": "user",
+                    "content": "EXECUTION_CONTEXT\n"
+                    + json.dumps(brief, ensure_ascii=False),
+                }
+            ],
+            context={},
+            parameter_extractor=FakeExtractor(),
+        )
+    )
+
+    assert result["status"] == "error"
+    assert result["error"]["code"] == "INVALID_REPORT_SOURCES"
+
+
+def test_report_agent_accepts_employee_policy_and_leave_record_sources(
+    monkeypatch,
+) -> None:
+    agent = RemoteReportAgent()
+    sources = [
+        {
+            "logical_name": "employee.info",
+            "schema_ref": "employee.info@v1",
+            "payload": {"records": [{"name": "李娜"}]},
+        },
+        {
+            "logical_name": "policy.info",
+            "schema_ref": "policy.info@v2",
+            "payload": {"answer": "按工龄确定年假天数", "not_found": False},
+        },
+        {
+            "logical_name": "employee.leave_records",
+            "schema_ref": "employee.leave_records@v1",
+            "payload": {
+                "employee_id": "E002",
+                "records": [
+                    {
+                        "record_id": "L001",
+                        "leave_type": "年假",
+                        "start_date": "2026-01-02",
+                        "end_date": "2026-01-03",
+                        "days": 2,
+                        "approval_status": "approved",
+                    }
+                ],
+                "matched_count": 1,
+                "queried_at": "2026-08-06T10:00:00+08:00",
+            },
+        },
+    ]
+    brief = {
+        "resolved_inputs": {
+            "report.sources": {
+                "sources": sources,
+                "title": "员工年假情况",
+                "instruction": "汇总资格、已使用记录和剩余情况",
+            }
+        }
+    }
+    captured = {}
+
+    async def fake_call_tool(*, arguments, **_kwargs):
+        captured.update(arguments)
+        return {"status": "success", "markdown": "# 员工年假情况"}
+
+    monkeypatch.setattr(agent, "call_tool", fake_call_tool)
+    result = asyncio.run(
+        agent.execute(
+            tools=[{"name": "remote_report_builder_tool"}],
+            messages=[
+                {
+                    "role": "user",
+                    "content": "EXECUTION_CONTEXT\n"
+                    + json.dumps(brief, ensure_ascii=False),
+                }
+            ],
+            context={},
+            parameter_extractor=FakeExtractor(),
+        )
+    )
+
+    assert result["status"] == "success"
+    assert result["outputs"]["report.markdown"]["source_count"] == 3
+    assert captured["data"] == sources

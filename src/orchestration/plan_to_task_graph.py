@@ -14,11 +14,9 @@ resolve to concrete :class:`ArtifactRef` at runtime.
 
 from __future__ import annotations
 
-from copy import deepcopy
 from typing import Any, Dict, List, Optional
 
 from src.contracts.agent_contract import AgentContract
-from src.contracts.scenario_contract import ANNUAL_LEAVE_REPORT_V1
 from src.interface.task_graph import (
     CompletionCondition,
     TaskGraph,
@@ -118,11 +116,7 @@ def _constraint_tokens(value: Any) -> set[str]:
     if value is None:
         return set()
     values = value if isinstance(value, (list, tuple, set)) else [value]
-    return {
-        str(item).strip().lower()
-        for item in values
-        if str(item).strip()
-    }
+    return {str(item).strip().lower() for item in values if str(item).strip()}
 
 
 def _validate_planner_security_constraints(
@@ -206,7 +200,9 @@ def _derive_operation_mode(
             if concrete_mode not in _READ_MODES:
                 base_mode = concrete_mode
         base_source = "agent_config"
-        base_reason = f"agent_config modes={sorted({str(m).lower() for m in config_modes})}"
+        base_reason = (
+            f"agent_config modes={sorted({str(m).lower() for m in config_modes})}"
+        )
         # Some Agents deliberately expose both query and mutation tools.  The
         # server-derived TaskProfile subtask action selects the concrete mode
         # for this invocation; unlike Planner text, it cannot invent a mode the
@@ -218,9 +214,7 @@ def _derive_operation_mode(
             if str(mode).lower() != "delegate"
         }
         trusted_task_class = (
-            _classify_single(trusted_task_mode)
-            if trusted_task_mode
-            else None
+            _classify_single(trusted_task_mode) if trusted_task_mode else None
         )
         if trusted_task_mode in effective_config_modes:
             # The server-owned task profile chose an exact verb supported by
@@ -280,106 +274,6 @@ def _step_id_for(index: int, raw: Dict[str, Any]) -> str:
     return str(explicit) if explicit else f"step_{index + 1}"
 
 
-_ANNUAL_LEAVE_AGENT_STEP_IDS = {
-    "RemoteHRAssistantAgent": "hr_query",
-    "RemoteKnowledgeAgent": "policy_query",
-    "RemoteReportAgent": "generate_report",
-}
-_ANNUAL_LEAVE_REPORT_OUTPUTS = {"employee.info", "policy.info"}
-
-
-def trusted_scenario_contract_for_plan(
-    planning_steps: List[Dict[str, Any]] | None,
-    *,
-    user_query: str = "",
-) -> str | None:
-    """Return a platform-owned contract id for the fixed annual-leave demo."""
-
-    if not isinstance(planning_steps, list):
-        return None
-    query = str(user_query or "").lower()
-    if "王强" not in query or not any(
-        marker in query for marker in ("年假", "年休假", "带薪休假")
-    ):
-        return None
-    if len(planning_steps) != len(_ANNUAL_LEAVE_AGENT_STEP_IDS):
-        return None
-    agent_names = [
-        str(step.get("agent_name") or "")
-        for step in planning_steps
-        if isinstance(step, dict)
-    ]
-    if (
-        set(agent_names) != set(_ANNUAL_LEAVE_AGENT_STEP_IDS)
-        or len(set(agent_names)) != 3
-    ):
-        return None
-    return ANNUAL_LEAVE_REPORT_V1
-
-
-def canonicalize_annual_leave_plan(
-    planning_steps: List[Dict[str, Any]] | None,
-    *,
-    user_query: str = "",
-) -> List[Dict[str, Any]] | None:
-    """Give the fixed annual-leave demo stable step identities.
-
-    The real Planner remains responsible for selecting the three Agents and
-    declaring their data flow.  Some models emit positional IDs such as
-    ``step_1`` and use Agent names in ``source_step``; that representation is
-    semantically equivalent but makes the defense evidence and downstream
-    contracts unstable.  For this explicitly scoped demo, rename only when
-    the Planner already returned exactly one step for each of the three
-    trusted Agents.  Dependencies and fan-in sources are remapped, never
-    invented; malformed or incomplete plans remain unchanged and fail closed
-    in normal validation.
-    """
-
-    if trusted_scenario_contract_for_plan(
-        planning_steps,
-        user_query=user_query,
-    ) != ANNUAL_LEAVE_REPORT_V1:
-        return planning_steps
-
-    agent_names = [str(step.get("agent_name") or "") for step in planning_steps]
-
-    aliases = dict(_ANNUAL_LEAVE_AGENT_STEP_IDS)
-    for step, agent_name in zip(planning_steps, agent_names):
-        old_step_id = str(step.get("step_id") or "").strip()
-        if old_step_id:
-            aliases[old_step_id] = _ANNUAL_LEAVE_AGENT_STEP_IDS[agent_name]
-
-    normalized = deepcopy(planning_steps)
-    for step in normalized:
-        agent_name = str(step.get("agent_name") or "")
-        step["step_id"] = _ANNUAL_LEAVE_AGENT_STEP_IDS[agent_name]
-        if "depends_on" in step:
-            dependencies = step.get("depends_on")
-            if isinstance(dependencies, list):
-                step["depends_on"] = [
-                    aliases.get(str(item), item) for item in dependencies
-                ]
-        inputs = step.get("inputs")
-        if not isinstance(inputs, list):
-            continue
-        for binding in inputs:
-            if not isinstance(binding, dict):
-                continue
-            if "source_step" in binding:
-                binding["source_step"] = aliases.get(
-                    str(binding.get("source_step")), binding.get("source_step")
-                )
-            sources = binding.get("source_artifacts")
-            if not isinstance(sources, list):
-                continue
-            for source in sources:
-                if isinstance(source, dict) and "source_step" in source:
-                    source["source_step"] = aliases.get(
-                        str(source.get("source_step")), source.get("source_step")
-                    )
-    return normalized
-
-
 def _reference_list(value: Any) -> List[str]:
     """Normalize a single-value/array reference field to a deduplicated list.
 
@@ -391,9 +285,9 @@ def _reference_list(value: Any) -> List[str]:
     if value is None:
         return []
     raw_items = value if isinstance(value, (list, tuple, set)) else [value]
-    return list(dict.fromkeys(
-        str(item).strip() for item in raw_items if str(item).strip()
-    ))
+    return list(
+        dict.fromkeys(str(item).strip() for item in raw_items if str(item).strip())
+    )
 
 
 def _subtask_ids_for(raw: Dict[str, Any]) -> List[str]:
@@ -588,9 +482,7 @@ def plan_to_task_graph(
         producer = raw_step_by_id.get(step_id)
         if not producer:
             return set(), None
-        producer_agent = str(
-            producer.get("agent_name") or producer.get("agent") or ""
-        )
+        producer_agent = str(producer.get("agent_name") or producer.get("agent") or "")
         contract = trusted_contract(producer_agent)
         if contract is not None:
             return {ref.name for ref in contract.produces}, contract
@@ -613,9 +505,7 @@ def plan_to_task_graph(
         raw_contract = trusted_contract(str(agent_name))
         raw_inputs = raw.get("inputs")
         if raw_inputs is not None and not isinstance(raw_inputs, list):
-            raise TaskGraphValidationError(
-                f"step {step_id!r} inputs must be a list"
-            )
+            raise TaskGraphValidationError(f"step {step_id!r} inputs must be a list")
         inputs = list(raw_inputs or [])
         depends_on: List[str] = []
         for dependency_ref in _reference_list(raw.get("depends_on")):
@@ -653,9 +543,7 @@ def plan_to_task_graph(
                     )
                 source_bindings = sources
             elif sources is not None:
-                raise TaskGraphValidationError(
-                    "source_artifacts must be a list"
-                )
+                raise TaskGraphValidationError("source_artifacts must be a list")
             else:
                 source_bindings = [binding]
             for source_binding in source_bindings:
@@ -686,11 +574,14 @@ def plan_to_task_graph(
                 resolved = resolve_reference(source_step)
                 if resolved not in step_position:
                     raise TaskGraphValidationError(
-                        f"step {step_id!r} depends on unknown step "
-                        f"{source_step!r}"
+                        f"step {step_id!r} depends on unknown step " f"{source_step!r}"
                     )
                 available_outputs, producer_contract = producer_outputs(resolved)
-                if source_output and available_outputs and str(source_output) not in available_outputs:
+                if (
+                    source_output
+                    and available_outputs
+                    and str(source_output) not in available_outputs
+                ):
                     raise TaskGraphValidationError(
                         f"step {step_id!r} input binding references output "
                         f"{source_output!r}, but source step {resolved!r} "
@@ -706,7 +597,10 @@ def plan_to_task_graph(
                         ),
                         None,
                     )
-                    if produced_ref and declared_source_schema != produced_ref.schema_ref:
+                    if (
+                        produced_ref
+                        and declared_source_schema != produced_ref.schema_ref
+                    ):
                         raise TaskGraphValidationError(
                             f"step {step_id!r} input binding schema for "
                             f"{source_output!r} does not match trusted source "
@@ -728,12 +622,14 @@ def plan_to_task_graph(
             source_artifacts = normalized.get("source_artifacts")
             if isinstance(source_artifacts, list):
                 normalized["source_artifacts"] = [
-                    {
-                        **source,
-                        "source_step": resolve_reference(source.get("source_step")),
-                    }
-                    if isinstance(source, dict) and source.get("source_step")
-                    else source
+                    (
+                        {
+                            **source,
+                            "source_step": resolve_reference(source.get("source_step")),
+                        }
+                        if isinstance(source, dict) and source.get("source_step")
+                        else source
+                    )
                     for source in source_artifacts
                 ]
             elif normalized.get("source_step"):
@@ -770,9 +666,7 @@ def plan_to_task_graph(
             expected_outputs = [expected_outputs]
 
         if contract is not None:
-            required_inputs = {
-                ref.name for ref in contract.requires if ref.required
-            }
+            required_inputs = {ref.name for ref in contract.requires if ref.required}
             bound_inputs = {
                 str(binding.get("parameter_name"))
                 for binding in inputs
@@ -803,32 +697,6 @@ def plan_to_task_graph(
                             f"schema {assembly_schema!r} does not match "
                             f"trusted schema {expected_schema!r}"
                         )
-                if parameter_name == "report.sources" and isinstance(
-                    binding.get("source_artifacts"), list
-                ):
-                    source_outputs = [
-                        str(source.get("source_output") or "")
-                        for source in binding["source_artifacts"]
-                        if isinstance(source, dict)
-                    ]
-                    if trusted_scenario_contract_id == ANNUAL_LEAVE_REPORT_V1:
-                        missing = sorted(
-                            output
-                            for output in _ANNUAL_LEAVE_REPORT_OUTPUTS
-                            if source_outputs.count(output) == 0
-                        )
-                        duplicates = sorted(
-                            output
-                            for output in _ANNUAL_LEAVE_REPORT_OUTPUTS
-                            if source_outputs.count(output) > 1
-                        )
-                        if missing or duplicates:
-                            raise TaskGraphValidationError(
-                                "annual-leave report.sources must contain exactly "
-                                "one employee.info and one policy.info Artifact; "
-                                f"missing={missing!r}, duplicates={duplicates!r}"
-                            )
-
         # ``depends_on`` is an execution-order edge.  For a governed Agent
         # chain it must also carry the producer Artifact into the consumer.
         # Planner-generated autonomous steps commonly omit ``inputs``; when a
@@ -838,9 +706,7 @@ def plan_to_task_graph(
             prior_steps = {item.step_id: item for item in steps}
             for dependency_id in depends_on:
                 producer = prior_steps.get(dependency_id)
-                producer_outputs = list(
-                    getattr(producer, "expected_outputs", []) or []
-                )
+                producer_outputs = list(getattr(producer, "expected_outputs", []) or [])
                 if not producer_outputs:
                     continue
                 inputs.append(
@@ -862,12 +728,8 @@ def plan_to_task_graph(
             normalized_source = dict(source)
             source_step = str(normalized_source.get("source_step") or "")
             producer = prior_steps.get(source_step)
-            producer_outputs = list(
-                getattr(producer, "expected_outputs", []) or []
-            )
-            requested_output = str(
-                normalized_source.get("source_output") or ""
-            )
+            producer_outputs = list(getattr(producer, "expected_outputs", []) or [])
+            requested_output = str(normalized_source.get("source_output") or "")
             if (
                 producer is not None
                 and len(producer_outputs) == 1
@@ -882,9 +744,7 @@ def plan_to_task_graph(
             sources = canonical_binding.get("source_artifacts")
             if isinstance(sources, list):
                 canonical_binding["source_artifacts"] = [
-                    canonical_source(source)
-                    if isinstance(source, dict)
-                    else source
+                    canonical_source(source) if isinstance(source, dict) else source
                     for source in sources
                 ]
             elif canonical_binding.get("source_step"):
@@ -914,11 +774,13 @@ def plan_to_task_graph(
             if trusted_modes
             else None
         )
-        operation_mode, operation_mode_source, operation_mode_reason = _derive_operation_mode(
-            agent_name,
-            raw.get("operation_mode"),
-            write_agents,
-            trusted_task_mode,
+        operation_mode, operation_mode_source, operation_mode_reason = (
+            _derive_operation_mode(
+                agent_name,
+                raw.get("operation_mode"),
+                write_agents,
+                trusted_task_mode,
+            )
         )
         _validate_planner_security_constraints(agent_name, raw)
         trusted_resource_attrs = _config_security_attributes(agent_name) or {}
@@ -967,9 +829,7 @@ def plan_to_task_graph(
             expected_schema_refs=(
                 dict(contract.output_schema_refs) if contract else {}
             ),
-            agent_contract=(
-                contract.model_dump(mode="json") if contract else None
-            ),
+            agent_contract=(contract.model_dump(mode="json") if contract else None),
             verification_contract=dict(raw.get("verification_contract") or {}),
             subtask_ids=_subtask_ids_for(raw),
             intents=_list_field(raw, "intents", "intent"),
@@ -981,7 +841,8 @@ def plan_to_task_graph(
         if agent_name:
             prior_agent_to_step[agent_name] = step_id
 
-    graph = TaskGraph(spec=TaskSpec(
-        task_id=task_id, goal=goal, subject=subject), steps=steps)
+    graph = TaskGraph(
+        spec=TaskSpec(task_id=task_id, goal=goal, subject=subject), steps=steps
+    )
     graph.validate_dag()
     return graph

@@ -39,6 +39,7 @@ from src.orchestration.completion import (
     idempotency_key,
     missing_receipt_outputs,
     normalize_input,
+    validate_receipt,
 )
 from src.orchestration.providers import RoutingProvider, RoutingResult
 from src.orchestration.recovery import classify_failure, retry_delay_seconds
@@ -124,6 +125,7 @@ def _external_operation_id(exec_result: Any, artifact: Any) -> Optional[str]:
         ("external_op_id",),
         ("external_operation_id",),
         ("operation_id",),
+        ("provider_message_id",),
         ("message_id",),
         ("request_id",),
         ("submission_id",),
@@ -145,6 +147,10 @@ def _external_operation_id(exec_result: Any, artifact: Any) -> Optional[str]:
         ("business_outcome", "external_operation_id"),
         ("business_outcome", "resource_id"),
         ("business_outcome", "resource", "id"),
+        # Contracted Email Agents publish the durable provider id inside the
+        # typed output envelope. Keep this exact path explicit; arbitrary
+        # nested ids must never confirm an external side effect.
+        ("outputs", "email.dispatch.receipt", "provider_message_id"),
     )
     # Read the raw result first.  A trusted output contract may split it into
     # several Artifacts, in which case the first Artifact need not contain the
@@ -154,10 +160,7 @@ def _external_operation_id(exec_result: Any, artifact: Any) -> Optional[str]:
     payload = getattr(artifact, "payload", None)
     for source in (raw_result, payload):
         if isinstance(source, Mapping):
-            candidates.extend(
-                _mapping_path(source, *path)
-                for path in provider_paths
-            )
+            candidates.extend(_mapping_path(source, *path) for path in provider_paths)
     for value in candidates:
         if value is not None and str(value).strip():
             return str(value).strip()
@@ -215,7 +218,9 @@ class InputResolutionError(Exception):
     instead of silently running the agent with a missing/empty input.
     """
 
-    def __init__(self, *, param: str, source: Optional[str], reason: str, detail: str = "") -> None:
+    def __init__(
+        self, *, param: str, source: Optional[str], reason: str, detail: str = ""
+    ) -> None:
         self.param = param
         self.source = source
         self.reason = reason
@@ -389,8 +394,14 @@ class TaskScheduler:
 
             batch = self._select_batch(runnable, smap)
             coros = [
-                self._run_step(smap[sid], context, on_step_start,
-                               on_step_end, on_retry, commit_step_result)
+                self._run_step(
+                    smap[sid],
+                    context,
+                    on_step_start,
+                    on_step_end,
+                    on_retry,
+                    commit_step_result,
+                )
                 for sid in batch
             ]
             batch_results = await asyncio.gather(*coros)
@@ -405,14 +416,11 @@ class TaskScheduler:
         # Every declared step receives an explicit terminal outcome. Steps that
         # could not enter the runnable frontier because an upstream dependency
         # failed are SKIPPED, not silently omitted from the result map.
-        blocked_steps = [
-            step for step in graph.steps if step.step_id not in attempted
-        ]
+        blocked_steps = [step for step in graph.steps if step.step_id not in attempted]
         for step in blocked_steps:
             blocked_by = [dep for dep in step.depends_on if dep not in completed]
-            error = (
-                "step blocked by failed upstream dependencies: "
-                + ", ".join(blocked_by)
+            error = "step blocked by failed upstream dependencies: " + ", ".join(
+                blocked_by
             )
             result = StepResult(
                 step_id=step.step_id,
@@ -553,21 +561,23 @@ class TaskScheduler:
             in ("REJECT", "NO_CAPABLE_AGENT")
         ]
         needs_recon = [
-            sid for sid, r in results.items() if (r.metrics or {}).get("needs_reconciliation")
+            sid
+            for sid, r in results.items()
+            if (r.metrics or {}).get("needs_reconciliation")
         ]
-        blocked = [
-            sid for sid, r in results.items() if r.status == StepStatus.SKIPPED
-        ]
+        blocked = [sid for sid, r in results.items() if r.status == StepStatus.SKIPPED]
         approval_required = [
-            sid for sid, r in results.items() if (r.metrics or {}).get("approval_required")
+            sid
+            for sid, r in results.items()
+            if (r.metrics or {}).get("approval_required")
         ]
-        failed = [sid for sid, r in results.items() if r.status !=
-                  StepStatus.SUCCEEDED]
+        failed = [sid for sid, r in results.items() if r.status != StepStatus.SUCCEEDED]
         primary_failed = [
             sid for sid, r in results.items() if r.status == StepStatus.FAILED
         ]
-        succeeded = [sid for sid, r in results.items() if r.status ==
-                     StepStatus.SUCCEEDED]
+        succeeded = [
+            sid for sid, r in results.items() if r.status == StepStatus.SUCCEEDED
+        ]
 
         if needs_recon:
             status = WorkflowStatus.NEEDS_RECONCILIATION
@@ -592,7 +602,9 @@ class TaskScheduler:
             additional_failures=additional_failures,
         )
 
-    def _select_batch(self, runnable: List[str], smap: Dict[str, TaskStep]) -> List[str]:
+    def _select_batch(
+        self, runnable: List[str], smap: Dict[str, TaskStep]
+    ) -> List[str]:
         """Pick a concurrent batch honoring resource locks.
 
         - Writes/sends with disjoint locks may run together; a write with no
@@ -682,9 +694,7 @@ class TaskScheduler:
         metrics.setdefault("operation_mode", str(step.operation_mode or ""))
         metrics.setdefault("risk_level", str(step.risk_level or ""))
         metrics.setdefault("max_attempts", max(1, int(step.retry or 0) + 1))
-        metrics["duration_seconds"] = round(
-            max(0.0, time.monotonic() - started_at), 6
-        )
+        metrics["duration_seconds"] = round(max(0.0, time.monotonic() - started_at), 6)
         result.metrics = metrics
 
         # Non-critical end hook (logging / SSE / monitoring): best effort only.
@@ -891,9 +901,7 @@ class TaskScheduler:
                                 ),
                             }
                         )
-                        candidate = candidate.model_copy(
-                            update={"metrics": metrics}
-                        )
+                        candidate = candidate.model_copy(update={"metrics": metrics})
                         if self._on_attempt_end is not None:
                             try:
                                 await self._on_attempt_end(
@@ -984,9 +992,7 @@ class TaskScheduler:
                     "selected_agent": selected_agent,
                     "attempt_failures": list(attempt_failures),
                     "recovery_path": (
-                        [phase, "same_agent_retry"]
-                        if attempt_number > 1
-                        else [phase]
+                        [phase, "same_agent_retry"] if attempt_number > 1 else [phase]
                     ),
                 }
             )
@@ -1075,12 +1081,8 @@ class TaskScheduler:
         expected_outputs = list(getattr(step, "expected_outputs", None) or [])
         if not expected_outputs:
             return "REDISPATCH_EXPECTED_OUTPUTS_MISSING"
-        planned_outputs = {
-            ref.name: ref for ref in planned_contract.produces
-        }
-        candidate_outputs = {
-            ref.name: ref for ref in candidate_contract.produces
-        }
+        planned_outputs = {ref.name: ref for ref in planned_contract.produces}
+        candidate_outputs = {ref.name: ref for ref in candidate_contract.produces}
         if set(expected_outputs) != set(planned_outputs):
             return "REDISPATCH_PLANNED_OUTPUT_BOUNDARY_MISMATCH"
         if set(planned_outputs) - set(candidate_outputs):
@@ -1098,12 +1100,8 @@ class TaskScheduler:
             if candidate_ref.required != planned_ref.required:
                 return "REDISPATCH_OUTPUT_REQUIRED_MISMATCH"
 
-        planned_inputs = {
-            ref.name: ref for ref in planned_contract.requires
-        }
-        candidate_inputs = {
-            ref.name: ref for ref in candidate_contract.requires
-        }
+        planned_inputs = {ref.name: ref for ref in planned_contract.requires}
+        candidate_inputs = {ref.name: ref for ref in candidate_contract.requires}
         if set(planned_inputs) != set(candidate_inputs):
             return "REDISPATCH_INPUT_MISSING"
         for name, planned_ref in planned_inputs.items():
@@ -1258,8 +1256,9 @@ class TaskScheduler:
         routing = self._routes.get(step.step_id)
         if routing is None:
             routing = await self._route(step, context)
-        decision_kind = str(getattr(routing, "decision",
-                            "DISPATCH") or "DISPATCH").upper()
+        decision_kind = str(
+            getattr(routing, "decision", "DISPATCH") or "DISPATCH"
+        ).upper()
         selected_agent = getattr(routing, "selected_agent", None)
         reason_codes = list(getattr(routing, "reason_codes", []) or [])
 
@@ -1281,8 +1280,10 @@ class TaskScheduler:
                 step_id=step.step_id,
                 status=StepStatus.FAILED,
                 error=f"routing {decision_kind}: {', '.join(reason_codes) or 'no capable agent'}",
-                metrics={"routing_decision": decision_kind,
-                         "reason_codes": reason_codes},
+                metrics={
+                    "routing_decision": decision_kind,
+                    "reason_codes": reason_codes,
+                },
             )
         if decision_kind == "CLARIFY":
             # Defensive: a global clarification halts the workflow before any
@@ -1302,13 +1303,19 @@ class TaskScheduler:
         # result: fail closed BEFORE the start hook / executor run. Only applies
         # when a routing provider is bound (direct/unit scheduling with no
         # provider legitimately passes ``selected_agent=None`` to the executor).
-        if decision_kind == "DISPATCH" and selected_agent is None and self._routing is not None:
+        if (
+            decision_kind == "DISPATCH"
+            and selected_agent is None
+            and self._routing is not None
+        ):
             return StepResult(
                 step_id=step.step_id,
                 status=StepStatus.FAILED,
                 error="illegal routing: DISPATCH without a selected agent",
-                metrics={"routing_decision": "DISPATCH_NO_AGENT",
-                         "reason_codes": reason_codes},
+                metrics={
+                    "routing_decision": "DISPATCH_NO_AGENT",
+                    "reason_codes": reason_codes,
+                },
             )
 
         try:
@@ -1360,9 +1367,28 @@ class TaskScheduler:
         step_ctx["actual_agent_contract"] = actual_contract
         step_ctx["actual_expected_schema_refs"] = dict(actual_schema_refs)
 
+        # A completed side effect is not a new dispatch. Preflight the exact
+        # input-derived receipt key before authorization so a duplicate Resume
+        # can reuse a valid SUCCEEDED receipt without creating another approval.
+        # The atomic claim and all contract/schema/ArtifactRef validation below
+        # still run before the prior outputs are accepted.
+        precomputed_idem_key: Optional[str] = None
+        confirmed_receipt_reuse = False
+        if self.receipt_store is not None and step.requires_external_receipt:
+            precomputed_idem_key = idempotency_key(
+                step_ctx.get("task_id", ""), step.step_id, inputs
+            )
+            existing_receipt = self.receipt_store.get(precomputed_idem_key)
+            confirmed_receipt_reuse = bool(
+                isinstance(existing_receipt, Mapping)
+                and validate_receipt(existing_receipt, key=precomputed_idem_key)
+            )
+
         # Authorize dispatch after the isolated context and governed Artifact
-        # inputs are prepared, but before any side-effect receipt is claimed.
-        if self._authorize_step is not None:
+        # inputs are prepared, but before any new side-effect receipt is claimed.
+        if confirmed_receipt_reuse:
+            step_ctx["permission_decision"] = "SUCCEEDED_RECEIPT_REUSE"
+        elif self._authorize_step is not None:
             try:
                 authorization_result = await self._authorize_step(
                     step=step,
@@ -1391,8 +1417,8 @@ class TaskScheduler:
         idem_key: Optional[str] = None
         claim_id: Optional[str] = None
         if self.receipt_store is not None and step.requires_external_receipt:
-            idem_key = idempotency_key(step_ctx.get(
-                "task_id", ""), step.step_id, inputs)
+            idem_key = precomputed_idem_key
+            assert idem_key is not None
             # Surface the key everywhere a downstream provider/tool can dedupe:
             # step context, ExecutionContext.metadata (-> RemoteExecutor request
             # context / security_context / agent prompt).
@@ -1541,11 +1567,13 @@ class TaskScheduler:
                     step_id=step.step_id,
                     status=StepStatus.SUCCEEDED,
                     outputs=artifact_refs,
-                    metrics={"idempotent_reuse": True,
-                             "selected_agent": receipt_agent or selected_agent,
-                             "idempotency_key": idem_key,
-                             "receipt_status": "SUCCEEDED",
-                             "external_op_id": prior.get("external_op_id")},
+                    metrics={
+                        "idempotent_reuse": True,
+                        "selected_agent": receipt_agent or selected_agent,
+                        "idempotency_key": idem_key,
+                        "receipt_status": "SUCCEEDED",
+                        "external_op_id": prior.get("external_op_id"),
+                    },
                 )
             if claim.status == ClaimStatus.IN_PROGRESS:
                 # Another instance already claimed/started this side effect, or a
@@ -1568,10 +1596,27 @@ class TaskScheduler:
                     step_id=step.step_id,
                     status=StepStatus.FAILED,
                     error="receipt store corrupt: refusing to run side effect (fail closed)",
-                    metrics={"receipt_store_corrupt": True,
-                             "selected_agent": selected_agent},
+                    metrics={
+                        "receipt_store_corrupt": True,
+                        "selected_agent": selected_agent,
+                    },
                 )
             claim_id = claim.claim_id
+
+        # Synthetic email requests are assembled before authorization so the
+        # first pass can be validated and paused safely.  Once authorization
+        # succeeds, bind the actual approval identity and receipt key into the
+        # request that reaches the Email Agent.
+        email_request = inputs.get("email.dispatch.request")
+        if isinstance(email_request, dict):
+            email_request["approval_id"] = str(
+                step_ctx.get("approval_id")
+                or (
+                    getattr(step_ctx.get("execution_context"), "metadata", {}) or {}
+                ).get("approval_id")
+                or "not_required"
+            )
+            email_request["idempotency_key"] = str(idem_key or "")
 
         if on_step_start is not None:
             await on_step_start(step=step, selected_agent=selected_agent, inputs=inputs)
@@ -1659,13 +1704,13 @@ class TaskScheduler:
                 return self._needs_reconciliation(
                     step,
                     selected_agent,
-                    getattr(exec_result, "error",
-                            None) or "side-effect step failed",
+                    getattr(exec_result, "error", None) or "side-effect step failed",
                     idempotency_key=idem_key,
                     receipt={"claim_id": claim_id},
                 )
             result: Optional[StepResult] = self._record_success(
-                step, exec_result, step_ctx, 1, selected_agent)
+                step, exec_result, step_ctx, 1, selected_agent
+            )
             result.metrics["idempotency_key"] = idem_key
             if not result.is_success:
                 # The external side effect may already have happened, but its
@@ -1778,9 +1823,7 @@ class TaskScheduler:
                     step,
                     selected_agent,
                     f"side effect returned but completion condition failed: {failed_expr}",
-                    external_op_id=(result.metrics or {}).get(
-                        "external_op_id"
-                    ),
+                    external_op_id=(result.metrics or {}).get("external_op_id"),
                     idempotency_key=idem_key,
                     receipt={"claim_id": claim_id},
                 )
@@ -1831,8 +1874,7 @@ class TaskScheduler:
                     step,
                     selected_agent,
                     f"side effect succeeded but receipt persistence failed: {exc}",
-                    external_op_id=(result.metrics or {}).get(
-                        "external_op_id"),
+                    external_op_id=(result.metrics or {}).get("external_op_id"),
                     idempotency_key=idem_key,
                     receipt={"claim_id": claim_id},
                 )
@@ -1955,9 +1997,8 @@ class TaskScheduler:
     ) -> tuple[Any, Dict[str, str], Optional[str]]:
         """Resolve the one trusted output contract bound to an actual dispatch."""
 
-        planned_agent = (
-            getattr(step, "agent_name", None)
-            or getattr(step, "preferred_resource_id", None)
+        planned_agent = getattr(step, "agent_name", None) or getattr(
+            step, "preferred_resource_id", None
         )
         rerouted = bool(
             selected_agent
@@ -2172,9 +2213,7 @@ class TaskScheduler:
                         logical_name=logical_name,
                         schema_ref=expected_schema_ref,
                     )
-                valid, errors = registry.validate(
-                    artifact.payload, expected_schema_ref
-                )
+                valid, errors = registry.validate(artifact.payload, expected_schema_ref)
                 if artifact.schema_valid is not True or not valid:
                     return {}, self._invalid_succeeded_receipt(
                         step=step,
@@ -2208,9 +2247,8 @@ class TaskScheduler:
     ) -> StepResult:
         """Publish human-confirmed payloads through the normal Artifact adapter."""
 
-        planned_agent = (
-            getattr(step, "agent_name", None)
-            or getattr(step, "preferred_resource_id", None)
+        planned_agent = getattr(step, "agent_name", None) or getattr(
+            step, "preferred_resource_id", None
         )
         producer_agent = selected_agent or planned_agent
         schema_refs = dict(expected_schema_refs)
@@ -2242,10 +2280,7 @@ class TaskScheduler:
             upstream_refs = list(context.get("upstream_artifact_refs") or [])
             if upstream_refs:
                 lineage = list(artifact.derived_from or [])
-                seen = {
-                    (ref.artifact_id, ref.version, ref.selector)
-                    for ref in lineage
-                }
+                seen = {(ref.artifact_id, ref.version, ref.selector) for ref in lineage}
                 for ref in upstream_refs:
                     key = (ref.artifact_id, ref.version, ref.selector)
                     if key not in seen:
@@ -2297,9 +2332,8 @@ class TaskScheduler:
         # binding the planned Agent's identity/contract would either reject a
         # legitimate envelope (PRODUCER_AGENT_MISMATCH) or misattribute a
         # legacy payload to the wrong producer.
-        planned_agent = (
-            getattr(step, "agent_name", None)
-            or getattr(step, "preferred_resource_id", None)
+        planned_agent = getattr(step, "agent_name", None) or getattr(
+            step, "preferred_resource_id", None
         )
         producer_agent = selected_agent or planned_agent
         if "actual_agent_contract" in context:
@@ -2369,10 +2403,7 @@ class TaskScheduler:
         for logical_name, artifact in artifacts.items():
             if upstream_refs:
                 lineage = list(artifact.derived_from or [])
-                seen = {
-                    (ref.artifact_id, ref.version, ref.selector)
-                    for ref in lineage
-                }
+                seen = {(ref.artifact_id, ref.version, ref.selector) for ref in lineage}
                 for ref in upstream_refs:
                     key = (ref.artifact_id, ref.version, ref.selector)
                     if key not in seen:
@@ -2417,7 +2448,9 @@ class TaskScheduler:
         preferred resource id is treated as an explicit DISPATCH.
         """
         if self._routing is None:
-            return RoutingResult(selected_agent=step.preferred_resource_id, decision="DISPATCH")
+            return RoutingResult(
+                selected_agent=step.preferred_resource_id, decision="DISPATCH"
+            )
         result = await self._routing.decide(
             step,
             user_query=context.get("user_query", ""),
@@ -2481,7 +2514,10 @@ class TaskScheduler:
         :class:`InputResolutionError` (used for non-optional inputs)."""
         try:
             return self._resolve_ref(
-                ref=ref, subject=subject, scenario=scenario, consumer_agent=consumer_agent
+                ref=ref,
+                subject=subject,
+                scenario=scenario,
+                consumer_agent=consumer_agent,
             )
         except ArtifactAccessDenied as exc:
             raise InputResolutionError(
@@ -2493,7 +2529,10 @@ class TaskScheduler:
             ) from exc
         except ArtifactSchemaIncompatible as exc:
             raise InputResolutionError(
-                param=param, source=source, reason="schema_incompatible", detail=str(exc)
+                param=param,
+                source=source,
+                reason="schema_incompatible",
+                detail=str(exc),
             ) from exc
         except ArtifactNotFoundError as exc:
             raise InputResolutionError(
@@ -2523,9 +2562,8 @@ class TaskScheduler:
         already fails closed (REROUTED_AGENT_CONTRACT_MISSING) before anything
         is published."""
         contract = getattr(step, "agent_contract", None)
-        planned_agent = (
-            getattr(step, "agent_name", None)
-            or getattr(step, "preferred_resource_id", None)
+        planned_agent = getattr(step, "agent_name", None) or getattr(
+            step, "preferred_resource_id", None
         )
         if consumer_agent and planned_agent and consumer_agent != planned_agent:
             contract = self._trusted_agent_contract(consumer_agent, context)
@@ -2632,9 +2670,7 @@ class TaskScheduler:
                     )
                 contract_data = getattr(step, "agent_contract", None)
                 contract_requires = (
-                    list(contract_data.requires)
-                    if contract_data is not None
-                    else []
+                    list(contract_data.requires) if contract_data is not None else []
                 )
                 contract_input = next(
                     (ref for ref in contract_requires if ref.name == param),
@@ -2738,6 +2774,58 @@ class TaskScheduler:
                         ),
                     )
                 target_schema = expected_schema or assembly_schema
+                if target_schema == "email.dispatch.request@v1":
+                    profile = context.get("task_profile") or {}
+                    entities = (
+                        profile.get("entities") if isinstance(profile, dict) else {}
+                    )
+                    entities = entities if isinstance(entities, dict) else {}
+                    source_report = assembled_sources[0] if assembled_sources else {}
+                    report_payload = (
+                        source_report.get("payload")
+                        if isinstance(source_report, dict)
+                        else {}
+                    )
+                    if isinstance(report_payload, dict):
+                        report_body = str(
+                            report_payload.get("markdown")
+                            or report_payload.get("content")
+                            or ""
+                        )
+                    else:
+                        report_body = str(report_payload or "")
+                    report_ref = binding_refs[0] if binding_refs else None
+                    recipients = (
+                        entities.get("recipient") or entities.get("recipients") or []
+                    )
+                    if isinstance(recipients, str):
+                        recipients = [recipients]
+                    assembled.update(
+                        {
+                            "recipients": (
+                                list(recipients) if isinstance(recipients, list) else []
+                            ),
+                            "subject": str(
+                                entities.get("document_type")
+                                or assembled.get("title")
+                                or "任务结果通知"
+                            ),
+                            "body": report_body,
+                            "source_report_artifact_id": str(
+                                getattr(report_ref, "artifact_id", "") or ""
+                            ),
+                            # The authorization hook fills the real approval id
+                            # on resume; the first pass remains a draft that is
+                            # stopped before the Agent is invoked.
+                            "approval_id": "",
+                            "idempotency_key": "",
+                        }
+                    )
+                    # Email request has its own business envelope; the generic
+                    # fan-in metadata is consumed during assembly and must not
+                    # leak into the strict @v1 payload.
+                    for transient_key in ("sources", "title", "instruction"):
+                        assembled.pop(transient_key, None)
                 if target_schema:
                     registry = get_schema_registry()
                     if not registry.has(target_schema):
@@ -2801,7 +2889,10 @@ class TaskScheduler:
                 )
             try:
                 value, sensitivity = self._resolve_ref(
-                    ref=ref, subject=subject, scenario=scenario, consumer_agent=consumer_agent
+                    ref=ref,
+                    subject=subject,
+                    scenario=scenario,
+                    consumer_agent=consumer_agent,
                 )
                 resolved[param] = value
                 upstream_sensitivities.append(sensitivity)
@@ -2810,31 +2901,46 @@ class TaskScheduler:
                 if optional:
                     continue
                 raise InputResolutionError(
-                    param=param, source=src_agent, reason="access_denied", detail=str(exc)
+                    param=param,
+                    source=src_agent,
+                    reason="access_denied",
+                    detail=str(exc),
                 ) from exc
             except ArtifactSchemaInvalid as exc:
                 if optional:
                     continue
                 raise InputResolutionError(
-                    param=param, source=src_agent, reason="schema_invalid", detail=str(exc)
+                    param=param,
+                    source=src_agent,
+                    reason="schema_invalid",
+                    detail=str(exc),
                 ) from exc
             except ArtifactSchemaIncompatible as exc:
                 if optional:
                     continue
                 raise InputResolutionError(
-                    param=param, source=src_agent, reason="schema_incompatible", detail=str(exc)
+                    param=param,
+                    source=src_agent,
+                    reason="schema_incompatible",
+                    detail=str(exc),
                 ) from exc
             except ArtifactNotFoundError as exc:
                 if optional:
                     continue
                 raise InputResolutionError(
-                    param=param, source=src_agent, reason="artifact_not_found", detail=str(exc)
+                    param=param,
+                    source=src_agent,
+                    reason="artifact_not_found",
+                    detail=str(exc),
                 ) from exc
             except (KeyError, IndexError, TypeError) as exc:
                 if optional:
                     continue
                 raise InputResolutionError(
-                    param=param, source=src_agent, reason="selector_error", detail=str(exc)
+                    param=param,
+                    source=src_agent,
+                    reason="selector_error",
+                    detail=str(exc),
                 ) from exc
         self._require_contract_inputs(
             step, resolved, context=context, consumer_agent=consumer_agent

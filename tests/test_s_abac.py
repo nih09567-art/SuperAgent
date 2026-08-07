@@ -363,6 +363,33 @@ def test_explicit_communication_policy_preserves_email_review_requirement():
     assert result["decision"] == "REVIEW_REQUIRED"
 
 
+def test_email_agent_dispatch_defers_recipient_bound_review_to_remote_tool():
+    engine = PolicyEngine()
+    subject = SecurityContextBuilder.subject_for_user("admin")
+    object_ = SecurityContextBuilder.object_for_agent(
+        SimpleNamespace(name="RemoteEmailDispatchAgent")
+    )
+    scenario = Scenario(
+        task_scenario={
+            "task_type": "COMMUNICATION",
+            "operation_mode": "send",
+            "scenario_tags": ["notification_send", "external_send"],
+            "expected_capabilities": ["Communication"],
+            "scenario_fit_result": {"fit": "match", "reason": "send task"},
+        },
+        environment={"time": "working_hours", "network_zone": "internal"},
+    )
+    action = SecurityContextBuilder.action_for_agent_dispatch(
+        "RemoteEmailDispatchAgent"
+    )
+
+    result = engine.evaluate(subject, object_, scenario, action)
+
+    assert object_.attributes["external_side_effect"] is True
+    assert object_.attributes["requires_approval"] is False
+    assert result["allowed"] is True
+
+
 def test_approval_store_approve_and_consume_once():
     store_path = Path("store") / f"approvals_test_{uuid4().hex}"
     store = ApprovalStore(store_path)
@@ -456,6 +483,12 @@ def test_approval_signature_ignores_fit_prose_and_normalizes_stage():
     resumed["task_scenario"]["stage"] = "PRODUCTION"
     resumed["task_scenario"]["scenario_fit_result"]["confidence"] = 0.91
     resumed["task_scenario"]["scenario_fit_result"]["reason"] = "Different wording"
+    resumed["task_scenario"]["scenario_fit_result"][
+        "suggested_agent_domains"
+    ] = ["UniversalAssistant", "CommunicationAgent"]
+    resumed["task_scenario"]["scenario_fit_result"][
+        "suggested_tool_domains"
+    ] = ["Communication", "Office"]
     mismatch = json.loads(json.dumps(resumed, ensure_ascii=False))
     mismatch["task_scenario"]["scenario_fit_result"]["fit"] = "mismatch"
 

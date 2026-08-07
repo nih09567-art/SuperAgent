@@ -96,6 +96,36 @@ def test_idempotency_key_stable_and_order_independent():
         {"a": 1, "b": 2}) == normalize_input({"b": 2, "a": 1})
 
 
+def test_normalize_input_ignores_platform_assigned_side_effect_fields():
+    business_input = {
+        "email.dispatch.request": {
+            "recipients": ["hr@example.test"],
+            "body": "report",
+        }
+    }
+    first_resume = {
+        **business_input,
+        "email.dispatch.request": {
+            **business_input["email.dispatch.request"],
+            "approval_id": "approval-1",
+            "idempotency_key": "platform-key-1",
+        },
+    }
+    second_resume = {
+        **business_input,
+        "email.dispatch.request": {
+            **business_input["email.dispatch.request"],
+            "approval_id": "approval-2",
+            "idempotency_key": "platform-key-2",
+        },
+    }
+
+    assert normalize_input(first_resume) == normalize_input(second_resume)
+    assert idempotency_key("T", "email", first_resume) == idempotency_key(
+        "T", "email", second_resume
+    )
+
+
 def test_receipt_store_and_validation():
     rs = ReceiptStore()
     assert rs.has("k") is False

@@ -88,7 +88,11 @@ def _find_all_arguments(
 ) -> list[Any]:
     """Return every alias value, including nested values, for conflict checks."""
 
-    values = [arguments[key] for key in aliases if key in arguments]
+    values = [
+        arguments[key]
+        for key in aliases
+        if key in arguments and arguments[key] not in (None, "", [], {})
+    ]
     for value in arguments.values():
         if isinstance(value, dict):
             values.extend(_find_all_arguments(value, aliases))
@@ -186,10 +190,15 @@ class BaseRemoteAgent(ABC):
         name: str,
         prompt: str,
         contract: AgentContract | None = None,
+        planning_contract: AgentContract | None = None,
     ):
         self.name = name
         self.prompt = prompt
         self.contract = contract
+        # A planning-only contract lets an Agent enter the trusted candidate
+        # pool before the current legacy execution path is switched to strict
+        # Artifact bindings. Active contracts are automatically planning-safe.
+        self.planning_contract = planning_contract or contract
 
     def result_envelope(
         self,

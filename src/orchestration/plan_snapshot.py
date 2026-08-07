@@ -35,7 +35,9 @@ def _safe(name: str) -> str:
     # NOTE: ':' is intentionally excluded from the whitelist -- it is an illegal
     # filename character on Windows (drive separator) and caused WinError 123
     # when a workflow_id like 'hr_manager:<hash>' was used as a filename.
-    return "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in str(name or "wf"))
+    return "".join(
+        c if c.isalnum() or c in ("-", "_") else "_" for c in str(name or "wf")
+    )
 
 
 def _canonical(obj: Any) -> str:
@@ -256,9 +258,15 @@ def verify_snapshot_for_execution(
     if not isinstance(snapshot, dict):
         return None, "no_snapshot"
     if snapshot.get("schema_version") != SCHEMA_VERSION:
-        return None, f"schema_version mismatch: {snapshot.get('schema_version')} (replan required)"
+        return (
+            None,
+            f"schema_version mismatch: {snapshot.get('schema_version')} (replan required)",
+        )
     if snapshot.get("converter_version") != CONVERTER_VERSION:
-        return None, f"converter_version mismatch: {snapshot.get('converter_version')} (replan required)"
+        return (
+            None,
+            f"converter_version mismatch: {snapshot.get('converter_version')} (replan required)",
+        )
     if snapshot.get("workflow_id") != workflow_id:
         return None, "workflow_id mismatch"
     if snapshot.get("user_id") != user_id:
@@ -283,10 +291,7 @@ def verify_snapshot_for_execution(
     # main guarantee: it catches a modified plan, a swapped-in task graph, or
     # any field drift even if the stored hash was recomputed by a tamperer.
     try:
-        from src.orchestration.plan_to_task_graph import (
-            plan_to_task_graph,
-            trusted_scenario_contract_for_plan,
-        )
+        from src.orchestration.plan_to_task_graph import plan_to_task_graph
 
         # The rebuild inputs mirror the planner save path: Contracts and
         # produces come from the CURRENT trusted registry only. The snapshot
@@ -321,10 +326,6 @@ def verify_snapshot_for_execution(
             agent_produces=agent_produces,
             agent_contracts=agent_contracts,
             subtasks=subtasks,
-            trusted_scenario_contract_id=trusted_scenario_contract_for_plan(
-                planning_steps,
-                user_query=goal,
-            ),
         ).model_dump()
     except Exception as exc:  # noqa: BLE001 - cannot rebuild -> refuse
         return None, f"rebuild failed (replan required): {exc}"

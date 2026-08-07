@@ -34,9 +34,47 @@ EXTRA_KEYWORDS = {
     name: tuple(item.get("keywords") or ()) for name, item in INTENT_CATALOG.items()
 }
 
+# Intent describes the user's goal; these logical data names describe the
+# business artifacts needed to satisfy it. Agent selection is deliberately not
+# encoded here and is resolved later from Registry Contracts.
+_INTENT_REQUIRED_BUSINESS_DATA: dict[str, tuple[str, ...]] = {
+    "employee_information_query": ("employee.info",),
+    "salary_query": ("employee.salary",),
+    "leave_record_query": ("employee.leave_records",),
+    "knowledge_lookup": ("policy.info",),
+    "risk_analysis": ("risk.records",),
+    "weather_query": ("weather.forecast",),
+}
+_INTENT_DELIVERABLES: dict[str, tuple[str, ...]] = {
+    "report_generation": ("report.markdown",),
+    "document_generation": ("document.file",),
+    "message_or_email_send": ("email.dispatch.receipt",),
+}
+_INTENT_SIDE_EFFECTS: dict[str, tuple[str, ...]] = {
+    "message_or_email_send": ("email_dispatch",),
+    "meeting_arrangement": ("meeting_write",),
+}
+
 
 def _unique(values: list[str]) -> list[str]:
     return list(dict.fromkeys(value for value in values if value))
+
+
+def _business_targets_for_intents(
+    intents: list[str],
+) -> tuple[list[str], list[str], list[str]]:
+    required_data: list[str] = []
+    deliverables: list[str] = []
+    side_effects: list[str] = []
+    for intent in intents:
+        required_data.extend(_INTENT_REQUIRED_BUSINESS_DATA.get(intent, ()))
+        deliverables.extend(_INTENT_DELIVERABLES.get(intent, ()))
+        side_effects.extend(_INTENT_SIDE_EFFECTS.get(intent, ()))
+    return (
+        _unique(required_data),
+        _unique(deliverables),
+        _unique(side_effects),
+    )
 
 
 def _merge_entities(rule_entities: dict[str, Any], semantic_entities: dict[str, Any]) -> dict[str, Any]:
@@ -634,6 +672,12 @@ def _build_subtasks(
                 "expected_capabilities": list(definition.get("capabilities") or []),
                 "scenario_tags": list(definition.get("tags") or []),
                 "data_scope": list(definition.get("scope") or []),
+                "required_business_data": list(
+                    _INTENT_REQUIRED_BUSINESS_DATA.get(candidate.name, ())
+                ),
+                "expected_deliverables": list(
+                    _INTENT_DELIVERABLES.get(candidate.name, ())
+                ),
                 "depends_on": _unique(dependency_ids + condition_ids),
                 "segment_id": str(segment.get("id") or "") if segment else "",
                 "text_span": candidate.text_span or (str(segment.get("text") or "") if segment else ""),
@@ -801,6 +845,9 @@ async def profile_task(
     intent_nodes = _build_intent_nodes(recognition.intents, segments)
     legacy_intent = executable[0].name if executable else "general_assistance"
     sub_intents = [item.name for item in executable]
+    required_business_data, expected_deliverables, side_effects = (
+        _business_targets_for_intents(sub_intents)
+    )
     task_types = _unique(
         [str(INTENT_CATALOG[item.name]["task_type"]) for item in executable if item.name in INTENT_CATALOG]
     )
@@ -876,10 +923,15 @@ async def profile_task(
     return TaskProfile(
         task_id=task_id,
         intent=legacy_intent,
+        intents=sub_intents,
         task_type=task_type,
         business_goal=resolved_query,
         action=action,
+        operation_mode=action,
         entities=entities,
+        required_business_data=required_business_data,
+        expected_deliverables=expected_deliverables,
+        side_effects=side_effects,
         data_scope=_unique(scopes) or ["general"],
         scenario_tags=_unique(tags) or ["general"],
         expected_capabilities=_unique(capabilities) or ["General"],

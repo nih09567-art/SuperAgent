@@ -85,6 +85,18 @@ def test_hr_basic_query_authorizes_only_person_tool():
     }
 
 
+def test_empty_optional_security_argument_does_not_conflict_with_manifest(
+    monkeypatch,
+):
+    from remote_agents import base_agent
+
+    assert base_agent._arguments_match_authorization(
+        "query_leave_record",
+        {"employee_name": "王强", "intent": "leave_record_query"},
+        {"employee_name": "王强", "employee_id": ""},
+    )
+
+
 def test_hr_salary_query_authorizes_person_and_salary_with_bound_entity():
     resolved = required_remote_tool_authorizations(
         agent_name="RemoteHRAssistantAgent",
@@ -314,6 +326,15 @@ def test_email_dispatch_rejects_conflicting_authorized_and_forwarded_recipient(
 def test_trusted_recipient_accepts_exact_directory_email():
     assert resolve_trusted_recipient_addresses("limishu@ccb.com") == [
         "limishu@ccb.com"
+    ]
+
+
+def test_trusted_recipient_accepts_non_routable_demo_hr_mailbox():
+    assert resolve_trusted_recipient_addresses("hr@example.test") == [
+        "hr@example.test"
+    ]
+    assert resolve_trusted_recipient_addresses("人事部门") == [
+        "hr@example.test"
     ]
 
 

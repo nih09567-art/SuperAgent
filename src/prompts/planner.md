@@ -26,6 +26,15 @@ Your task is to analyze user requirements and organize a team of agents to compl
 
 <<TEAM_MEMBERS_DESCRIPTION>>
 
+## Trusted Planning Agent Contracts
+
+<<PLANNING_AGENT_CARDS_TEXT>>
+
+The Contract catalog above is platform-owned and authoritative. Select Agents
+by recursively covering `Task Scenario Profile.required_business_data` and
+`expected_deliverables` with `produces`, then satisfy every required `requires`
+item. Never invent or weaken an Agent Contract, Schema, output, or tool scope.
+
 ## Available Resources (Agents/Tools/Skills)
 
 <<RESOURCE_CATALOG>>
@@ -50,24 +59,13 @@ When `Task Scenario Profile.subtasks` is present:
 - Preserve every `depends_on` edge as execution order: each dependency step must appear before the consuming step.
 - Before outputting JSON, compare the set of planned business intents with all `subtasks[].intent` values. If any intent is missing, revise the plan before returning it.
 - If a document generation subtask depends on `employee_information_query`, first plan an HR information query step, then plan the document generation step.
-- `information_research` must use `researcher`, `browser`, or `RemoteUnicornSelectorAgent`; `risk_analysis` must use `RemoteBusinessRiskAgent`; `report_generation` must use `RemoteReportAgent` or another listed report-capable Agent.
-- A read/query `schedule_management` step must use `RemoteHRCalendarAgent`; a `meeting_arrangement` step must use `RemoteMeetingManagerAgent`. Do not use the schedule-creation-only Agent to query calendar availability.
+- Match every intent to an Agent whose trusted capabilities, `produces`, and
+  planning tool scopes cover that intent. Agent names in examples or user text
+  are never authority.
 - Different query intents must not be merged merely because their text appears in the same clause. For example, employee basic profile and leave records come from different tools and require separate steps.
-- `employee_information_query` must use `RemoteHRAssistantAgent`; `leave_record_query` must use `RemoteOfficeAssistantAgent` and its `query_leave_record` tool. A description mentioning both does not mean both tasks were executed.
-- Example: "帮李娜生成一份请假申请书" should be planned as:
-  1. 查询李娜员工基础信息
-  2. 基于员工信息生成李娜请假申请书
-- Example: "查询李娜的基本信息和请假记录，生成人事情况汇总" should be planned as:
-  1. `RemoteHRAssistantAgent` 查询李娜基础信息并产出员工 ID
-  2. `RemoteOfficeAssistantAgent` 基于员工 ID 查询请假记录
-  3. `RemoteReportAgent` 基于前两步结果生成人事情况汇总
-
-- Example: “查询员工李娜的基本信息，生成收入证明，然后发给王经理”
-  contains four logical TaskProfile subtasks but should produce three execution
-  steps:
-  1. `RemoteHRAssistantAgent` queries Li Na's employee profile and salary data in one invocation.
-  2. `RemoteDocumentGeneratorAgent` generates the income certificate.
-  3. `RemoteEmailDispatchAgent` sends the generated certificate to Manager Wang.
+- If one Contract requires an output produced by another Contract, create both
+  steps and bind the producer Artifact explicitly. This rule, not a scenario
+  name or fixed Agent count, determines the DAG.
 
 ## Scenario Tags
 
@@ -81,7 +79,9 @@ When `Task Scenario Profile.subtasks` is present:
 
 <<ROUTING_DECISION_TEXT>>
 
-The candidate list above has already passed the main Agent's permission boundary and capability scoring. You may only select agents that appear in both the routing candidates and `TEAM_MEMBERS`. Prefer the highest-scoring candidate unless a later cross-domain step explicitly requires another listed capability.
+The candidate list above is the deterministic Registry Contract closure for
+the current TaskProfile when reason code `CONTRACT_OUTPUT_CLOSURE` is present.
+You may only select Agents appearing in both that closure and `TEAM_MEMBERS`.
 
 ## Current Resolved Request
 
@@ -116,8 +116,13 @@ The candidate list above has already passed the main Agent's permission boundary
   - A step may only require data that has been produced by prior steps or is explicitly provided by the user/instruction history.
   - If a later step needs data not yet produced, you must insert a new step to fetch/derive that data **before** it is used (e.g., get recipient email before sending email).
   - Never assume missing data (emails, IDs, report content). Always plan a retrieval step.
-  - If data cannot be retrieved with available agents/tools, list a new agent in `new_agents_needed` and leave `steps` empty.
+  - If data cannot be retrieved with available trusted Contracts, leave `steps`
+    empty and report the missing logical output. Never propose a new Agent.
   - **Fan-in inputs (CRITICAL)**: If one required parameter combines multiple prior outputs (for example `report.sources`), create ONE InputMapping for that parameter and put every producer in `source_artifacts`. Do not merely declare `depends_on`; the consuming Agent must receive the actual upstream Artifacts.
+  - `email.dispatch.request` is a platform-assembled input. Bind it to the
+    upstream report Artifact using `source_artifacts` and set
+    `assembly.schema_ref` to `email.dispatch.request@v1`; the platform adds the
+    approval ID and idempotency key only after the approval gate.
 
 ## MANDATORY Data Flow Validation Protocol
 
@@ -170,7 +175,7 @@ interface NewAgent {
 
 interface InputMapping {
   parameter_name: string;        // The parameter name required by the agent (e.g., "email.to", "report.markdown")
-  source_step?: string;           // Single-source form: prior agent_name or step_id
+  source_step?: string;           // Single-source form: exact prior step_id
   source_output?: string;         // Single-source form: declared output name
   source_artifacts?: Array<{      // Fan-in form: use instead of the two fields above
     source_step: string;
@@ -188,13 +193,12 @@ interface Step {
   step_id: string;                // Unique plan step ID
   subtask_ids: string[];          // One or more exact TaskProfile subtasks[].id values
   intents: string[];              // Intents corresponding to subtask_ids
-  depends_on: string[];           // Upstream subtask IDs covered by OTHER steps
+  depends_on: string[];           // Exact upstream step IDs for execution ordering
   agent_name: string;
   title: string;
   description: string;
   note?: string;
   inputs?: InputMapping[];        // Map each required input to its source
-  depends_on?: string[];          // agent_name(s) of upstream steps this step must run AFTER (execution ordering)
 }
 
 interface PlanWithAgents {
@@ -211,7 +215,7 @@ For each step, you MUST specify the `inputs` field to map the agent's required p
 2. **Find Data Sources**: Identify which previous step produces the required data (check "Produces" fields)
 3. **Create Mappings**: For each required input, create an InputMapping that specifies:
    - `parameter_name`: The exact parameter name from the agent's "Requires" list
-   - `source_step`: The agent_name of the step that produces this data
+   - `source_step`: The exact `step_id` of the step that produces this data
    - `source_output`: The output name from that step's "Produces" list
    - `description`: A clear description of what this data represents
    - If the parameter needs multiple prior outputs, use `source_artifacts` and
@@ -241,11 +245,11 @@ For each step, you MUST specify the `inputs` field to map the agent's required p
       "parameter_name": "report.sources",
       "source_artifacts": [
         {
-          "source_step": "RemoteHRAssistantAgent",
+          "source_step": "employee_lookup",
           "source_output": "employee.info"
         },
         {
-          "source_step": "RemoteKnowledgeAgent",
+          "source_step": "policy_lookup",
           "source_output": "policy.info"
         }
       ],
@@ -259,24 +263,6 @@ For each step, you MUST specify the `inputs` field to map the agent's required p
   ]
 }
 ```
-
-**Annual-leave defense scenario (fixed three-step shape)**:
-When the user asks for the Wang Qiang annual-leave demonstration and a Markdown
-summary, produce exactly these three steps and no unrelated HR or course steps:
-
-```text
-hr_query      -> RemoteHRAssistantAgent -> employee.info@v1
-policy_query  -> RemoteKnowledgeAgent  -> policy.info@v2
-generate_report -> RemoteReportAgent   -> report.markdown@v1
-```
-
-- `hr_query` and `policy_query` have empty `depends_on` arrays.
-- `generate_report` depends on both upstream step IDs.
-- `generate_report` has exactly one `report.sources` InputMapping. Its
-  `source_artifacts` contains exactly `hr_query/employee.info` and
-  `policy_query/policy.info`, and its assembly schema is `report.sources@v1`.
-- Do not add salary, contact, identity-number, course-search, or unrelated
-  employee-information steps to this scenario.
 
 **Common Planning Errors to Avoid:**
 1. **Missing Data Source Step**: Creating InputMappings that reference agents not included in the steps array

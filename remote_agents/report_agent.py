@@ -10,20 +10,23 @@ import re
 
 from src.contracts.agent_contract import AgentContract, DataContractRef
 from src.contracts.agent_result import AgentResultError
-from src.contracts.scenario_contract import ANNUAL_LEAVE_REPORT_V1
+from src.contracts.agent_schema_catalog import (
+    AGENT_SCHEMA_CATALOG,
+    AGENT_SCHEMA_VALIDATORS,
+)
+from src.orchestration.schema_registry import get_schema_registry
 
 from .base_agent import BaseRemoteAgent
 
 logger = logging.getLogger(__name__)
 
-_ANNUAL_LEAVE_SOURCE_SCHEMAS = {
-    "employee.info": "employee.info@v1",
-    "policy.info": "policy.info@v2",
-}
-
 
 class _ReportOutputValidationError(ValueError):
     """The remote report tool returned a structurally unsafe result."""
+
+
+class _ReportSourceValidationError(ValueError):
+    """The governed report fan-in is incomplete, duplicate, or unregistered."""
 
 
 def _validate_report_tool_result(result: Any) -> str:
@@ -32,22 +35,14 @@ def _validate_report_tool_result(result: Any) -> str:
     if not isinstance(result, dict):
         raise _ReportOutputValidationError("report tool result must be an object")
     if str(result.get("status") or "").strip().lower() != "success":
-        raise _ReportOutputValidationError(
-            "report tool result status must be success"
-        )
+        raise _ReportOutputValidationError("report tool result status must be success")
     if "markdown" not in result:
-        raise _ReportOutputValidationError(
-            "report tool result is missing markdown"
-        )
+        raise _ReportOutputValidationError("report tool result is missing markdown")
     markdown = result["markdown"]
     if not isinstance(markdown, str):
-        raise _ReportOutputValidationError(
-            "report tool markdown must be a string"
-        )
+        raise _ReportOutputValidationError("report tool markdown must be a string")
     if not markdown.strip():
-        raise _ReportOutputValidationError(
-            "report tool markdown must not be empty"
-        )
+        raise _ReportOutputValidationError("report tool markdown must not be empty")
     return markdown
 
 
@@ -63,21 +58,40 @@ def _normalize_report_markdown(markdown: str) -> str:
     return normalized
 
 
-def _not_found_policy_report(title: str, source_count: int) -> dict[str, Any]:
-    """Build a deterministic cautious report when policy retrieval missed."""
+def _not_found_policy_report(
+    title: str,
+    sources: List[Dict[str, Any]],
+) -> dict[str, Any]:
+    """Build a cautious, data-driven report when policy retrieval missed."""
+
+    policy_topics = [
+        str(source.get("payload", {}).get("query") or "")
+        for source in sources
+        if isinstance(source, dict)
+        and source.get("logical_name") == "policy.info"
+        and isinstance(source.get("payload"), dict)
+    ]
+    annual_leave = any(
+        marker in topic for topic in policy_topics for marker in ("年假", "年休假")
+    )
+    conclusion = (
+        "当前资料不足，无法据此判断可休年假天数。"
+        if annual_leave
+        else "当前资料不足，无法形成需要该政策依据支撑的业务结论。"
+    )
 
     markdown = (
         f"# {title}\n\n"
         "## 政策依据\n"
-        "未检索到有效的年假政策依据。\n\n"
+        "未检索到有效的政策依据。\n\n"
         "## 结论\n"
-        "当前资料不足，无法据此判断可休年假天数。请补充有效政策来源或咨询人事部门；"
-        "本报告不会根据工龄自行推断法定天数。"
+        f"{conclusion}请补充有效政策来源或咨询相应业务部门；"
+        "本报告不会根据其他来源自行推断缺失的政策结论。"
     )
     payload = {
         "title": title,
         "markdown": markdown,
-        "source_count": source_count,
+        "source_count": len(sources),
     }
     payload["external_op_id"] = _report_external_operation_id(payload)
     return payload
@@ -123,24 +137,34 @@ def _resolved_report_sources(messages: List[Dict[str, Any]]) -> Dict[str, Any] |
     return report_sources if isinstance(report_sources, dict) else None
 
 
-def _validate_annual_leave_sources(
-    sources: List[Dict[str, Any]],
-    *,
-    scenario_contract_id: str,
-) -> None:
-    """Fail closed when an annual-leave fan-in is incomplete or duplicated."""
+def _validate_report_sources(report_sources: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Validate a Scheduler-assembled, scenario-neutral report input."""
 
-    if scenario_contract_id != ANNUAL_LEAVE_REPORT_V1:
-        return
-    for logical_name, schema_ref in _ANNUAL_LEAVE_SOURCE_SCHEMAS.items():
-        matches = [
-            source
-            for source in sources
-            if isinstance(source, dict)
-            and source.get("logical_name") == logical_name
-        ]
-        if len(matches) != 1 or matches[0].get("schema_ref") != schema_ref:
-            raise ValueError("annual-leave report sources are incomplete or invalid")
+    registry = get_schema_registry()
+    for schema_ref, schema in AGENT_SCHEMA_CATALOG.items():
+        semantic_validator = AGENT_SCHEMA_VALIDATORS.get(schema_ref)
+        if not registry.has(schema_ref):
+            registry.register(
+                schema_ref,
+                schema,
+                semantic_validator=semantic_validator,
+            )
+        elif semantic_validator is not None:
+            registry.set_semantic_validator(schema_ref, semantic_validator)
+    valid, _errors = registry.validate(report_sources, "report.sources@v1")
+    if not valid:
+        raise _ReportSourceValidationError("report.sources failed schema validation")
+
+    sources = report_sources.get("sources")
+    if not isinstance(sources, list):
+        raise _ReportSourceValidationError("report.sources must contain a source list")
+    for source in sources:
+        schema_ref = str(source.get("schema_ref") or "")
+        if not registry.has(schema_ref):
+            raise _ReportSourceValidationError(
+                "report source uses an unregistered schema"
+            )
+    return sources
 
 
 def _resolved_legacy_report_data(messages: List[Dict[str, Any]]) -> List[Any]:
@@ -218,26 +242,18 @@ class RemoteReportAgent(BaseRemoteAgent):
             # assembled by the Scheduler.
             report_sources = _resolved_report_sources(messages)
             if report_sources is not None:
-                sources = report_sources.get("sources")
-                if not isinstance(sources, list) or not sources:
-                    raise ValueError(
-                        "report.sources must contain at least one upstream source"
-                    )
-                brief = _execution_context_brief(messages) or {}
-                _validate_annual_leave_sources(
-                    sources,
-                    scenario_contract_id=str(
-                        brief.get("scenario_contract_id") or ""
-                    ),
-                )
+                sources = _validate_report_sources(report_sources)
                 arguments = {
                     "data": sources,
                     "title": str(report_sources.get("title") or "分析报告"),
-                    "instruction": str(
-                        report_sources.get("instruction") or "使用全部上游来源生成报告"
+                    "instruction": (
+                        "事实边界：只能使用 data 中实际存在的来源事实，不得补造。"
+                        + str(
+                            report_sources.get("instruction")
+                            or "使用全部上游来源生成报告"
+                        )
                     ),
                 }
-                source_count = len(sources)
                 policy_not_found = any(
                     isinstance(source, dict)
                     and source.get("logical_name") == "policy.info"
@@ -252,7 +268,7 @@ class RemoteReportAgent(BaseRemoteAgent):
                     return self.result_envelope(
                         outputs={
                             "report.markdown": _not_found_policy_report(
-                                arguments["title"], source_count
+                                arguments["title"], sources
                             )
                         }
                     )
@@ -286,9 +302,7 @@ class RemoteReportAgent(BaseRemoteAgent):
                 arguments=arguments,
                 timeout=tool_timeout,
             )
-            markdown = _normalize_report_markdown(
-                _validate_report_tool_result(result)
-            )
+            markdown = _normalize_report_markdown(_validate_report_tool_result(result))
             sources = arguments.get("sources")
             if not isinstance(sources, list):
                 sources = arguments.get("data")
@@ -312,6 +326,10 @@ class RemoteReportAgent(BaseRemoteAgent):
             elif isinstance(exc, _ReportOutputValidationError):
                 code = "INVALID_REPORT_OUTPUT"
                 message = "Report tool returned invalid output"
+                retryable = False
+            elif isinstance(exc, _ReportSourceValidationError):
+                code = "INVALID_REPORT_SOURCES"
+                message = "Report sources failed validation"
                 retryable = False
             else:
                 code = "REPORT_TOOL_ERROR"

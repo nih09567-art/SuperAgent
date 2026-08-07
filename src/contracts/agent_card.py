@@ -27,6 +27,9 @@ class AgentCard(BaseModel):
     input_schema_refs: dict[str, str] = Field(default_factory=dict)
     output_schema_refs: dict[str, str] = Field(default_factory=dict)
     agent_contract: AgentContract | None = None
+    planning_eligible: bool = False
+    planning_agent_contract: AgentContract | None = None
+    planning_tool_scopes: list[str] = Field(default_factory=list)
     version: str = "1.0.0"
     status: str = "ONLINE"
     description: str = ""

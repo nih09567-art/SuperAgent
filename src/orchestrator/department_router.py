@@ -160,6 +160,12 @@ def build_agent_cards(agents: Iterable[Any]) -> list[AgentCard]:
         source = getattr(agent, "source", "local")
         source_value = getattr(source, "value", source)
         agent_contract = getattr(agent, "agent_contract", None)
+        planning_contract = (
+            getattr(agent, "planning_agent_contract", None) or agent_contract
+        )
+        planning_tools = list(
+            getattr(agent, "planning_selected_tools", None) or tools
+        )
         cards.append(
             AgentCard(
                 agent_id=name,
@@ -182,19 +188,46 @@ def build_agent_cards(agents: Iterable[Any]) -> list[AgentCard]:
                 status="ONLINE",
                 description=str(getattr(agent, "description", "") or ""),
                 source=str(source_value),
-                contract_version=getattr(agent, "contract_version", None),
-                requires=list(agent_contract.requires) if agent_contract else [],
-                produces=list(agent_contract.produces) if agent_contract else [],
+                contract_version=(
+                    planning_contract.contract_version
+                    if planning_contract
+                    else getattr(agent, "contract_version", None)
+                ),
+                requires=(
+                    list(planning_contract.requires) if planning_contract else []
+                ),
+                produces=(
+                    list(planning_contract.produces) if planning_contract else []
+                ),
                 input_schema_refs=dict(
-                    getattr(agent, "input_schema_refs", {}) or {}
+                    (
+                        planning_contract.input_schema_refs
+                        if planning_contract
+                        else getattr(agent, "input_schema_refs", {}) or {}
+                    )
                 ),
                 output_schema_refs=dict(
-                    getattr(agent, "output_schema_refs", {}) or {}
+                    (
+                        planning_contract.output_schema_refs
+                        if planning_contract
+                        else getattr(agent, "output_schema_refs", {}) or {}
+                    )
                 ),
                 agent_contract=agent_contract,
+                planning_eligible=planning_contract is not None,
+                planning_agent_contract=planning_contract,
+                planning_tool_scopes=planning_tools,
             )
         )
     return cards
+
+
+def eligible_planning_agent_cards(
+    agent_cards: Iterable[AgentCard],
+) -> list[AgentCard]:
+    """Return only Registry-backed Agents with a trusted planning Contract."""
+
+    return [card for card in agent_cards if card.planning_eligible]
 
 
 def route_task(

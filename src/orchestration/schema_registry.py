@@ -53,9 +53,6 @@ def _resolve_default_semantic_validator(
     validator = _DEFAULT_SEMANTIC_VALIDATORS.get(schema_ref)
     if validator is not None:
         return validator
-    if not schema_ref.startswith("policy.info@"):
-        return None
-
     try:
         from src.contracts.agent_schema_catalog import AGENT_SCHEMA_VALIDATORS
     except (AttributeError, ImportError):
@@ -117,9 +114,7 @@ def _validate_value(
             errors.append(f"{path}: expected {expected}, got bool")
             return
         if not isinstance(value, allowed):
-            errors.append(
-                f"{path}: expected {expected}, got {type(value).__name__}"
-            )
+            errors.append(f"{path}: expected {expected}, got {type(value).__name__}")
             return
 
     enum = spec.get("enum")

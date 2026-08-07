@@ -272,6 +272,17 @@
         "description": "Remote agent to send emails with default sender. This agent autonomously extracts recipient email and message content from previous steps in the conversation.",
         "llm_type": "basic",
         "prompt": "remote email dispatch agent",
+        "contract_activation": "runtime",
+        "contract_version": "1.0",
+        "requires": ["email.dispatch.request"],
+        "produces": ["email.dispatch.receipt"],
+        "input_schema_refs": {
+          "email.dispatch.request": "email.dispatch.request@v1"
+        },
+        "output_schema_refs": {
+          "email.dispatch.receipt": "email.dispatch.receipt@v1"
+        },
+        "planning_selected_tools": ["remote_email_tool"],
         "selected_tools": [
           {
             "name": "remote_email_tool",
@@ -532,11 +543,21 @@
       "server_id": "remote-demo",
       "health_url": "http://127.0.0.1:8010/health",
       "metadata": {
-        "description": "Remote office assistant agent for handling leave and travel applications. It uses employee information when available and can still return available simulated records when it is omitted.",
+        "description": "Remote office assistant agent. Dynamic planning admits only read-only leave record queries; legacy save and travel tools remain outside the dynamic pool.",
         "llm_type": "basic",
         "prompt": "You are an office assistant that helps employees with leave and travel applications. Extract employee_id and employee_name from previous agent results in the conversation history.",
-        "requires": [],
-        "produces": ["application.record_id", "application.status", "application.message", "employee.leave_records", "employee.travel_records"],
+        "contract_activation": "runtime",
+        "contract_version": "1.0",
+        "requires": ["employee.info"],
+        "produces": ["employee.leave_records"],
+        "legacy_produces": ["application.record_id", "application.status", "application.message", "employee.leave_records", "employee.travel_records"],
+        "input_schema_refs": {
+          "employee.info": "employee.info@v1"
+        },
+        "output_schema_refs": {
+          "employee.leave_records": "employee.leave_records@v1"
+        },
+        "planning_selected_tools": ["query_leave_record"],
         "selected_tools": [
           {
             "name": "save_leave_record",
