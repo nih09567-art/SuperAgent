@@ -1,4 +1,8 @@
+import os
+import shutil
+import subprocess
 from pathlib import Path
+from unittest import SkipTest
 
 
 APP_JS = Path(__file__).resolve().parents[1] / "web" / "app.js"
@@ -143,6 +147,35 @@ def test_resource_tabs_load_without_manual_refresh():
     assert 'if (tabId === "tools") fetchTools();' in source
     assert 'if (tabId === "workflows") fetchWorkflows();' in source
     assert 'if (tabId === "tasks") fetchTasks();' in source
+
+
+def test_user_resource_loads_are_guarded_against_stale_responses():
+    source = _source()
+    index = INDEX_HTML.read_text(encoding="utf-8")
+
+    assert index.index("resource-request-guard.js") < index.index("app.js")
+    for resource in ("agents", "tools", "workflows"):
+        assert f"const {resource}RequestGuard = createLatestRequestGuard" in source
+        assert f"{resource}RequestGuard.begin(userId)" in source
+        assert f"!{resource}RequestGuard.isCurrent(request)" in source
+
+
+def test_latest_user_request_wins_when_responses_finish_out_of_order():
+    node = os.environ.get("SUPERAGENT_NODE") or shutil.which("node")
+    if node is None:
+        raise SkipTest("Node.js is required for the request-guard behavior test")
+
+    test_file = Path(__file__).resolve().parent / "web_resource_request_guard.test.cjs"
+    result = subprocess.run(
+        [node, "--test", str(test_file)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_security_summary_and_user_details_are_localized():

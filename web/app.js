@@ -39,6 +39,16 @@ const createConfirmationRequestId = () => {
 };
 
 const userIdInput = document.getElementById("userId");
+const readCurrentUserId = () => userIdInput?.value.trim() || "";
+const { createLatestRequestGuard } = window.ResourceRequestGuard;
+const agentsRequestGuard = createLatestRequestGuard(readCurrentUserId);
+const toolsRequestGuard = createLatestRequestGuard(readCurrentUserId);
+const workflowsRequestGuard = createLatestRequestGuard(readCurrentUserId);
+const invalidateUserResourceRequests = () => {
+  agentsRequestGuard.invalidate();
+  toolsRequestGuard.invalidate();
+  workflowsRequestGuard.invalidate();
+};
 const deepThinkingInput = document.getElementById("deepThinking");
 const searchBeforeInput = document.getElementById("searchBefore");
 const debugInput = document.getElementById("debugMode");
@@ -5896,9 +5906,10 @@ let renderAgents = (agents) => {
 };
 
 const fetchAgents = async () => {
+  const userId = readCurrentUserId();
+  const request = agentsRequestGuard.begin(userId);
   setListState(agentsList, "Loading...", "loading");
   try {
-    const userId = userIdInput.value.trim();
     const match = getMatchValue();
     const [defaultRes, userRes, healthRes, statsRes] = await Promise.all([
       fetch(buildAgentsUrl("share", match)),
@@ -5913,21 +5924,27 @@ const fetchAgents = async () => {
 
     const defaults = await defaultRes.json();
     const users = userRes ? await userRes.json() : [];
+    let nextAgentHealth = {};
+    let nextAgentStats = {};
     try {
       const healthJson = healthRes.ok ? await healthRes.json() : null;
-      agentHealth = healthJson?.agents || {};
+      nextAgentHealth = healthJson?.agents || {};
     } catch (err) {
-      agentHealth = {};
+      nextAgentHealth = {};
     }
 
     try {
       const statsJson = statsRes.ok ? await statsRes.json() : null;
-      agentStats = statsJson?.agents || {};
+      nextAgentStats = statsJson?.agents || {};
     } catch (err) {
-      agentStats = {};
+      nextAgentStats = {};
     }
 
     const combined = [...defaults, ...users];
+    if (!agentsRequestGuard.isCurrent(request)) return;
+
+    agentHealth = nextAgentHealth;
+    agentStats = nextAgentStats;
     latestAgents = combined;
     if (!combined.length) {
       setListState(agentsList, "No agents found.", "empty");
@@ -5937,16 +5954,18 @@ const fetchAgents = async () => {
 
     renderAgents(combined);
   } catch (err) {
+    if (!agentsRequestGuard.isCurrent(request)) return;
     setListState(agentsList, "Failed to load agents.", "error");
     setAgentDetailEmpty("Failed to load agents.");
   }
 };
 
 const fetchTools = async () => {
+  const userId = readCurrentUserId();
+  const request = toolsRequestGuard.begin(userId);
   setListState(toolsList, "Loading...", "loading");
   setToolDetailEmpty("Select a tool to view details.");
   try {
-    const userId = userIdInput ? userIdInput.value.trim() : "";
     const statsUrl = buildToolsStatsUrl(userId);
     const results = await Promise.allSettled([
       fetch("/api/tools"),
@@ -5961,35 +5980,41 @@ const fetchTools = async () => {
     if (!toolsRes || !toolsRes.ok) {
       throw new Error("request failed");
     }
-    latestTools = await toolsRes.json();
-    if (!Array.isArray(latestTools) || !latestTools.length) {
-      setListState(toolsList, "No tools found.", "empty");
-      return;
-    }
+    const nextTools = await toolsRes.json();
+    let nextToolStats = {};
+    let nextMcpConfig = null;
 
     if (statsRes && statsRes.ok) {
       const statsJson = await statsRes.json();
-      toolStats = statsJson?.tools || {};
-    } else {
-      toolStats = {};
+      nextToolStats = statsJson?.tools || {};
     }
 
     if (mcpRes && mcpRes.ok) {
-      mcpConfig = await mcpRes.json();
-    } else {
-      mcpConfig = null;
+      nextMcpConfig = await mcpRes.json();
+    }
+
+    if (!toolsRequestGuard.isCurrent(request)) return;
+
+    latestTools = nextTools;
+    toolStats = nextToolStats;
+    mcpConfig = nextMcpConfig;
+    if (!Array.isArray(latestTools) || !latestTools.length) {
+      setListState(toolsList, "No tools found.", "empty");
+      return;
     }
 
     updateToolsCounts(latestTools);
     renderTools();
     renderMcpConfig();
   } catch (err) {
+    if (!toolsRequestGuard.isCurrent(request)) return;
     setListState(toolsList, "Failed to load tools.", "error");
   }
 };
 
 const fetchWorkflows = async () => {
-  const userId = userIdInput.value.trim();
+  const userId = readCurrentUserId();
+  const request = workflowsRequestGuard.begin(userId);
   if (!userId) {
     setListState(workflowsList, "Please enter a user_id first.", "empty");
     workflowsTotal = 0;
@@ -6009,8 +6034,12 @@ const fetchWorkflows = async () => {
       throw new Error("request failed");
     }
     const workflows = await res.json();
-    workflowsTotal = Number.parseInt(res.headers.get("X-Total-Count") || "0", 10) || 0;
-    workflowsTotalPages = Number.parseInt(res.headers.get("X-Total-Pages") || "0", 10) || 0;
+    const nextWorkflowsTotal = Number.parseInt(res.headers.get("X-Total-Count") || "0", 10) || 0;
+    const nextWorkflowsTotalPages = Number.parseInt(res.headers.get("X-Total-Pages") || "0", 10) || 0;
+    if (!workflowsRequestGuard.isCurrent(request)) return;
+
+    workflowsTotal = nextWorkflowsTotal;
+    workflowsTotalPages = nextWorkflowsTotalPages;
     updateWorkflowsPagination();
     if (!workflows.length) {
       setListState(workflowsList, "No workflows found.", "empty");
@@ -6060,6 +6089,7 @@ const fetchWorkflows = async () => {
       workflowsList.appendChild(item);
     });
   } catch (err) {
+    if (!workflowsRequestGuard.isCurrent(request)) return;
     setListState(workflowsList, "Failed to load workflows.", "error");
     workflowsTotal = 0;
     workflowsTotalPages = 0;
@@ -6659,6 +6689,7 @@ messageInput.addEventListener("keydown", (event) => {
   }
 });
 userIdInput.addEventListener("input", () => {
+  invalidateUserResourceRequests();
   const nextUserId = userIdInput.value.trim();
   if (nextUserId !== activeConversationUserId) resetActiveConversation(nextUserId);
   renderChatHistory();
@@ -7485,6 +7516,7 @@ clearResumeOutputBtn.addEventListener("click", () => {
   if (demoRole) {
     demoRole.addEventListener("change", function() {
       if (userIdInput && demoRole.value) {
+        invalidateUserResourceRequests();
         userIdInput.value = demoRole.value;
         if (activeConversationUserId !== demoRole.value) {
           resetActiveConversation(demoRole.value);
