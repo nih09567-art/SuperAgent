@@ -7,8 +7,16 @@ const tabs = document.querySelectorAll(".tab");
 const panels = document.querySelectorAll(".panel");
 
 const jsonRequestHeaders = { "Content-Type": "application/json" };
+const getAuthenticatedJsonHeaders = (userId) => {
+  const principal = String(userId || "").trim();
+  if (!principal) throw new Error("Authenticated user is required");
+  return {
+    ...jsonRequestHeaders,
+    "X-Authenticated-User": principal,
+  };
+};
 
-const EXECUTION_API_KEY_PREFIX = "superagentExecutionApiKey";
+const EXECUTION_API_KEY_PREFIX = "superagentExecutionApiKeyV2";
 const getExecutionApiKeyStorageKey = (userId) => (
   `${EXECUTION_API_KEY_PREFIX}:${encodeURIComponent(String(userId || "").trim())}`
 );
@@ -20,15 +28,19 @@ const getExecutionAuthorizationHeaders = (userId, confirmationRequestId) => {
   let credential = window.sessionStorage.getItem(storageKey) || "";
   if (!credential) {
     credential = window.prompt(
-      "\u8bf7\u8f93\u5165\u5f53\u524d\u7528\u6237\u7684\u751f\u4ea7\u6267\u884c\u51ed\u636e\uff1a",
+      `请输入用户 ${String(userId || "").trim()} 的生产执行凭据（由服务端 EXECUTION_USER_API_KEYS_JSON 配置，不是 LLM API Key）：`,
       ""
     ) || "";
     if (!credential) throw new Error("Production execution credential is required");
-    window.sessionStorage.setItem(storageKey, credential);
   }
   return {
-    "Authorization": `Bearer ${credential}`,
-    "Idempotency-Key": confirmationRequestId,
+    credential,
+    storageKey,
+    headers: {
+      ...jsonRequestHeaders,
+      "Authorization": `Bearer ${credential}`,
+      "Idempotency-Key": confirmationRequestId,
+    },
   };
 };
 const createConfirmationRequestId = () => {
@@ -36,6 +48,17 @@ const createConfirmationRequestId = () => {
   const bytes = new Uint8Array(24);
   globalThis.crypto.getRandomValues(bytes);
   return `confirm-${Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("")}`;
+};
+
+const responseError = async (response, fallback) => {
+  let detail = "";
+  try {
+    const data = await response.json();
+    detail = String(data?.detail || data?.error || "").trim();
+  } catch (_err) {
+    // The fallback still includes the HTTP status for non-JSON responses.
+  }
+  return new Error(detail || fallback || `HTTP ${response.status}`);
 };
 
 const userIdInput = document.getElementById("userId");
@@ -819,6 +842,21 @@ const parseClarification = (content) => {
   return match ? match[1].trim() : "";
 };
 
+const isStandaloneMemoryMessage = (content) => {
+  const normalized = String(content || "").trim().toLowerCase();
+  if (!normalized) return false;
+  const isStoreRequest = (
+    /(?:请|帮我)?记住|长期(?:保存|记录)|保存(?:为|到)?(?:长期)?记忆|remember\s+(?:this|that|my)/i.test(normalized)
+    && /偏好|习惯|默认|以后|后续|回复|语言|风格|格式|约束|preference|default|style|format/i.test(normalized)
+  );
+  const isLookupRequest = (
+    /之前|以前|先前|历史|长期记忆|记得|告诉过|before|previous|history|remember/i.test(normalized)
+    && /偏好|习惯|风格|语言|回复|格式|preference|style|language|format/i.test(normalized)
+    && /什么|哪些|怎么|是否|吗|么|[?？]|what|which|how/i.test(normalized)
+  );
+  return isStoreRequest || isLookupRequest;
+};
+
 const buildRoutingClarification = (eventData) => {
   const profile = eventData?.task_profile || {};
   const route = eventData?.routing_decision || {};
@@ -876,6 +914,13 @@ const rememberPendingClarification = (eventData, question = "") => {
   };
 };
 
+const createConversationMessageId = (role = "message") => {
+  const randomId = globalThis.crypto?.randomUUID
+    ? globalThis.crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return `${activeConversationId || "conversation"}:${role}:${randomId}`;
+};
+
 const applyConversationMessageMetadata = (message, metadata = {}) => {
   if (Array.isArray(metadata.results) && metadata.results.length) {
     message.results = metadata.results
@@ -901,7 +946,14 @@ const applyConversationMessageMetadata = (message, metadata = {}) => {
 const appendActiveConversationMessage = (role, content, metadata = {}) => {
   const normalized = String(content || "").trim();
   if (!normalized) return;
-  const message = { role, content: normalized.slice(0, CONVERSATION_MESSAGE_CHAR_LIMIT) };
+  const message = {
+    role,
+    content: normalized.slice(0, CONVERSATION_MESSAGE_CHAR_LIMIT),
+    message_id: metadata.message_id || createConversationMessageId(role),
+  };
+  if (activeConversationMessages.some((item) => item.message_id === message.message_id)) {
+    return;
+  }
   activeConversationMessages.push(message);
   activeConversationMessages = activeConversationMessages.slice(-ACTIVE_CONVERSATION_LIMIT);
   const transcriptMessage = applyConversationMessageMetadata({ ...message }, metadata);
@@ -1111,9 +1163,10 @@ const createExecutionIdentity = async (
   confirmationRequestId
 ) => {
   const planHash = await computeExecutionPlanHash(workflowId, steps);
+  const authorization = getExecutionAuthorizationHeaders(userId, confirmationRequestId);
   const response = await fetch("/api/workflows/execution-authorizations", {
     method: "POST",
-    headers: getExecutionAuthorizationHeaders(userId, confirmationRequestId),
+    headers: authorization.headers,
     body: JSON.stringify({
       workflow_id: workflowId,
       plan_hash: planHash,
@@ -1124,13 +1177,21 @@ const createExecutionIdentity = async (
   if (!response.ok) {
     if (response.status === 401) clearExecutionApiKey(userId);
     const detail = responseBody.detail || responseBody;
-    const message = detail.message || detail.code || `HTTP ${response.status}`;
+    const message = typeof detail === "string"
+      ? detail
+      : Array.isArray(detail)
+        ? detail.map((item) => item?.msg || String(item)).join("; ")
+        : detail.message || detail.code || `HTTP ${response.status}`;
     const error = new Error(`Execution authorization failed: ${message}`);
     error.status = response.status;
     error.code = detail.code || "";
     error.detail = detail;
     throw error;
   }
+  window.sessionStorage.setItem(
+    authorization.storageKey,
+    authorization.credential
+  );
   const identity = {
     taskId: String(responseBody.task_id || ""),
     attemptId: String(responseBody.execution_attempt_id || ""),
@@ -1291,13 +1352,19 @@ const normalizeStoredDecision = (decision, fallbackRound = 1) => {
 };
 const normalizeStoredConversation = (conversation) => {
   if (!conversation || typeof conversation !== "object") return null;
+  const conversationId = String(
+    conversation.id || `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+  );
   const messages = Array.isArray(conversation.messages)
     ? conversation.messages
       .filter((message) => message && ["user", "assistant"].includes(message.role) && String(message.content || "").trim())
-      .map((message) => {
+      .map((message, index) => {
         const normalizedMessage = {
           role: message.role,
           content: String(message.content).slice(0, CONVERSATION_MESSAGE_CHAR_LIMIT),
+          message_id: message.message_id
+            ? String(message.message_id)
+            : `${conversationId}:message:${index + 1}`,
         };
         return applyConversationMessageMetadata(normalizedMessage, message);
       })
@@ -1314,7 +1381,7 @@ const normalizeStoredConversation = (conversation) => {
     ))
     .slice(-DECISION_HISTORY_LIMIT);
   return {
-    id: String(conversation.id || `${Date.now()}-${Math.random().toString(16).slice(2)}`),
+    id: conversationId,
     title: String(conversation.title || firstUserMessage).trim().slice(0, 48),
     createdAt: conversation.createdAt || new Date().toISOString(),
     updatedAt: conversation.updatedAt || conversation.createdAt || new Date().toISOString(),
@@ -1724,7 +1791,11 @@ const loadConversation = (conversation) => {
   activeConversationTranscript = normalized.messages.map((message) => ({ ...message }));
   activeConversationMessages = activeConversationTranscript
     .slice(-ACTIVE_CONVERSATION_LIMIT)
-    .map((message) => ({ role: message.role, content: message.content }));
+    .map((message) => ({
+      role: message.role,
+      content: message.content,
+      message_id: message.message_id,
+    }));
   instructionHistory = activeConversationTranscript
     .filter((message) => message.role === "user")
     .map((message) => message.content)
@@ -2402,13 +2473,16 @@ const runPlannerUpdate = async (instruction, appendHistory = true, runtime = nul
   try {
     const response = await fetch("/api/workflows/run", {
       method: "POST",
-      headers: jsonRequestHeaders,
+      headers: getAuthenticatedJsonHeaders(userId),
       body: JSON.stringify(payload),
       signal: plannerOnlyController.signal,
     });
 
-    if (!response.ok || !response.body) {
-      throw new Error(`HTTP ${response.status}`);
+    if (!response.ok) {
+      throw await responseError(response, `HTTP ${response.status}`);
+    }
+    if (!response.body) {
+      throw new Error("Planner response body is unavailable");
     }
 
     const reader = response.body.getReader();
@@ -4143,6 +4217,31 @@ const handleEvent = (eventName, payload) => {
     }
     return;
   }
+  if (eventName.startsWith("agent_skill_")) {
+    const data = payload.data || {};
+    if (eventName === "agent_skill_matched") {
+      const count = Number(data.matched_step_count || 0);
+      showPlanHint(`Applied ${count} validated Agent Skill binding(s).`);
+    } else if (eventName === "agent_skill_promoted") {
+      appendOutput(
+        "skill",
+        `\n[Agent Skill active] ${data.agent_name || "Agent"} / ${data.step_id || "step"}\n`,
+      );
+    } else if (eventName === "agent_skill_candidate") {
+      appendOutput(
+        "skill",
+        `\n[Agent Skill candidate] ${data.agent_name || "Agent"} / ${data.step_id || "step"}\n`,
+      );
+    } else if (eventName === "agent_skill_disabled") {
+      appendOutput(
+        "skill",
+        `\n[Agent Skill disabled] ${data.step_id || data.skill_id || "step"}\n`,
+      );
+    } else if (eventName === "agent_skill_rejected") {
+      appendOutput("skill", "\n[Agent Skill] Binding rejected; original plan retained.\n");
+    }
+    return;
+  }
   if (eventName === "start_of_agent") {
     const data = payload.data || {};
     const agentName = data.agent_name || payload.agent_name || "agent";
@@ -4240,6 +4339,8 @@ const handleEvent = (eventName, payload) => {
         appendActiveConversationMessage("assistant", question);
         setStatus("Waiting for reply", true);
       } else if (response && !response.includes("handover_to_planner")) {
+        clarificationPending = false;
+        pendingClarificationContext = null;
         coordinatorResponseHandled = true;
         showAssistantText(response);
         appendActiveConversationMessage("assistant", response);
@@ -4385,6 +4486,11 @@ const handleEvent = (eventName, payload) => {
     const friendlyReason = d.reason || d.error || "Workflow could not continue.";
     const detail = d.error || friendlyReason;
     const reasonCode = String(d.reason_code || "");
+    if (currentRunContext !== "executing") {
+      latestPlanningFailureMessage = `规划失败：${friendlyReason}${
+        detail && detail !== friendlyReason ? `（${detail}）` : ""
+      }`;
+    }
     const errorPresentation = {
       PLAN_STEPS_UNAVAILABLE: {
         hint: "The confirmed plan could not be loaded by the execution service.",
@@ -4429,6 +4535,19 @@ const handleEvent = (eventName, payload) => {
     } else {
       showPlanNlHint(`Workflow paused: ${detail}`, true);
     }
+    return;
+  }
+  if (eventName === "memory_compacted") {
+    const data = payload.data || {};
+    const generation = Number(data.generation || 0);
+    const covered = Number(data.covered_message_count || 0);
+    const retained = Number(data.retained_turn_count || 0);
+    const before = Number(data.token_count_before || 0);
+    const after = Number(data.token_count_after || 0);
+    const summaryMode = data.summary_mode === "llm" ? "LLM" : "确定性兜底";
+    const statusText = `上下文已压缩（第 ${generation} 代）：覆盖 ${covered} 条消息，保留 ${retained} 轮，Token ${before} -> ${after}，摘要模式 ${summaryMode}`;
+    appendOutput("memory", `\n[memory] ${statusText}\n`);
+    showSummaryHint(statusText);
     return;
   }
   if (eventName === "end_of_workflow") {
@@ -4603,7 +4722,12 @@ const runWorkflow = async () => {
   if (activeConversationUserId !== userId) resetActiveConversation(userId);
   const isClarificationAnswer = Boolean(
     clarificationPending && pendingClarificationContext
+    && !isStandaloneMemoryMessage(message)
   );
+  if (!isClarificationAnswer && clarificationPending) {
+    clarificationPending = false;
+    pendingClarificationContext = null;
+  }
   const clarificationContextForRequest = isClarificationAnswer
     ? { ...pendingClarificationContext }
     : null;
@@ -4686,13 +4810,16 @@ const runWorkflow = async () => {
   try {
     const response = await fetch("/api/workflows/run", {
       method: "POST",
-      headers: jsonRequestHeaders,
+      headers: getAuthenticatedJsonHeaders(userId),
       body: JSON.stringify(payload),
       signal: controller.signal,
     });
 
-    if (!response.ok || !response.body) {
-      throw new Error(`HTTP ${response.status}`);
+    if (!response.ok) {
+      throw await responseError(response, `HTTP ${response.status}`);
+    }
+    if (!response.body) {
+      throw new Error("Workflow response body is unavailable");
     }
 
     const reader = response.body.getReader();
@@ -4901,7 +5028,11 @@ const runExecution = async () => {
     context_artifacts: conversationContextArtifacts.map((item) => ({ ...item })),
     messages: [
       ...activeConversationMessages.map((item) => ({ ...item })),
-      { role: "user", content: "Execute the confirmed plan." },
+      {
+        role: "user",
+        content: "Execute the confirmed plan.",
+        message_id: `${activeConversationId || "conversation"}:execute-confirmed-plan:${workflowId}`,
+      },
     ],
     debug: debugInput.checked,
     deep_thinking_mode: deepThinkingInput.checked,
@@ -7268,6 +7399,19 @@ const resumeTask = async ({ inChat = false } = {}) => {
       }
       if (eventName === "final_result") {
         appendResume(`\n[final result]\n${formatFinalResultContent(payload.data || {})}\n`);
+        return;
+      }
+      if (eventName === "memory_compacted") {
+        const data = payload.data || {};
+        const generation = Number(data.generation || 0);
+        const covered = Number(data.covered_message_count || 0);
+        const retained = Number(data.retained_turn_count || 0);
+        const before = Number(data.token_count_before || 0);
+        const after = Number(data.token_count_after || 0);
+        const summaryMode = data.summary_mode === "llm" ? "LLM" : "确定性兜底";
+        appendResume(
+          `\n[上下文已压缩 第 ${generation} 代：覆盖 ${covered} 条消息，保留 ${retained} 轮，Token ${before} -> ${after}，摘要模式 ${summaryMode}]\n`,
+        );
         return;
       }
       if (eventName === "end_of_workflow") {

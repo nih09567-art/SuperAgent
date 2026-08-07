@@ -105,7 +105,10 @@ def test_remote_tool_uses_tool_arguments_contract_and_bearer_auth():
     asyncio.run(scenario())
 
 
-def test_remote_agent_does_not_receive_long_term_memory_by_default():
+def test_remote_agent_does_not_receive_long_term_memory_even_if_legacy_flag_is_set(
+    monkeypatch,
+):
+    monkeypatch.setenv("MEMORY_ALLOW_REMOTE_LONG_TERM", "true")
     executor = RemoteExecutor()
     agent = SimpleNamespace(agent_name="RemoteDemoAgent",
                             prompt="", selected_tools=[])
@@ -121,16 +124,40 @@ def test_remote_agent_does_not_receive_long_term_memory_by_default():
             {
                 "role": "assistant",
                 "content": "private remembered preference",
-                "metadata": {"memory_type": "long_term_reference"},
+                "metadata": {
+                    "memory_type": "long_term_reference",
+                    "retrieved_memories": [
+                        {
+                            "key": "preference.report_style",
+                            "source_text": "private raw evidence",
+                        }
+                    ],
+                },
             },
-            {"role": "user", "content": "run demo"},
+            {
+                "role": "user",
+                "content": (
+                    "EXECUTION_CONTEXT\n"
+                    '{"assigned_steps":[{"description":'
+                    '"输出简洁的中文报告"}]}'
+                ),
+            },
         ],
         context,
     )
 
     assert request["messages"] == [
-        {"type": "user", "role": "user", "content": "run demo"}
+        {
+            "type": "user",
+            "role": "user",
+            "content": (
+                "EXECUTION_CONTEXT\n"
+                '{"assigned_steps":[{"description":'
+                '"输出简洁的中文报告"}]}'
+            ),
+        }
     ]
+    assert "private raw evidence" not in str(request)
 
 
 def test_remote_agent_request_carries_idempotency_key():

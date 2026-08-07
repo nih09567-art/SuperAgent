@@ -74,3 +74,22 @@ def test_task_goal_clarification_uses_the_concrete_follow_up_request():
     )
 
     assert resolved.resolved_message == "查询李娜本月工资"
+
+
+def test_memory_query_starts_new_request_instead_of_answering_old_clarification():
+    query = "我之前偏好的回复语言、报告风格和文档格式是什么？只回答已经保存的偏好。"
+
+    resolved = resolve_conversation_request(
+        current_message=query,
+        turn_type="clarification_answer",
+        clarification_context={
+            "base_query": "生成一份报告",
+            "resolved_message": "生成一份报告",
+            "missing_fields": ["document.source"],
+        },
+    )
+
+    assert resolved.turn_type == "request"
+    assert resolved.raw_message == query
+    assert resolved.resolved_message == query
+    assert resolved.entity_overrides == {}

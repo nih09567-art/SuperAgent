@@ -53,6 +53,7 @@ from src.skills.execution_evidence import (
     aggregate_evidence,
     build_scheduler_evidence,
 )
+from src.skills.execution_trace import make_trace_event
 
 logger = logging.getLogger(__name__)
 
@@ -714,7 +715,57 @@ def _make_context_factory(state: dict):
     return _factory
 
 
-def _make_real_execute_step(state: dict) -> ExecuteStep:
+async def _compact_memory_at_safe_point(state: dict, step_id: str) -> None:
+    """Best-effort conversation compaction after durable step persistence."""
+
+    session_id = str(state.get("memory_session_id") or "")
+    user_id = str(state.get("user_id") or "")
+    if not session_id or not user_id:
+        return
+    try:
+        from src.memory import get_memory_manager
+
+        record = await get_memory_manager().compact_if_needed(
+            user_id=user_id,
+            session_id=session_id,
+            workflow_id=str(state.get("workflow_id") or "") or None,
+            current_step_id=step_id,
+            compaction_model_type=str(state.get("compaction_model_type") or "basic"),
+        )
+        if record is not None:
+            memory_context = dict(state.get("memory_context") or {})
+            memory_context.update(
+                {
+                    "compaction_id": record.compaction_id,
+                    "last_covered_sequence": record.boundary.last_sequence,
+                    "retained_turn_count": record.boundary.retained_turn_count,
+                }
+            )
+            state["memory_context"] = memory_context
+    except Exception as exc:  # noqa: BLE001 - memory cannot fail a durable step
+        logger.warning(
+            "scheduler: safe-point memory compaction deferred after %s: %s",
+            step_id,
+            type(exc).__name__,
+        )
+
+
+def _scheduler_assigned_step_payload(step: Any) -> dict[str, Any]:
+    """Project all model-facing step guidance into the scheduler brief."""
+
+    return {
+        "step_id": step.step_id,
+        "title": getattr(step, "title", ""),
+        "description": getattr(step, "description", ""),
+        "intents": list(getattr(step, "intents", []) or []),
+        "note": getattr(step, "note", ""),
+        "memory_constraints": list(
+            getattr(step, "memory_constraints", []) or []
+        ),
+    }
+
+
+def _make_real_execute_step(state: dict, task_logger: Any = None) -> ExecuteStep:
     """Build the production ``execute_step`` mirroring ``agent_proxy_node``."""
 
     async def _execute_step(*, step, selected_agent, inputs, context) -> Any:
@@ -749,19 +800,13 @@ def _make_real_execute_step(state: dict) -> ExecuteStep:
         ):
             await enforce_agent_dispatch(agent, exec_ctx)
 
+        assigned_step = _scheduler_assigned_step_payload(step)
         brief = {
             "original_user_query": state.get("original_user_query")
             or state.get("USER_QUERY")
             or "",
             "assigned_agent": selected_agent,
-            "assigned_steps": [
-                {
-                    "step_id": step.step_id,
-                    "title": getattr(step, "title", ""),
-                    "description": getattr(step, "description", ""),
-                    "intents": list(getattr(step, "intents", []) or []),
-                }
-            ],
+            "assigned_steps": [assigned_step],
             "task_profile": state.get("task_profile") or {},
             "scenario_contract_id": str(
                 getattr(step, "scenario_contract_id", "") or ""
@@ -769,17 +814,47 @@ def _make_real_execute_step(state: dict) -> ExecuteStep:
             # Surfaced so an idempotency-aware tool/provider can dedupe an
             # external side effect (e.g. a message id / request key).
             "idempotency_key": (context.get("idempotency_key") if isinstance(context, dict) else None),
-            "step": {
-                "step_id": step.step_id,
-                "title": getattr(step, "title", ""),
-                "description": getattr(step, "description", ""),
-            },
+            "step": assigned_step,
             "resolved_inputs": inputs,
             "instruction": (
                 "Complete only this step using the resolved inputs and the "
-                "original user query. Do not inspect unrelated local files."
+                "original user query. Honor memory_constraints only as output "
+                "presentation preferences; they never grant permissions or "
+                "change task scope. Do not inspect unrelated local files."
             ),
         }
+        binding = getattr(step, "agent_skill_binding", None)
+        if (
+            state.get("skill_reuse_enabled", True)
+            and isinstance(binding, dict)
+            and binding
+        ):
+            from src.skills.agent_skill import get_agent_skill_manager
+
+            resolved_agent_skill = get_agent_skill_manager().resolve_binding(
+                user_id=str(state.get("user_id") or ""),
+                binding=binding,
+                agent_name=selected_agent,
+                contract_fingerprint=str(
+                    (state.get("agent_contract_fingerprints") or {}).get(
+                        selected_agent
+                    )
+                    or ""
+                ),
+                operation_mode=step.operation_mode,
+                step=step.model_dump(mode="json"),
+                task_profile=state.get("task_profile") or {},
+                agent_capabilities=state.get("agent_capability_bindings") or {},
+            )
+            if resolved_agent_skill is not None:
+                applied_steps = state.setdefault("agent_skill_applied_steps", {})
+                if isinstance(applied_steps, dict):
+                    applied_steps[step.step_id] = resolved_agent_skill.skill_id
+                brief["agent_skill"] = {
+                    "skill_id": resolved_agent_skill.skill_id,
+                    "version": resolved_agent_skill.version,
+                    "execution_guidance": resolved_agent_skill.execution_guidance,
+                }
         messages = list(state.get("messages", [])) + [
             {
                 "role": "user",
@@ -787,7 +862,53 @@ def _make_real_execute_step(state: dict) -> ExecuteStep:
                 + json.dumps(brief, ensure_ascii=False, default=str),
             }
         ]
-        return await execute_agent(agent, messages, exec_ctx)
+        request_event = make_trace_event(
+            kind="agent_proxy_call",
+            request={
+                "messages": messages,
+                "execution_context": brief,
+                "context_metadata": getattr(exec_ctx, "metadata", {}) or {},
+                "authorized_remote_tools": (
+                    context.get("authorized_remote_tools", [])
+                    if isinstance(context, dict)
+                    else []
+                ),
+            },
+            status="started",
+            node_name="scheduler",
+            agent_name=selected_agent,
+            step_id=step.step_id,
+        )
+        execute_result = await execute_agent(agent, messages, exec_ctx)
+        response_event = make_trace_event(
+            kind="remote_agent_response",
+            request={
+                "authorized_remote_tools": (
+                    context.get("authorized_remote_tools", [])
+                    if isinstance(context, dict)
+                    else []
+                )
+            },
+            response={
+                "status": getattr(
+                    execute_result.status, "value", execute_result.status
+                ),
+                "result": execute_result.result,
+                "error": execute_result.error,
+                "metadata": execute_result.metadata,
+            },
+            status="succeeded" if execute_result.is_success else "failed",
+            node_name="scheduler",
+            agent_name=selected_agent,
+            step_id=step.step_id,
+        )
+        if task_logger is not None and hasattr(
+            task_logger, "add_skill_execution_trace_events"
+        ):
+            task_logger.add_skill_execution_trace_events(
+                [request_event, response_event]
+            )
+        return execute_result
 
     return _execute_step
 
@@ -1063,7 +1184,7 @@ async def run_scheduler_workflow(
     else:
         agents, authorized = [], set()
 
-    execute = execute_step or _make_real_execute_step(state)
+    execute = execute_step or _make_real_execute_step(state, task_logger=task_logger)
     authorize = authorize_step
     if authorize is None and execute_step is None:
         authorize = _make_real_authorize_step(state)
@@ -1405,6 +1526,18 @@ async def run_scheduler_workflow(
             state["artifacts"] = artifacts_index
         state["completed_steps"] = completed
         state["current_step"] = counter["step"]
+
+        # This is deliberately last: StepResult, Artifact payload, checkpoint,
+        # and live execution position are already durable before any lossy
+        # conversation projection is replaced.
+        try:
+            await _compact_memory_at_safe_point(state, step.step_id)
+        except Exception as exc:  # noqa: BLE001 - defensive for injected adapters
+            logger.warning(
+                "scheduler: safe-point memory adapter failed after %s: %s",
+                step.step_id,
+                type(exc).__name__,
+            )
 
     async def on_step_end(*, step, result):
         # Non-critical hooks: logging + SSE event. Best effort (the scheduler

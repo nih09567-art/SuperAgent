@@ -205,6 +205,11 @@ def validate_snapshot(
         return False, "no_snapshot"
     if snapshot.get("schema_version") != SCHEMA_VERSION:
         return False, f"schema_version mismatch: {snapshot.get('schema_version')}"
+    if snapshot.get("converter_version") != CONVERTER_VERSION:
+        return False, (
+            f"converter_version mismatch: {snapshot.get('converter_version')} "
+            "(replan required)"
+        )
     if snapshot.get("workflow_id") != workflow_id:
         return False, "workflow_id mismatch"
     if snapshot.get("user_id") != user_id:

@@ -9,6 +9,8 @@ from src.orchestrator.intent_recognition import (
     RuleIntentRecognizer,
     SemanticProviderError,
     extract_entities,
+    is_memory_store_request,
+    memory_lookup_keys,
 )
 from src.orchestrator.task_profiler import profile_task
 
@@ -67,6 +69,84 @@ def _payload(
 
 def _run(coro):
     return asyncio.run(coro)
+
+
+def test_memory_preference_write_is_not_treated_as_report_generation() -> None:
+    query = (
+        "请记住：我默认使用中文回复；报告采用简洁、专业、结论优先的风格；"
+        "生成文档时优先使用 Markdown 格式。"
+    )
+
+    result = _run(RuleIntentRecognizer().recognize(query))
+
+    assert is_memory_store_request(query) is True
+    assert result.primary_intent == "information_consultation"
+    assert [item.name for item in result.executable_intents] == [
+        "information_consultation"
+    ]
+    assert result.needs_clarification is False
+
+
+def test_memory_question_is_lookup_not_store_request() -> None:
+    query = "你还记得我之前的语言偏好吗？"
+
+    assert is_memory_store_request(query) is False
+    assert memory_lookup_keys(query) == ("preference.language",)
+
+
+def test_memory_lookup_maps_document_format_key() -> None:
+    assert memory_lookup_keys(
+        "我之前偏好的回复语言、报告风格和文档格式是什么？"
+    ) == (
+        "preference.language",
+        "preference.report_style",
+        "preference.document_format",
+    )
+
+
+def test_bare_bu_negates_send_intent_in_report_request() -> None:
+    query = (
+        "请生成一份企业数据安全架构技术报告，包含执行摘要、风险分析和结论，"
+        "使用 Markdown 输出，不发送、不审批、不写入外部系统。"
+    )
+
+    result = _run(RuleIntentRecognizer().recognize(query))
+
+    send = next(item for item in result.intents if item.name == "message_or_email_send")
+    assert send.negated is True
+    assert "message_or_email_send" not in [
+        item.name for item in result.executable_intents
+    ]
+
+
+def test_rule_negation_overrides_semantic_false_positive_send() -> None:
+    query = (
+        "请生成一份企业数据安全架构技术报告，包含风险分析和结论，"
+        "使用 Markdown 输出，不发送、不审批、不写入外部系统。"
+    )
+    provider = FakeSemanticProvider(
+        _payload(
+            "report_generation",
+            [
+                _candidate("report_generation", 0.96, text_span="生成技术报告"),
+                _candidate("risk_analysis", 0.92, text_span="风险分析"),
+                _candidate("message_or_email_send", 0.91, text_span="发送"),
+            ],
+        )
+    )
+
+    profile = _run(
+        profile_task(
+            query,
+            task_id="negated-send-semantic-false-positive",
+            recognition_mode="hybrid",
+            semantic_provider=provider,
+        )
+    )
+
+    assert "message_or_email_send" not in profile.sub_intents
+    assert "recipient" not in profile.missing_fields
+    assert profile.needs_clarification is False
 
 
 def test_rule_and_semantic_agreement_uses_combined_source() -> None:

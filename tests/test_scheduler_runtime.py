@@ -26,6 +26,7 @@ from src.orchestration.runtime import (
     _build_execution_context,
     _public_step_metrics,
     _required_step_outputs,
+    _scheduler_assigned_step_payload,
     build_task_graph_from_state,
     has_task_graph,
     run_scheduler_workflow,
@@ -50,6 +51,28 @@ def _isolate_stores(tmp_path, monkeypatch):
 
 async def _fake_execute(*, step, selected_agent, inputs, context):
     return ExecuteResult(status=ExecutionStatus.SUCCESS, result={"ok": step.step_id})
+
+
+def test_scheduler_assigned_step_carries_memory_constraints():
+    step = TaskStep(
+        step_id="report",
+        title="Generate report",
+        description="Generate the requested report",
+        intents=["report_generation"],
+        note="Use concise Chinese output",
+        memory_constraints=[
+            "Output language: Chinese",
+            "Report style: concise",
+        ],
+    )
+
+    payload = _scheduler_assigned_step_payload(step)
+
+    assert payload["note"] == "Use concise Chinese output"
+    assert payload["memory_constraints"] == [
+        "Output language: Chinese",
+        "Report style: concise",
+    ]
 
 
 def test_missing_artifact_for_succeeded_receipt_creates_reconciliation_record():
@@ -1149,6 +1172,66 @@ def test_runtime_artifact_persistence_failure_does_not_report_success(monkeypatc
     assert result["data"]["outputs"] == {}
     assert not state.get("completed_steps")
     assert events[-1]["data"]["status"] == "FAILED"
+
+
+def test_safe_point_compaction_runs_only_after_checkpoint_and_step_promotion(
+    monkeypatch,
+):
+    import src.orchestration.runtime as runtime_mod
+
+    order = []
+
+    class RecordingCheckpoints:
+        def save_checkpoint(self, **kwargs):
+            assert kwargs["state"]["completed_steps"]
+            order.append(("checkpoint", kwargs["state"]["completed_steps"][-1]))
+
+    async def compact(state, step_id):
+        assert step_id in state["completed_steps"]
+        assert step_id in state["step_results"]
+        order.append(("compact", step_id))
+
+    monkeypatch.setattr(runtime_mod, "_compact_memory_at_safe_point", compact)
+    state = _two_step_state()
+    state["memory_session_id"] = "thread"
+
+    async def _run():
+        return [
+            event
+            async for event in run_scheduler_workflow(
+                state,
+                task_id="task-1",
+                checkpoint_manager=RecordingCheckpoints(),
+                execute_step=_fake_execute,
+                routing_provider=StubRoutingProvider(),
+            )
+        ]
+
+    events = asyncio.run(_run())
+
+    assert events[-1]["data"]["status"] == "SUCCEEDED"
+    assert order == [
+        ("checkpoint", "s1"),
+        ("compact", "s1"),
+        ("checkpoint", "s2"),
+        ("compact", "s2"),
+    ]
+
+
+def test_safe_point_compaction_failure_does_not_fail_durable_step(monkeypatch):
+    import src.orchestration.runtime as runtime_mod
+
+    async def broken(_state, _step_id):
+        raise OSError("memory unavailable")
+
+    monkeypatch.setattr(runtime_mod, "_compact_memory_at_safe_point", broken)
+    state = _two_step_state()
+    state["memory_session_id"] = "thread"
+
+    events = _collect(state)
+
+    assert events[-1]["data"]["status"] == "SUCCEEDED"
+    assert state["completed_steps"] == ["s1", "s2"]
 
 
 def test_has_task_graph_gating():

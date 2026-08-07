@@ -3,6 +3,7 @@ import hashlib
 import hmac
 import json
 import math
+import os
 import secrets
 import shutil
 import time
@@ -60,6 +61,7 @@ from src.service.env import (
 from src.memory import get_memory_manager
 from src.memory.store import SecretDetectedError
 from src.skills.workflow_skill import get_workflow_skill_manager
+from src.skills.agent_skill import get_agent_skill_manager
 from src.skills.execution_evidence import (
     evaluate_distillation_evidence,
     load_execution_evidence,
@@ -596,12 +598,31 @@ def _delete_task_runtime_records(task_id: str) -> dict[str, int]:
         receipt_store._path.unlink()
         counts["receipts"] = 1
 
-    artifact_store = ArtifactPayloadStore(normalized)
-    artifact_dir_existed = artifact_store._dir.exists() and any(
-        artifact_store._dir.iterdir()
+    # ArtifactPayloadStore creates its per-task directory in ``__init__``.
+    # Cleanup must be a no-op for tasks that never produced artifacts; creating
+    # a new directory here can fail under a read-only/protected store root.
+    artifact_root = Path(
+        os.getenv("ARTIFACT_PAYLOAD_STORE_DIR", "store/artifacts")
     )
-    artifact_store.clear()
-    counts["artifacts"] = int(artifact_dir_existed)
+    artifact_key = "".join(
+        char if char.isalnum() or char in ("-", "_") else "_"
+        for char in normalized
+    )
+    artifact_dir = artifact_root / artifact_key
+    if artifact_dir.exists():
+        try:
+            artifact_files = list(artifact_dir.iterdir())
+            for artifact_file in artifact_files:
+                if artifact_file.is_file() or artifact_file.is_symlink():
+                    artifact_file.unlink()
+                elif artifact_file.is_dir():
+                    shutil.rmtree(artifact_file)
+            counts["artifacts"] = int(bool(artifact_files))
+        except OSError as exc:
+            # A stale protected directory should not prevent deletion of the
+            # task's other operational records. It will be reaped by the store
+            # maintenance job when permissions are available.
+            logger.warning("Could not clear artifact payloads for %s: %s", normalized, exc)
 
     counts["governance_events"] = int(
         get_governance_event_store().delete(normalized)
@@ -1681,12 +1702,37 @@ def create_app() -> FastAPI:
             user_id=body.user_id,
             lang=body.lang,
             workmode=workmode,
-            messages=[AgentMessage(role=m["role"], content=m["content"]) for m in initial_messages],
+            messages=[
+                AgentMessage(
+                    role=m["role"],
+                    content=m["content"],
+                    message_id=(
+                        m.get("message_id")
+                        or (m.get("metadata") or {}).get("message_id")
+                    ),
+                    metadata=dict(m.get("metadata") or {}),
+                )
+                for m in initial_messages
+            ],
             debug=checkpoint.state.get("debug", False),
             deep_thinking_mode=checkpoint.state.get("deep_thinking_mode", True),
             search_before_planning=checkpoint.state.get("search_before_planning", False),
             coor_agents=checkpoint.state.get("coor_agents", []),
             workflow_id=checkpoint.workflow_id,
+            session_id=(
+                checkpoint_0.state.get("session_id")
+                or checkpoint.state.get("session_id")
+            ),
+            memory_session_id=(
+                checkpoint_0.state.get("memory_session_id")
+                or checkpoint.state.get("memory_session_id")
+            ),
+            memory_enabled=bool(
+                checkpoint_0.state.get(
+                    "memory_enabled",
+                    checkpoint.state.get("memory_enabled", False),
+                )
+            ),
         )
 
         try:
@@ -1985,6 +2031,78 @@ def create_app() -> FastAPI:
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return {"event": "skill_disabled", "skill": card.model_dump(mode="json")}
+
+    # ---- Step/Agent skill administration API ----
+
+    @app.get("/api/agent-skills")
+    def list_agent_skills(
+        user_id: str,
+        _authorized: None = Depends(_authorize_workflow_skill_api),
+    ):
+        cards = get_agent_skill_manager().store.list(user_id)
+        return [card.model_dump(mode="json") for card in cards]
+
+    @app.get("/api/agent-skills/evidence")
+    def list_agent_skill_evidence(
+        user_id: str,
+        family_signature: Optional[str] = None,
+        implementation_signature: Optional[str] = None,
+        _authorized: None = Depends(_authorize_workflow_skill_api),
+    ):
+        evidence = get_agent_skill_manager().store.list_evidence(
+            user_id,
+            family_signature=family_signature,
+            implementation_signature=implementation_signature,
+        )
+        return [item.model_dump(mode="json") for item in evidence]
+
+    @app.get("/api/agent-skills/traces/{trace_id}")
+    def get_agent_skill_trace(
+        trace_id: str,
+        user_id: str,
+        _authorized: None = Depends(_authorize_workflow_skill_api),
+    ):
+        trace = get_agent_skill_manager().store.read_execution_trace(
+            user_id=user_id, trace_id=trace_id
+        )
+        if trace is None:
+            raise HTTPException(status_code=404, detail="Agent Skill trace not found")
+        return trace
+
+    @app.get("/api/agent-skills/{skill_id}")
+    def get_agent_skill(
+        skill_id: str,
+        user_id: str,
+        _authorized: None = Depends(_authorize_workflow_skill_api),
+    ):
+        card = get_agent_skill_manager().store.get(user_id, skill_id)
+        if card is None:
+            raise HTTPException(status_code=404, detail="Agent Skill not found")
+        return card.model_dump(mode="json")
+
+    @app.post("/api/agent-skills/{skill_id}/activate")
+    def activate_agent_skill(
+        skill_id: str,
+        body: WorkflowSkillUserRequest,
+        _authorized: None = Depends(_authorize_workflow_skill_api),
+    ):
+        try:
+            card = get_agent_skill_manager().store.activate(body.user_id, skill_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {"event": "agent_skill_activated", "skill": card.model_dump(mode="json")}
+
+    @app.post("/api/agent-skills/{skill_id}/disable")
+    def disable_agent_skill(
+        skill_id: str,
+        body: WorkflowSkillUserRequest,
+        _authorized: None = Depends(_authorize_workflow_skill_api),
+    ):
+        try:
+            card = get_agent_skill_manager().store.disable(body.user_id, skill_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {"event": "agent_skill_disabled", "skill": card.model_dump(mode="json")}
 
     # ---- S-ABAC Security & Demo API ----
 
