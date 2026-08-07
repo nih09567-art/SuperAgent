@@ -29,6 +29,7 @@ from src.manager.executor.base import ExecutionContext
 from src.manager.executor.factory import execute_agent
 from src.orchestrator.intent_recognition import (
     is_memory_lookup_query,
+    is_memory_store_request,
     memory_lookup_keys,
 )
 from src.memory.utils import estimate_tokens, redact_secrets
@@ -322,6 +323,14 @@ _REPORT_STYLE_VALUES = (
     (("结构化", "structured"), "结构化"),
     (("结论优先", "conclusion-first", "conclusion first"), "结论优先"),
 )
+_DOCUMENT_FORMAT_VALUES = (
+    (("markdown", ".md"), "Markdown"),
+    (("word", "docx", ".doc"), "Word"),
+    (("pdf", ".pdf"), "PDF"),
+    (("excel", "xlsx", ".xls"), "Excel"),
+    (("powerpoint", "pptx", ".ppt"), "PowerPoint"),
+    (("纯文本", "plain text", ".txt"), "纯文本"),
+)
 
 
 def _bounded_memory_field(value: Any) -> str:
@@ -356,6 +365,16 @@ def _normalized_report_style_value(source: str) -> str | None:
     return "、".join(dict.fromkeys(styles)) or None
 
 
+def _normalized_document_format_value(source: str) -> str | None:
+    normalized = source.casefold()
+    formats = [
+        label
+        for tokens, label in _DOCUMENT_FORMAT_VALUES
+        if any(token in normalized for token in tokens)
+    ]
+    return "、".join(dict.fromkeys(formats)) or None
+
+
 def _model_safe_memory_entry(raw: dict[str, Any]) -> dict[str, Any] | None:
     """Project only typed, server-normalized preferences into model context."""
     key = _bounded_memory_field(raw.get("key") or "")
@@ -370,6 +389,9 @@ def _model_safe_memory_entry(raw: dict[str, Any]) -> dict[str, Any] | None:
     elif key == "preference.report_style":
         value = _normalized_report_style_value(source)
         label = f"报告风格：{value}" if value else ""
+    elif key == "preference.document_format":
+        value = _normalized_document_format_value(source)
+        label = f"文档格式：{value}" if value else ""
     else:
         return None
     if not value or not label:
@@ -495,6 +517,7 @@ def _long_term_memory_lookup_response(state: dict[str, Any]) -> str | None:
     labels = {
         "preference.language": "回复语言",
         "preference.report_style": "报告风格",
+        "preference.document_format": "文档格式",
     }
     records: list[str] = []
     for entry in entries:
@@ -511,6 +534,22 @@ def _long_term_memory_lookup_response(state: dict[str, Any]) -> str | None:
     return "根据已保存的长期记忆：\n" + "\n".join(
         f"- {record}" for record in records
     )
+
+
+def _long_term_memory_store_response(state: dict[str, Any]) -> str | None:
+    """Acknowledge a memory control message while extraction runs after the turn."""
+    if state.get("workflow_mode") != "launch":
+        return None
+    query = str(
+        state.get("USER_QUERY")
+        or state.get("original_user_query")
+        or ""
+    ).strip()
+    if not is_memory_store_request(query):
+        return None
+    if not state.get("memory_enabled"):
+        return "当前长期记忆未启用，这项偏好尚未保存。"
+    return "已收到，长期记忆将在后台更新。"
 
 
 def _execution_messages_without_memory(messages: list[Any]) -> list[Any]:
@@ -544,6 +583,8 @@ def _current_request_overrides_memory(query: str, key: str) -> bool:
                 text,
             )
         )
+    if key == "preference.document_format":
+        return _normalized_document_format_value(text) is not None
     return False
 
 
@@ -579,6 +620,10 @@ def _memory_output_constraints(state: dict[str, Any]) -> list[str]:
                 constraints.append(f"输出语言使用{language}")
         elif key == "preference.report_style":
             constraints.extend(_safe_report_style_constraints(entry))
+        elif key == "preference.document_format":
+            document_format = _display_memory_value(key, entry)
+            if document_format:
+                constraints.append(f"文档输出格式使用{document_format}")
     return list(dict.fromkeys(constraints))
 
 
@@ -2574,7 +2619,10 @@ async def coordinator_node(state: State) -> Command[Literal["planner", "__end__"
 
     goto = "__end__"
     content = ""
-    memory_response = _long_term_memory_lookup_response(state)
+    memory_response = (
+        _long_term_memory_store_response(state)
+        or _long_term_memory_lookup_response(state)
+    )
     if memory_response is not None:
         cache.restore_system_node(
             state["workflow_id"], COORDINATOR, state["user_id"]

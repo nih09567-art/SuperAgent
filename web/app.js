@@ -7,8 +7,16 @@ const tabs = document.querySelectorAll(".tab");
 const panels = document.querySelectorAll(".panel");
 
 const jsonRequestHeaders = { "Content-Type": "application/json" };
+const getAuthenticatedJsonHeaders = (userId) => {
+  const principal = String(userId || "").trim();
+  if (!principal) throw new Error("Authenticated user is required");
+  return {
+    ...jsonRequestHeaders,
+    "X-Authenticated-User": principal,
+  };
+};
 
-const EXECUTION_API_KEY_PREFIX = "superagentExecutionApiKey";
+const EXECUTION_API_KEY_PREFIX = "superagentExecutionApiKeyV2";
 const getExecutionApiKeyStorageKey = (userId) => (
   `${EXECUTION_API_KEY_PREFIX}:${encodeURIComponent(String(userId || "").trim())}`
 );
@@ -20,15 +28,19 @@ const getExecutionAuthorizationHeaders = (userId, confirmationRequestId) => {
   let credential = window.sessionStorage.getItem(storageKey) || "";
   if (!credential) {
     credential = window.prompt(
-      "\u8bf7\u8f93\u5165\u5f53\u524d\u7528\u6237\u7684\u751f\u4ea7\u6267\u884c\u51ed\u636e\uff1a",
+      `请输入用户 ${String(userId || "").trim()} 的生产执行凭据（由服务端 EXECUTION_USER_API_KEYS_JSON 配置，不是 LLM API Key）：`,
       ""
     ) || "";
     if (!credential) throw new Error("Production execution credential is required");
-    window.sessionStorage.setItem(storageKey, credential);
   }
   return {
-    "Authorization": `Bearer ${credential}`,
-    "Idempotency-Key": confirmationRequestId,
+    credential,
+    storageKey,
+    headers: {
+      ...jsonRequestHeaders,
+      "Authorization": `Bearer ${credential}`,
+      "Idempotency-Key": confirmationRequestId,
+    },
   };
 };
 const createConfirmationRequestId = () => {
@@ -830,6 +842,21 @@ const parseClarification = (content) => {
   return match ? match[1].trim() : "";
 };
 
+const isStandaloneMemoryMessage = (content) => {
+  const normalized = String(content || "").trim().toLowerCase();
+  if (!normalized) return false;
+  const isStoreRequest = (
+    /(?:请|帮我)?记住|长期(?:保存|记录)|保存(?:为|到)?(?:长期)?记忆|remember\s+(?:this|that|my)/i.test(normalized)
+    && /偏好|习惯|默认|以后|后续|回复|语言|风格|格式|约束|preference|default|style|format/i.test(normalized)
+  );
+  const isLookupRequest = (
+    /之前|以前|先前|历史|长期记忆|记得|告诉过|before|previous|history|remember/i.test(normalized)
+    && /偏好|习惯|风格|语言|回复|格式|preference|style|language|format/i.test(normalized)
+    && /什么|哪些|怎么|是否|吗|么|[?？]|what|which|how/i.test(normalized)
+  );
+  return isStoreRequest || isLookupRequest;
+};
+
 const buildRoutingClarification = (eventData) => {
   const profile = eventData?.task_profile || {};
   const route = eventData?.routing_decision || {};
@@ -1136,9 +1163,10 @@ const createExecutionIdentity = async (
   confirmationRequestId
 ) => {
   const planHash = await computeExecutionPlanHash(workflowId, steps);
+  const authorization = getExecutionAuthorizationHeaders(userId, confirmationRequestId);
   const response = await fetch("/api/workflows/execution-authorizations", {
     method: "POST",
-    headers: getExecutionAuthorizationHeaders(userId, confirmationRequestId),
+    headers: authorization.headers,
     body: JSON.stringify({
       workflow_id: workflowId,
       plan_hash: planHash,
@@ -1149,13 +1177,21 @@ const createExecutionIdentity = async (
   if (!response.ok) {
     if (response.status === 401) clearExecutionApiKey(userId);
     const detail = responseBody.detail || responseBody;
-    const message = detail.message || detail.code || `HTTP ${response.status}`;
+    const message = typeof detail === "string"
+      ? detail
+      : Array.isArray(detail)
+        ? detail.map((item) => item?.msg || String(item)).join("; ")
+        : detail.message || detail.code || `HTTP ${response.status}`;
     const error = new Error(`Execution authorization failed: ${message}`);
     error.status = response.status;
     error.code = detail.code || "";
     error.detail = detail;
     throw error;
   }
+  window.sessionStorage.setItem(
+    authorization.storageKey,
+    authorization.credential
+  );
   const identity = {
     taskId: String(responseBody.task_id || ""),
     attemptId: String(responseBody.execution_attempt_id || ""),
@@ -2437,7 +2473,7 @@ const runPlannerUpdate = async (instruction, appendHistory = true, runtime = nul
   try {
     const response = await fetch("/api/workflows/run", {
       method: "POST",
-      headers: jsonRequestHeaders,
+      headers: getAuthenticatedJsonHeaders(userId),
       body: JSON.stringify(payload),
       signal: plannerOnlyController.signal,
     });
@@ -4686,7 +4722,12 @@ const runWorkflow = async () => {
   if (activeConversationUserId !== userId) resetActiveConversation(userId);
   const isClarificationAnswer = Boolean(
     clarificationPending && pendingClarificationContext
+    && !isStandaloneMemoryMessage(message)
   );
+  if (!isClarificationAnswer && clarificationPending) {
+    clarificationPending = false;
+    pendingClarificationContext = null;
+  }
   const clarificationContextForRequest = isClarificationAnswer
     ? { ...pendingClarificationContext }
     : null;
@@ -4769,7 +4810,7 @@ const runWorkflow = async () => {
   try {
     const response = await fetch("/api/workflows/run", {
       method: "POST",
-      headers: jsonRequestHeaders,
+      headers: getAuthenticatedJsonHeaders(userId),
       body: JSON.stringify(payload),
       signal: controller.signal,
     });

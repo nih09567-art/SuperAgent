@@ -41,6 +41,8 @@ def _candidate(**overrides):
         "sensitivity": "normal",
         "future_utility": True,
         "evidence_authority": "user",
+        "subject_scope": "current_user",
+        "durability_basis": "default",
     }
     payload.update(overrides)
     return payload
@@ -91,6 +93,8 @@ def test_policy_accepts_trusted_task_evidence(tmp_path):
         source_text="Verified workflow outcome",
         source_message_ids=["a1"],
         evidence_authority="trusted_task",
+        subject_scope="workflow",
+        durability_basis="verified_workflow",
     )
     result = asyncio.run(
         MemoryConsolidator(store, extractor=lambda _turn: [candidate]).consolidate(
@@ -126,6 +130,25 @@ def test_taxonomy_derives_fields_and_ignores_model_label():
 def test_taxonomy_rejects_unknown_tag():
     with pytest.raises(ValueError, match="unsupported office-memory tag"):
         MemoryCandidate.from_dict(_candidate(tag="preference.invented"))
+
+
+def test_policy_accepts_explicitly_self_attributed_identity(tmp_path):
+    store = MemoryStore(tmp_path / "memory.sqlite3")
+    candidate = _candidate(
+        tag="identity.name",
+        value="Alice",
+        source_text="My name is Alice.",
+        durability_basis="stable_identity",
+    )
+
+    result = asyncio.run(
+        MemoryConsolidator(store, extractor=lambda _turn: [candidate]).consolidate(
+            _turn("My name is Alice.")
+        )
+    )
+
+    assert len(result) == 1
+    assert result[0].memory_key == "identity.name"
 
 
 def test_ambiguous_conflict_is_pending_then_authoritative_correction_supersedes(

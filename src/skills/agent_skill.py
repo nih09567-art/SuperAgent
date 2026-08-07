@@ -9,8 +9,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import os
 import re
 import sqlite3
+import tempfile
 import threading
 import uuid
 from copy import deepcopy
@@ -29,7 +32,7 @@ from src.skills.execution_evidence import (
 )
 from src.skills.reflection import SkillReflection, SkillReflectionResult
 from src.skills.execution_trace import normalize_execution_trace, trace_summary
-from src.memory.utils import redact_secrets
+from src.memory.utils import redact_secrets, safe_identifier, to_json_safe
 
 
 _RISK_LEVEL = {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "CRITICAL": 3}
@@ -39,6 +42,7 @@ _TRUSTED_VERIFIER_METHODS = {
     "provider_query",
 }
 _DATA_PATH_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]{0,127}$")
+logger = logging.getLogger(__name__)
 
 
 def _now() -> str:
@@ -283,6 +287,7 @@ class AgentSkillSettings(BaseModel):
     auto_distill_enabled: bool = True
     reflection_enabled: bool = True
     reflection_min_confidence: float = 0.75
+    reflection_timeout_seconds: float = 60.0
     allow_side_effect_reuse: bool = False
     match_threshold: float = 0.75
     match_margin: float = 0.08
@@ -302,6 +307,10 @@ class AgentSkillSettings(BaseModel):
             reflection_enabled=getattr(env, "AGENT_SKILL_REFLECTION_ENABLED", True),
             reflection_min_confidence=getattr(
                 env, "AGENT_SKILL_REFLECTION_MIN_CONFIDENCE", 0.75
+            ),
+            reflection_timeout_seconds=max(
+                1.0,
+                getattr(env, "AGENT_SKILL_REFLECTION_TIMEOUT_SECONDS", 60.0),
             ),
             allow_side_effect_reuse=getattr(
                 env, "AGENT_SKILL_SIDE_EFFECT_REUSE_ENABLED", False
@@ -644,6 +653,160 @@ class AgentSkillStore:
             if card.status == AgentSkillStatus.ACTIVE
         ]
 
+    def markdown_path(self, user_id: str) -> Path:
+        return (
+            self.path.parent
+            / "agent_skill_views"
+            / safe_identifier(user_id, prefix="user")
+            / "SKILLS.md"
+        )
+
+    @staticmethod
+    def _markdown_code(value: Any) -> list[str]:
+        payload = redact_secrets(
+            json.dumps(
+                to_json_safe(value),
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return ["```json", payload, "```"]
+
+    def project_markdown(self, user_id: str) -> Path:
+        """Materialize a readable, user-scoped view of Agent Skill cards."""
+
+        cards = self.list(user_id)
+        target = self.markdown_path(user_id)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        status_counts = {
+            status.value: sum(card.status == status for card in cards)
+            for status in AgentSkillStatus
+        }
+        lines = [
+            "# Agent Skills",
+            "",
+            "<!-- Generated view. SQLite and audit trace files remain authoritative. -->",
+            "",
+            f"- User: `{redact_secrets(user_id)}`",
+            f"- Total: {len(cards)}",
+            f"- Active: {status_counts['active']}",
+            f"- Candidate: {status_counts['candidate']}",
+            f"- Disabled: {status_counts['disabled']}",
+            "",
+        ]
+        if not cards:
+            lines.extend(["No Agent Skills have been distilled yet.", ""])
+        for card in sorted(cards, key=lambda item: (item.status.value, item.name, item.version)):
+            applicability = card.applicability
+            quality = card.quality
+            reflection = "accepted" if card.aggregate_reflection_accepted else "pending/rejected"
+            procedure = card.reflection_procedure or {}
+            procedure_steps = procedure.get("steps") if isinstance(procedure, Mapping) else None
+            procedure_summary = (
+                " -> ".join(str(item) for item in procedure_steps)
+                if isinstance(procedure_steps, list) and procedure_steps
+                else "See the structured reflection below."
+            )
+            lines.extend(
+                [
+                    f"## {redact_secrets(card.name)}",
+                    "",
+                    f"- Status: **{card.status.value}**",
+                    f"- What it does: {redact_secrets(card.description)}",
+                    f"- Skill ID: `{redact_secrets(card.skill_id)}`",
+                    f"- Version: {card.version}",
+                    f"- Agent: `{redact_secrets(card.recipe.agent_name)}`",
+                    f"- Capability: `{redact_secrets(applicability.capability)}`",
+                    f"- Step intent: `{redact_secrets(applicability.step_intent)}`",
+                    f"- Operation: `{redact_secrets(applicability.operation_mode)}`",
+                    f"- Maximum risk: `{redact_secrets(applicability.max_risk)}`",
+                    f"- Expected outputs: {', '.join(f'`{redact_secrets(item)}`' for item in applicability.expected_outputs) or 'None'}",
+                    f"- Input bindings: {len(applicability.input_bindings)}",
+                    f"- Output schema: `{redact_secrets(applicability.expected_schema_ref or '-')}`",
+                    f"- Confidence: {card.confidence:.2f}",
+                    f"- Evidence: {card.evidence_count}",
+                    f"- Promotion evidence: {quality.promotion_evidence_count}",
+                    f"- Successful uses: {card.success_count}",
+                    f"- Failed uses: {card.failure_count}",
+                    f"- Aggregate reflection: **{reflection}**",
+                    f"- Reflection family: `{redact_secrets(card.reflection_family or '-')}`",
+                    f"- Updated: {redact_secrets(card.updated_at)}",
+                    "",
+                    "### Distilled Procedure",
+                    "",
+                    redact_secrets(procedure_summary),
+                    "",
+                    "### Execution Guidance",
+                    "",
+                    redact_secrets(card.recipe.execution_guidance),
+                    "",
+                    "### Applicability",
+                    "",
+                    *self._markdown_code(applicability.model_dump(mode="json")),
+                    "",
+                    "### Reflection",
+                    "",
+                    *self._markdown_code(
+                        {
+                            "accepted": card.aggregate_reflection_accepted,
+                            "family": card.reflection_family,
+                            "model_version": card.aggregate_reflection_model_version,
+                            "procedure": card.reflection_procedure,
+                            "reasons": card.aggregate_reflection_reasons,
+                        }
+                    ),
+                    "",
+                    "### Source Tasks",
+                    "",
+                ]
+            )
+            if card.provenance.source_task_ids:
+                lines.extend(
+                    f"- `{redact_secrets(task_id)}`"
+                    for task_id in card.provenance.source_task_ids
+                )
+            else:
+                lines.append("- None")
+            lines.extend(["", "### Source Conversations", ""])
+            if card.source_conversations:
+                lines.extend(self._markdown_code(card.source_conversations))
+            else:
+                lines.append("No source conversation snapshot is available.")
+            lines.extend(["", "### Execution Trace References", ""])
+            if card.execution_traces:
+                lines.extend(self._markdown_code(card.execution_traces))
+            else:
+                lines.append("No retained execution trace reference is available.")
+            lines.append("")
+
+        payload = "\n".join(lines).rstrip() + "\n"
+        with self._lock:
+            fd, temporary = tempfile.mkstemp(
+                dir=str(target.parent), prefix=f".{target.name}.", suffix=".tmp"
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                    handle.write(payload)
+                os.replace(temporary, target)
+            finally:
+                if os.path.exists(temporary):
+                    try:
+                        os.remove(temporary)
+                    except OSError:
+                        pass
+        return target
+
+    def _refresh_markdown_projection(self, user_id: str) -> None:
+        try:
+            self.project_markdown(user_id)
+        except Exception as exc:
+            logger.warning(
+                "Agent Skill Markdown projection deferred for user %s: %s",
+                user_id,
+                type(exc).__name__,
+            )
+
     def save_evidence(
         self,
         evidence: AgentSkillEvidence,
@@ -832,6 +995,7 @@ class AgentSkillStore:
                 ),
             )
             connection.commit()
+        self._refresh_markdown_projection(card.user_id)
         return card
 
     def _set_status(
@@ -879,6 +1043,7 @@ class AgentSkillStore:
                 ),
             )
             connection.commit()
+        self._refresh_markdown_projection(user_id)
         return card
 
     def activate(self, user_id: str, skill_id: str) -> AgentSkillCard:
@@ -929,6 +1094,7 @@ class AgentSkillStore:
                 ),
             )
             connection.commit()
+        self._refresh_markdown_projection(user_id)
         return card
 
 
@@ -945,7 +1111,11 @@ class AgentSkillManager:
         self.reflection = SkillReflection(
             default_reflection.model,
             min_confidence=self.settings.reflection_min_confidence,
-            timeout_seconds=default_reflection.timeout_seconds,
+            timeout_seconds=(
+                default_reflection.timeout_seconds
+                if reflection is not None
+                else self.settings.reflection_timeout_seconds
+            ),
         )
 
     def reflect(
@@ -972,7 +1142,11 @@ class AgentSkillManager:
             if isinstance(item, Mapping)
         )
         evidence = evidence.model_copy(update={"source_conversations": sanitized_sources})
-        reflection_evidence = evidence.model_copy(update={"execution_trace": {}})
+        # Source conversations are supplied in their own prompt section. Keep
+        # them on the returned evidence for audit, but do not send them twice.
+        reflection_evidence = evidence.model_copy(
+            update={"execution_trace": {}, "source_conversations": ()}
+        )
         result = self.reflection.reflect_trace(
             reflection_evidence, source_conversations=sanitized_sources
         )

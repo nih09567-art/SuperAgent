@@ -25,6 +25,7 @@ from .compaction import (
 from .consolidation import (
     EXTRACTOR_VERSION,
     MemoryConsolidator,
+    MemoryExtractionError,
     build_llm_extractor,
 )
 from .models import (
@@ -154,6 +155,13 @@ class MemoryManager:
         self.consolidator = consolidator or MemoryConsolidator(
             self.store, extractor=self._build_memory_extractor()
         )
+        self._consolidation_tasks: dict[
+            tuple[str, str], asyncio.Task[None]
+        ] = {}
+        self._consolidation_reruns: set[tuple[str, str]] = set()
+        self._consolidation_workflow_ids: dict[
+            tuple[str, str], str | None
+        ] = {}
 
     def _build_summarizer(self, model_type: str = "basic") -> Any | None:
         if not self.settings.llm_compaction_enabled:
@@ -265,8 +273,15 @@ class MemoryManager:
                 workflow_id,
             )
             current_turn_id = self._latest_user_turn_id(stored) or current_turn_id
-            if self.settings.auto_consolidation_enabled:
-                await self._consolidate_pending(user_id, resolved, workflow_id)
+            if (
+                self.settings.auto_consolidation_enabled
+                and self.settings.long_term_enabled
+            ):
+                task = self._schedule_consolidation(
+                    user_id, resolved, workflow_id
+                )
+                if task is not None:
+                    await asyncio.sleep(0)
 
             latest, tail = await asyncio.to_thread(
                 self.store.messages_after_compaction, user_id, resolved
@@ -681,6 +696,7 @@ class MemoryManager:
         outputs: Sequence[Mapping[str, Any]],
         workflow_id: str | None = None,
         turn_id: str | None = None,
+        await_consolidation: bool = False,
     ) -> list[MemoryMessage]:
         history = await asyncio.to_thread(
             self.store.list_messages, user_id, session_id
@@ -730,15 +746,96 @@ class MemoryManager:
         if not messages or not self.settings.enabled:
             return []
         stored = await asyncio.to_thread(self.store.append_messages, messages)
-        if self.settings.auto_consolidation_enabled:
-            try:
-                await self._consolidate_pending(user_id, session_id, workflow_id)
-            except Exception as exc:
-                logger.warning(
-                    "Memory consolidation deferred after response: %s",
-                    type(exc).__name__,
-                )
+        if (
+            self.settings.auto_consolidation_enabled
+            and self.settings.long_term_enabled
+        ):
+            task = self._schedule_consolidation(
+                user_id, session_id, workflow_id
+            )
+            if task is not None:
+                # Give the worker one event-loop turn so fast deterministic
+                # extractors finish in tests while remote LLM calls remain detached.
+                await asyncio.sleep(0)
+                if await_consolidation:
+                    await self.wait_for_consolidation_tasks()
         return stored
+
+    def _schedule_consolidation(
+        self,
+        user_id: str,
+        session_id: str,
+        workflow_id: str | None,
+    ) -> asyncio.Task[None] | None:
+        if self.consolidator.extractor is None:
+            return None
+        key = (user_id, session_id)
+        current = self._consolidation_tasks.get(key)
+        if current is not None and not current.done():
+            self._consolidation_reruns.add(key)
+            self._consolidation_workflow_ids[key] = workflow_id
+            return current
+        task = asyncio.create_task(
+            self._run_consolidation_background(
+                key, user_id, session_id, workflow_id
+            ),
+            name=f"memory-consolidation:{user_id}:{session_id}",
+        )
+        self._consolidation_tasks[key] = task
+        return task
+
+    async def _run_consolidation_background(
+        self,
+        key: tuple[str, str],
+        user_id: str,
+        session_id: str,
+        workflow_id: str | None,
+    ) -> None:
+        try:
+            for attempt in range(2):
+                try:
+                    await self._consolidate_pending(
+                        user_id, session_id, workflow_id
+                    )
+                    break
+                except MemoryExtractionError as exc:
+                    if attempt == 0:
+                        logger.warning(
+                            "Memory extraction contract failed; retrying once: %s",
+                            str(exc),
+                        )
+                        continue
+                    logger.warning(
+                        "Memory consolidation remains retryable after two attempts: %s",
+                        str(exc),
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.warning(
+                        "Memory consolidation deferred after response: %s",
+                        type(exc).__name__,
+                    )
+                    break
+        finally:
+            if self._consolidation_tasks.get(key) is asyncio.current_task():
+                self._consolidation_tasks.pop(key, None)
+            if key in self._consolidation_reruns:
+                self._consolidation_reruns.discard(key)
+                rerun_workflow_id = self._consolidation_workflow_ids.pop(
+                    key, workflow_id
+                )
+                self._schedule_consolidation(
+                    user_id, session_id, rerun_workflow_id
+                )
+
+    async def wait_for_consolidation_tasks(self) -> None:
+        """Wait for currently scheduled consolidation jobs in tests/shutdown."""
+        while self._consolidation_tasks:
+            await asyncio.gather(
+                *tuple(self._consolidation_tasks.values()),
+                return_exceptions=True,
+            )
 
     async def _consolidate_pending(
         self, user_id: str, session_id: str, workflow_id: str | None

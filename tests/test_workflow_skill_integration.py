@@ -1205,6 +1205,76 @@ def test_coordinator_answers_explicit_memory_lookup_without_planning(monkeypatch
     assert fake_cache.steps == []
 
 
+def test_coordinator_returns_document_format_for_explicit_memory_lookup(monkeypatch):
+    import src.workflow.coor_task as coor_task
+
+    fake_cache = _FakeCache()
+    monkeypatch.setattr(coor_task, "cache", fake_cache)
+    monkeypatch.setattr(
+        coor_task,
+        "get_llm_by_type",
+        lambda _kind: (_ for _ in ()).throw(
+            AssertionError("memory lookup must not call an LLM")
+        ),
+    )
+    state = {
+        "user_id": "alice",
+        "workflow_id": "alice:wf",
+        "workflow_mode": "launch",
+        "workflow_skill_match": {},
+        "USER_QUERY": "我之前偏好的文档格式是什么？",
+        "memory_context": {
+            "retrieved_memories": [
+                {
+                    "memory_id": "format",
+                    "key": "preference.document_format",
+                    "value": "Markdown",
+                    "label": "文档优先使用 Markdown",
+                }
+            ]
+        },
+    }
+
+    command = asyncio.run(coor_task.coordinator_node(state))
+
+    assert command.goto == "__end__"
+    assert command.update["messages"][0]["content"] == (
+        "根据已保存的长期记忆：\n- 文档格式：Markdown"
+    )
+    assert fake_cache.steps == []
+
+
+def test_coordinator_acknowledges_memory_store_without_planning(monkeypatch):
+    import src.workflow.coor_task as coor_task
+
+    fake_cache = _FakeCache()
+    monkeypatch.setattr(coor_task, "cache", fake_cache)
+    monkeypatch.setattr(
+        coor_task,
+        "get_llm_by_type",
+        lambda _kind: (_ for _ in ()).throw(
+            AssertionError("memory store control must not call an LLM")
+        ),
+    )
+    state = {
+        "user_id": "alice",
+        "workflow_id": "alice:wf",
+        "workflow_mode": "launch",
+        "workflow_skill_match": {},
+        "memory_enabled": True,
+        "USER_QUERY": "请记住：默认使用中文回复，文档优先使用 Markdown。",
+        "memory_context": {},
+    }
+
+    command = asyncio.run(coor_task.coordinator_node(state))
+
+    assert command.goto == "__end__"
+    assert command.update["messages"][0]["content"] == (
+        "已收到，长期记忆将在后台更新。"
+    )
+    assert fake_cache.steps == []
+
+
 def test_coordinator_memory_lookup_reports_missing_requested_key_without_planning(monkeypatch):
     import src.workflow.coor_task as coor_task
 

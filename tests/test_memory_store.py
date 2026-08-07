@@ -330,6 +330,26 @@ def test_schema_migration_keeps_legacy_long_term_rows_readable(tmp_path):
     assert record.reinforcement_count == 0
 
 
+def test_extractor_version_migration_does_not_replay_completed_turns(tmp_path):
+    path = tmp_path / "memory.sqlite3"
+    store = MemoryStore(path)
+    store.advance_consolidation_watermark(
+        "alice", "thread", 4, extractor_version="llm-taxonomy-v2"
+    )
+    store.mark_turn_consolidated(
+        "alice",
+        "thread",
+        "u1",
+        4,
+        extractor_version="llm-taxonomy-v2",
+    )
+
+    migrated = MemoryStore(path)
+
+    assert migrated.get_consolidation_watermark("alice", "thread") == 4
+    assert migrated.list_consolidated_turn_ids("alice", "thread") == {"u1"}
+
+
 def test_markdown_projection_failure_preserves_previous_view_and_regenerates(
     tmp_path, monkeypatch
 ):
@@ -365,12 +385,43 @@ def test_markdown_projection_failure_preserves_previous_view_and_regenerates(
     regenerated = store.project_markdown("alice")
     assert regenerated == target
     rebuilt = target.read_text(encoding="utf-8")
-    assert "preference.language" in rebuilt
-    assert "preference.report_style" in rebuilt
+    assert "- preference.language: Reports use Chinese." in rebuilt
+    assert "- preference.report_style: Reports are concise." in rebuilt
+    assert "## preference" not in rebuilt
+
+
+def test_markdown_projection_renders_structured_tag_and_value(tmp_path):
+    store = MemoryStore(tmp_path / "memory.sqlite3")
+    store.remember(
+        user_id="alice",
+        content="raw source should remain in SQLite",
+        kind="preference",
+        memory_key="preference.language",
+        value="Chinese",
+        label="Default response language: Chinese",
+        provenance={"source": "test"},
+    )
+
+    rendered = store.project_markdown("alice").read_text(encoding="utf-8")
+
+    assert "- preference.language: Chinese" in rendered
+    assert "Default response language" not in rendered
+    assert "raw source should remain in SQLite" not in rendered
+    assert "## preference" not in rendered
 
 
 def test_successful_compaction_projects_immutable_and_latest_markdown(tmp_path):
     store = MemoryStore(tmp_path / "memory.sqlite3")
+    store.remember(
+        user_id="alice",
+        content="Chinese",
+        kind="preference",
+        memory_key="preference.language",
+        label="Default response language: Chinese",
+        provenance={"source": "test"},
+    )
+    memory_path = store.project_markdown("alice")
+    memory_before_compaction = memory_path.read_text(encoding="utf-8")
     messages = [
         store.append_message(
             user_id="alice",
@@ -430,10 +481,10 @@ def test_successful_compaction_projects_immutable_and_latest_markdown(tmp_path):
     assert "[REDACTED]" in rendered
     assert saved.metadata["compaction_generation"] == 1
     assert saved.metadata["markdown_projection_path"] == str(latest)
-    memory_view = store.markdown_path("alice").read_text(encoding="utf-8")
-    assert "Current Context Compaction (Diagnostic Only)" in memory_view
-    assert saved.summary in memory_view
-    assert "not a long-term memory record" in memory_view
+    memory_view = memory_path.read_text(encoding="utf-8")
+    assert memory_view == memory_before_compaction
+    assert "Current Context Compaction" not in memory_view
+    assert saved.summary not in memory_view
 
 
 def test_compaction_projection_failure_rolls_back_new_database_record(

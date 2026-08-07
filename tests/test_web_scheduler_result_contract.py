@@ -46,6 +46,42 @@ def test_web_assigns_and_preserves_stable_message_ids():
     assert "execute-confirmed-plan" in source
 
 
+def test_web_sends_authenticated_principal_for_planning_requests():
+    source = _source()
+
+    assert "const getAuthenticatedJsonHeaders = (userId) =>" in source
+    assert '"X-Authenticated-User": principal' in source
+    assert source.count("headers: getAuthenticatedJsonHeaders(userId)") == 2
+
+
+def test_web_execution_authorization_sends_json_and_only_caches_valid_credential():
+    source = _source()
+    header_block = source[
+        source.index("const getExecutionAuthorizationHeaders") : source.index(
+            "const createConfirmationRequestId"
+        )
+    ]
+    identity_block = source[
+        source.index("const createExecutionIdentity") : source.index(
+            "const applyPendingExecutionRecoveryState"
+        )
+    ]
+
+    assert "...jsonRequestHeaders" in header_block
+    assert "sessionStorage.setItem" not in header_block
+    assert "window.sessionStorage.setItem" in identity_block
+    assert identity_block.index("if (!response.ok)") < identity_block.index(
+        "window.sessionStorage.setItem"
+    )
+
+
+def test_web_memory_control_message_breaks_stale_clarification_state():
+    source = _source()
+
+    assert "const isStandaloneMemoryMessage" in source
+    assert "&& !isStandaloneMemoryMessage(message)" in source
+
+
 def test_web_keys_parallel_step_cards_by_scheduler_event_identity():
     source = _source()
 

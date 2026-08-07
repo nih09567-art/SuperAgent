@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 import pytest
 
@@ -12,7 +13,10 @@ from src.memory import (
 from src.memory.models import PreparedMemoryContext
 from src.memory.manager import set_memory_manager
 from src.memory.compaction import CompactionEngine, SUMMARY_SECTIONS
-from src.memory.consolidation import build_llm_extractor
+from src.memory.consolidation import (
+    MemoryExtractionContractError,
+    build_llm_extractor,
+)
 from src.memory.utils import estimate_tokens
 
 
@@ -157,7 +161,7 @@ def test_identical_assistant_content_is_distinct_across_user_turns(tmp_path):
 
 
 def test_interleaved_requests_keep_outputs_and_consolidation_in_their_turns(tmp_path):
-    manager = _manager(tmp_path, trigger_tokens=10000, long_term_enabled=False)
+    manager = _manager(tmp_path, trigger_tokens=10000)
     consolidated_turns = []
 
     async def capture_turn(turn, *, workflow_id=None):
@@ -184,6 +188,7 @@ def test_interleaved_requests_keep_outputs_and_consolidation_in_their_turns(tmp_
             ],
         )
     )
+    manager.consolidator.extractor = lambda _turn: []
 
     asyncio.run(
         manager.record_assistant_outputs(
@@ -192,6 +197,7 @@ def test_interleaved_requests_keep_outputs_and_consolidation_in_their_turns(tmp_
             outputs=[{"agent_name": "assistant", "content": "result A"}],
             workflow_id="wf-a",
             turn_id=prepared_a.metadata.current_turn_id,
+            await_consolidation=True,
         )
     )
     messages_after_a = asyncio.run(
@@ -210,6 +216,7 @@ def test_interleaved_requests_keep_outputs_and_consolidation_in_their_turns(tmp_
             outputs=[{"agent_name": "assistant", "content": "result B"}],
             workflow_id="wf-b",
             turn_id=prepared_b.metadata.current_turn_id,
+            await_consolidation=True,
         )
     )
 
@@ -230,7 +237,7 @@ def test_interleaved_requests_keep_outputs_and_consolidation_in_their_turns(tmp_
 
 
 def test_abandoned_turn_does_not_block_later_turn_consolidation(tmp_path):
-    manager = _manager(tmp_path, trigger_tokens=10000, long_term_enabled=False)
+    manager = _manager(tmp_path, trigger_tokens=10000)
     consolidated_turns = []
 
     async def capture_turn(turn, *, workflow_id=None):
@@ -253,12 +260,14 @@ def test_abandoned_turn_does_not_block_later_turn_consolidation(tmp_path):
                 ],
             )
         )
+    manager.consolidator.extractor = lambda _turn: []
     asyncio.run(
         manager.record_assistant_outputs(
             user_id="alice",
             session_id="thread",
             outputs=[{"agent_name": "assistant", "content": "result A"}],
             turn_id="u-a",
+            await_consolidation=True,
         )
     )
 
@@ -277,6 +286,7 @@ def test_abandoned_turn_does_not_block_later_turn_consolidation(tmp_path):
             session_id="thread",
             outputs=[{"agent_name": "assistant", "content": "result C"}],
             turn_id="u-c",
+            await_consolidation=True,
         )
     )
 
@@ -681,6 +691,8 @@ def test_completed_turn_consolidates_preference_and_projects_markdown(tmp_path):
             "sensitivity": "normal",
             "future_utility": True,
             "evidence_authority": "user",
+            "subject_scope": "current_user",
+            "durability_basis": "default",
         }
     ]
     asyncio.run(
@@ -707,6 +719,7 @@ def test_completed_turn_consolidates_preference_and_projects_markdown(tmp_path):
                     "message_id": "a1",
                 }
             ],
+            await_consolidation=True,
         )
     )
 
@@ -720,7 +733,7 @@ def test_completed_turn_consolidates_preference_and_projects_markdown(tmp_path):
     assert provenance["turn_id"] == "u1"
     assert provenance["user_messages"][0]["content"] == "I prefer Chinese responses"
     assert provenance["assistant_messages"][0]["content"] == "Understood."
-    assert "`preference.language`" in markdown
+    assert "- preference.language: Chinese" in markdown
     assert manager.store.get_consolidation_watermark("alice", "thread") == 2
 
 
@@ -867,7 +880,7 @@ def test_request_compaction_calls_summary_model_once_after_local_tail_selection(
     assert summarizer.calls == 1
 
 
-def test_llm_memory_extractor_is_tool_free_and_requires_user_source_ids():
+def test_llm_memory_extractor_binds_platform_user_evidence_ids():
     class FakeModel:
         def __init__(self, content):
             self.content = content
@@ -878,9 +891,12 @@ def test_llm_memory_extractor_is_tool_free_and_requires_user_source_ids():
             return type("Response", (), {"content": self.content, "tool_calls": []})()
 
     model = FakeModel(
-        '[{"tag":"preference.language","value":"Chinese",'
-        '"source_message_ids":["u1"],"confidence":0.95,"importance":0.8,'
-        '"sensitivity":"normal","future_utility":true,"evidence_authority":"user"}]'
+        '{"decision":"extract","reason":"Explicit durable preference",'
+        '"candidates":[{"tag":"preference.language","value":"Chinese",'
+        '"source_message_ids":["a1"],"confidence":0.95,"importance":0.8,'
+        '"sensitivity":"normal","future_utility":true,'
+        '"evidence_authority":"user","subject_scope":"current_user",'
+        '"durability_basis":"default"}]}'
     )
     extractor = build_llm_extractor(model)
     turn = [
@@ -892,13 +908,199 @@ def test_llm_memory_extractor_is_tool_free_and_requires_user_source_ids():
     assert result[0]["source_message_ids"] == ("u1",)
     assert result[0]["source_text"] == "I prefer Chinese"
     assert "Do not call tools" in model.prompts[0]
+    assert "Do not return source_message_ids" in model.prompts[0]
+    assert "subject_scope" in model.prompts[0]
+    assert "durability_basis" in model.prompts[0]
 
-    invalid = FakeModel(
-        '[{"tag":"preference.language","value":"English",'
-        '"source_message_ids":["a1"],"confidence":1,"importance":1,'
-        '"sensitivity":"normal","future_utility":true,"evidence_authority":"user"}]'
+
+@pytest.mark.parametrize(
+    ("user_text", "candidate"),
+    [
+        (
+            "Send the report to Zhang San.",
+            {
+                "tag": "identity.name",
+                "value": "Zhang San",
+                "subject_scope": "current_user",
+                "durability_basis": "stable_identity",
+            },
+        ),
+        (
+            "Write this report with an executive summary and risk analysis.",
+            {
+                "tag": "preference.report_style",
+                "value": "executive summary and risk analysis",
+                "subject_scope": "current_user",
+                "durability_basis": "current_task",
+            },
+        ),
+    ],
+)
+def test_llm_memory_extractor_rejects_non_user_or_task_local_candidates(
+    user_text, candidate
+):
+    class FakeModel:
+        async def ainvoke(self, _prompt):
+            payload = {
+                "decision": "extract",
+                "reason": "model misclassified task context",
+                "candidates": [
+                    {
+                        **candidate,
+                        "confidence": 0.99,
+                        "importance": 0.99,
+                        "sensitivity": "normal",
+                        "future_utility": True,
+                        "evidence_authority": "user",
+                    }
+                ],
+            }
+            return type(
+                "Response",
+                (),
+                {"content": json.dumps(payload), "tool_calls": []},
+            )()
+
+    extractor = build_llm_extractor(FakeModel())
+    turn = [
+        {
+            "message_id": "u1",
+            "user_id": "alice",
+            "session_id": "s",
+            "role": "user",
+            "content": user_text,
+        },
+        {
+            "message_id": "a1",
+            "user_id": "alice",
+            "session_id": "s",
+            "role": "assistant",
+            "content": "Understood.",
+        },
+    ]
+
+    with pytest.raises(MemoryExtractionContractError):
+        asyncio.run(extractor(turn))
+
+
+def test_invalid_memory_extraction_is_retried_without_advancing_watermark(tmp_path):
+    class SequencedModel:
+        def __init__(self):
+            self.responses = [
+                "not-json",
+                (
+                    '{"decision":"extract","reason":"Explicit durable preferences",'
+                    '"candidates":['
+                    '{"tag":"preference.language","value":"zh-CN",'
+                    '"source_message_ids":["u1"],"confidence":0.99,'
+                    '"importance":0.95,"sensitivity":"normal",'
+                    '"future_utility":true,"evidence_authority":"user",'
+                    '"subject_scope":"current_user","durability_basis":"default"},'
+                    '{"tag":"preference.report_style",'
+                    '"value":"简洁、专业、结论优先",'
+                    '"source_message_ids":["u1"],"confidence":0.99,'
+                    '"importance":0.95,"sensitivity":"normal",'
+                    '"future_utility":true,"evidence_authority":"user",'
+                    '"subject_scope":"current_user","durability_basis":"default"},'
+                    '{"tag":"preference.document_format","value":"Markdown",'
+                    '"source_message_ids":["u1"],"confidence":0.99,'
+                    '"importance":0.95,"sensitivity":"normal",'
+                    '"future_utility":true,"evidence_authority":"user",'
+                    '"subject_scope":"current_user","durability_basis":"default"}]}'
+                ),
+            ]
+
+        async def ainvoke(self, _prompt):
+            return type(
+                "Response",
+                (),
+                {"content": self.responses.pop(0), "tool_calls": []},
+            )()
+
+    manager = _manager(
+        tmp_path,
+        trigger_tokens=10000,
+        auto_consolidation_enabled=False,
     )
-    assert asyncio.run(build_llm_extractor(invalid)(turn)) == []
+    manager.consolidator.extractor = build_llm_extractor(SequencedModel())
+
+    async def exercise():
+        await manager.prepare_context(
+            user_id="alice",
+            session_id="thread",
+            incoming_messages=[
+                {
+                    "role": "user",
+                    "message_id": "u1",
+                    "content": (
+                        "请记住以下长期偏好：默认使用中文回复；报告风格简洁、"
+                        "专业、结论优先；文档优先使用 Markdown。"
+                    ),
+                }
+            ],
+        )
+        await manager.record_assistant_outputs(
+            user_id="alice",
+            session_id="thread",
+            outputs=[{"agent_name": "assistant", "content": "已记录。"}],
+            turn_id="u1",
+        )
+
+        with pytest.raises(MemoryExtractionContractError):
+            await manager._consolidate_pending("alice", "thread", "wf-1")
+        assert manager.store.list_consolidated_turn_ids("alice", "thread") == set()
+        assert manager.store.get_consolidation_watermark("alice", "thread") == 0
+
+        await manager._consolidate_pending("alice", "thread", "wf-1")
+
+    asyncio.run(exercise())
+
+    records = manager.store.list_long_term("alice")
+    assert {record.memory_key for record in records} == {
+        "preference.language",
+        "preference.report_style",
+        "preference.document_format",
+    }
+    assert manager.store.list_consolidated_turn_ids("alice", "thread") == {"u1"}
+    assert manager.store.get_consolidation_watermark("alice", "thread") == 2
+
+
+def test_post_turn_memory_consolidation_runs_without_blocking_response(tmp_path):
+    manager = _manager(tmp_path, trigger_tokens=10000)
+    extraction_started = asyncio.Event()
+    release_extraction = asyncio.Event()
+
+    async def delayed_extractor(_turn):
+        extraction_started.set()
+        await release_extraction.wait()
+        return []
+
+    manager.consolidator.extractor = delayed_extractor
+
+    async def exercise():
+        await manager.prepare_context(
+            user_id="alice",
+            session_id="thread",
+            incoming_messages=[
+                {"role": "user", "message_id": "u1", "content": "Remember this"}
+            ],
+        )
+        await manager.record_assistant_outputs(
+            user_id="alice",
+            session_id="thread",
+            outputs=[{"agent_name": "assistant", "content": "Understood."}],
+            turn_id="u1",
+        )
+
+        # The response path returns before the delayed extractor is released.
+        await asyncio.wait_for(extraction_started.wait(), timeout=1)
+        assert manager.store.list_consolidated_turn_ids("alice", "thread") == set()
+        release_extraction.set()
+        await manager.wait_for_consolidation_tasks()
+
+    asyncio.run(exercise())
+
+    assert manager.store.list_consolidated_turn_ids("alice", "thread") == {"u1"}
 
 
 def test_request_compaction_uses_active_stage_model_override(tmp_path):

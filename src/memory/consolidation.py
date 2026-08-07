@@ -11,14 +11,22 @@ from typing import Any, Awaitable, Callable, Mapping, Sequence
 
 from .models import LongTermMemory, MemoryMessage, utc_now
 from .provenance import build_conversation_provenance
-from .store import MemoryStore
+from .store import CURRENT_EXTRACTOR_VERSION, MemoryStore
 from .utils import contains_secret, normalize_content, redact_secrets
 
 
-EXTRACTOR_VERSION = "llm-taxonomy-v1"
+EXTRACTOR_VERSION = CURRENT_EXTRACTOR_VERSION
 LLM_EXTRACTOR_VERSION = EXTRACTOR_VERSION
 ALLOWED_KINDS = {"fact", "preference", "constraint", "decision", "lesson"}
 ALLOWED_SCOPES = {"user", "project", "task"}
+USER_DURABILITY_BASES = {
+    "explicit_remember",
+    "default",
+    "recurring",
+    "correction",
+    "stable_identity",
+}
+TRUSTED_DURABILITY_BASES = {"verified_workflow"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,18 +89,94 @@ _PROMPT_INJECTION_PATTERNS = (
     re.compile(r"(?:授予|提升|获取).{0,12}(?:权限|授权)"),
 )
 
+_SELF_ATTRIBUTION_PATTERNS = {
+    "identity.name": re.compile(
+        r"(?:\bmy name is\b|\bcall me\b|\u6211\u53eb|"
+        r"\u6211\u7684\u540d\u5b57(?:\u662f|\u53eb)?|"
+        r"\u8bf7\u79f0\u547c\u6211(?:\u4e3a)?|\u53eb\u6211)",
+        re.I,
+    ),
+    "identity.role": re.compile(
+        r"(?:\bmy role is\b|\bi work as\b|\u6211\u7684(?:\u804c\u4f4d|\u5c97\u4f4d)\u662f|"
+        r"\u6211\u62c5\u4efb|\u6211\u662f)",
+        re.I,
+    ),
+    "organization.name": re.compile(
+        r"(?:\bmy (?:company|organization) is\b|\bi work at\b|"
+        r"\u6211\u5c31\u804c\u4e8e|\u6211\u7684\u516c\u53f8\u662f|"
+        r"\u6211\u5728)",
+        re.I,
+    ),
+}
+
+
+def _has_self_attributed_value(tag: str, value: Any, source_text: str) -> bool:
+    pattern = _SELF_ATTRIBUTION_PATTERNS.get(tag)
+    if pattern is None:
+        return True
+    if not isinstance(value, str) or not value.strip():
+        return False
+    normalized_value = normalize_content(value)
+    for match in pattern.finditer(source_text):
+        window = source_text[match.start() : match.end() + 120]
+        if normalized_value in normalize_content(window):
+            return True
+    return False
+
 Extractor = Callable[
     [Sequence[MemoryMessage]],
     Sequence[Mapping[str, Any]] | Awaitable[Sequence[Mapping[str, Any]]],
 ]
 
 
+class MemoryExtractionError(RuntimeError):
+    """Base error for retryable durable-memory extraction failures."""
+
+
+class MemoryExtractionContractError(MemoryExtractionError):
+    """The model response did not satisfy the structured extraction contract."""
+
+
+class MemoryExtractionToolCallError(MemoryExtractionError):
+    """The tool-free extraction model attempted to call a tool."""
+
+
+class _MemoryCandidatePolicyRejection(ValueError):
+    """A well-formed candidate that policy requires us to discard."""
+
+
+def _llm_content_text(content: Any) -> str:
+    """Normalize text-only chat-model responses without accepting tool blocks."""
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, Sequence) and not isinstance(content, (str, bytes)):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, Mapping):
+                block_type = str(block.get("type") or "text").casefold()
+                if block_type not in {"text", "output_text"}:
+                    raise MemoryExtractionContractError(
+                        "memory extractor returned a non-text content block"
+                    )
+                value = block.get("text")
+            else:
+                value = getattr(block, "text", None)
+            if value:
+                parts.append(str(value))
+        if parts:
+            return "\n".join(parts).strip()
+    raise MemoryExtractionContractError(
+        "memory extractor returned no parseable text content"
+    )
+
+
 def build_llm_extractor(model: Any) -> Extractor:
     """Build a tool-free structured extractor for completed turns.
 
     The model is deliberately injected by the caller so this module remains
-    usable in tests and does not own model configuration.  Invalid, malformed,
-    tool-calling, or cross-turn source references are discarded as a whole.
+    usable in tests and does not own model configuration. Invalid, malformed,
+    tool-calling, or cross-turn source references raise a retryable contract
+    error so callers never mark the turn as successfully consolidated.
     """
 
     async def _extract(turn: Sequence[MemoryMessage]) -> Sequence[Mapping[str, Any]]:
@@ -107,8 +191,7 @@ def build_llm_extractor(model: Any) -> Extractor:
         if not user_messages:
             return []
         transcript = "\n".join(
-            f"[{field(message, 'message_id', '')}] {field(message, 'role', '')}: "
-            f"{field(message, 'content', '')}"
+            f"{field(message, 'role', '')}: {field(message, 'content', '')}"
             for message in turn
         )
         taxonomy = "\n".join(
@@ -116,14 +199,42 @@ def build_llm_extractor(model: Any) -> Extractor:
             for tag, policy in OFFICE_MEMORY_TAXONOMY.items()
         )
         prompt = (
-            "You are a durable-memory extractor. Do not call tools. Return JSON "
-            "only as an array of candidate objects. Extract zero or more items that are "
-            "likely useful in a future session. Use only explicit user evidence; "
-            "never infer sensitive traits, credentials, permissions, or secrets. "
-            "Every candidate must cite one or more user message IDs from this turn. "
-            "Choose exactly one tag from the allow-list below; do not invent tags. "
-            "Required fields: tag, value, source_message_ids, confidence, importance, "
-            "sensitivity, future_utility, evidence_authority. Do not return kind, "
+            "You are a durable-memory reflection step. Do not call tools. Return one "
+            "JSON object and no surrounding prose. The schema is: "
+            '{"decision":"extract|skip","reason":"short explanation",'
+            '"candidates":[...]}. '
+            "Inspect the completed turn for explicit user information that will be "
+            "useful in future sessions. Explicit instructions to remember something, "
+            "use a value by default, or preserve a preference are strong "
+            "durable-memory "
+            "evidence in any language. Extract each distinct preference or constraint "
+            "as a separate candidate. For example, response language, report style, "
+            "and document format are three candidates, not one combined candidate. "
+            "Do not reinterpret a statement about report style as a request to "
+            "generate "
+            "a report. Choose decision=skip only when no explicit, future-useful user "
+            "evidence exists. For decision=extract, candidates must be non-empty. "
+            "Use only user evidence; assistant text may provide context but cannot be "
+            "the evidence source. Never infer sensitive traits, credentials, "
+            "permissions, "
+            "or secrets. A recipient, document subject, approver, colleague, or other "
+            "person mentioned in a task is not the current user. Current-task output "
+            "requirements, recipients, and one-off restrictions are not durable "
+            "preferences. For example, 'send this to Zhang San' is not identity.name, "
+            "and 'include a risk section in this report' is not "
+            "preference.report_style. Only identity statements explicitly attributed "
+            "to the current user or instructions explicitly framed as remembered, "
+            "default, recurring, corrective, or future behavior may be extracted. "
+            "Choose exactly one tag from the allow-list below; do not "
+            "invent tags. Candidate fields are: tag, value, confidence, importance, "
+            "sensitivity, future_utility, evidence_authority, subject_scope, and "
+            "durability_basis. subject_scope must be current_user. durability_basis "
+            "must be exactly one of explicit_remember, default, recurring, correction, "
+            "or stable_identity. Do not return "
+            "source_message_ids; the platform binds each candidate to the exact user "
+            "messages in this completed turn. Use numeric "
+            "confidence and importance from 0 to 1, sensitivity=normal or low, "
+            "future_utility=true, and evidence_authority=user. Do not return kind, "
             "scope, key, label, decay_class, tags, or source_text because the platform "
             "derives them.\n\nALLOWED TAGS:\n"
             + taxonomy
@@ -132,43 +243,90 @@ def build_llm_extractor(model: Any) -> Extractor:
         )
         result = await model.ainvoke(prompt)
         if getattr(result, "tool_calls", None):
-            return []
+            raise MemoryExtractionToolCallError(
+                "memory extractor attempted a forbidden tool call"
+            )
         content = getattr(result, "content", result)
         if isinstance(content, Mapping):
             payload: Any = content
         else:
-            text = str(content or "").strip()
+            text = _llm_content_text(content)
             if text.startswith("```"):
                 text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.I)
             try:
                 payload = json.loads(text)
             except (TypeError, ValueError):
-                return []
-        if isinstance(payload, Mapping):
-            payload = payload.get("candidates", [])
-        if not isinstance(payload, list):
+                raise MemoryExtractionContractError(
+                    "memory extractor returned invalid JSON"
+                ) from None
+        if not isinstance(payload, Mapping):
+            raise MemoryExtractionContractError(
+                "memory extractor result must be a JSON object"
+            )
+        decision = str(payload.get("decision") or "").strip().casefold()
+        reason = str(payload.get("reason") or "").strip()
+        candidates_payload = payload.get("candidates")
+        if decision not in {"extract", "skip"} or not reason:
+            raise MemoryExtractionContractError(
+                "memory extractor result requires decision and reason"
+            )
+        if not isinstance(candidates_payload, list):
+            raise MemoryExtractionContractError(
+                "memory extractor candidates must be an array"
+            )
+        if decision == "extract" and not candidates_payload:
+            raise MemoryExtractionContractError(
+                "memory extractor chose extract without candidates"
+            )
+        if decision == "skip" and candidates_payload:
+            raise MemoryExtractionContractError(
+                "memory extractor chose skip with candidates"
+            )
+        if decision == "skip":
             return []
         user_evidence = {
             str(field(message, "message_id", "")): str(field(message, "content", ""))
             for message in user_messages
         }
-        user_ids = set(user_evidence)
         candidates: list[Mapping[str, Any]] = []
-        for item in payload:
+        for item in candidates_payload:
             if not isinstance(item, Mapping):
-                continue
+                raise MemoryExtractionContractError(
+                    "memory extractor candidate must be an object"
+                )
             tag = normalize_memory_key(str(item.get("tag") or ""))
             if tag not in OFFICE_MEMORY_TAXONOMY:
-                continue
-            source_ids = tuple(str(value) for value in item.get("source_message_ids") or ())
-            if not source_ids or not set(source_ids).issubset(user_ids):
-                continue
-            candidate = dict(item)
-            candidate["tag"] = tag
-            candidate["source_message_ids"] = source_ids
-            candidate["source_text"] = "\n".join(
+                raise MemoryExtractionContractError(
+                    "memory extractor candidate used an unsupported tag"
+                )
+            subject_scope = str(item.get("subject_scope") or "").strip().casefold()
+            if subject_scope != "current_user":
+                raise MemoryExtractionContractError(
+                    "memory extractor candidate is not attributed to the current user"
+                )
+            durability_basis = str(
+                item.get("durability_basis") or ""
+            ).strip().casefold()
+            if durability_basis not in USER_DURABILITY_BASES:
+                raise MemoryExtractionContractError(
+                    "memory extractor candidate lacks a supported durability basis"
+                )
+            source_ids = tuple(user_evidence)
+            source_text = "\n".join(
                 user_evidence[source_id] for source_id in source_ids
             )
+            if not _has_self_attributed_value(
+                tag, item.get("value"), source_text
+            ):
+                raise MemoryExtractionContractError(
+                    "memory extractor identity candidate lacks user self-attribution"
+                )
+            candidate = dict(item)
+            candidate["tag"] = tag
+            candidate["subject_scope"] = subject_scope
+            candidate["durability_basis"] = durability_basis
+            candidate["source_message_ids"] = source_ids
+            candidate["source_text"] = source_text
             candidate.setdefault("extractor_version", LLM_EXTRACTOR_VERSION)
             candidate.setdefault("future_utility", True)
             candidate.setdefault("evidence_authority", "user")
@@ -193,6 +351,8 @@ class MemoryCandidate:
     sensitivity: str = "normal"
     future_utility: bool = True
     evidence_authority: str = "user"
+    subject_scope: str = ""
+    durability_basis: str = ""
     created_at: datetime = field(default_factory=utc_now)
     last_reinforced_at: datetime = field(default_factory=utc_now)
     reinforcement_count: int = 0
@@ -209,7 +369,9 @@ class MemoryCandidate:
         raw_source = str(data.get("source_text", "")).strip()
         raw_value = json.dumps(value, ensure_ascii=False, default=str)
         if any(contains_secret(item) for item in (raw_source, raw_value)):
-            raise ValueError("credential-shaped memory candidate")
+            raise _MemoryCandidatePolicyRejection(
+                "credential-shaped memory candidate"
+            )
         display_value = (
             " ".join(value.split())
             if isinstance(value, str)
@@ -243,6 +405,10 @@ class MemoryCandidate:
             evidence_authority=str(
                 data.get("evidence_authority", "") or ""
             ).casefold(),
+            subject_scope=str(data.get("subject_scope", "") or "").casefold(),
+            durability_basis=str(
+                data.get("durability_basis", "") or ""
+            ).casefold(),
             created_at=parsed_time("created_at"),
             last_reinforced_at=parsed_time("last_reinforced_at"),
             reinforcement_count=int(data.get("reinforcement_count", 0) or 0),
@@ -269,6 +435,12 @@ def contains_prompt_injection(value: Any) -> bool:
     return any(pattern.search(normalized) for pattern in _PROMPT_INJECTION_PATTERNS)
 
 
+def _has_self_attributed_identity(candidate: MemoryCandidate) -> bool:
+    return _has_self_attributed_value(
+        candidate.key, candidate.value, candidate.source_text
+    )
+
+
 class MemoryConsolidator:
     """Extract and persist conservative durable-memory candidates."""
 
@@ -287,7 +459,7 @@ class MemoryConsolidator:
 
     async def extract(self, turn: Sequence[MemoryMessage]) -> list[MemoryCandidate]:
         if self.extractor is None:
-            return []
+            raise MemoryExtractionError("durable-memory extractor is unavailable")
         result = self.extractor(turn)
         if inspect.isawaitable(result):
             result = await result
@@ -296,8 +468,12 @@ class MemoryConsolidator:
             try:
                 payload = asdict(item) if isinstance(item, MemoryCandidate) else item
                 candidates.append(MemoryCandidate.from_dict(payload))
-            except (TypeError, ValueError, KeyError):
+            except _MemoryCandidatePolicyRejection:
                 continue
+            except (TypeError, ValueError, KeyError) as exc:
+                raise MemoryExtractionContractError(
+                    "memory extractor candidate failed platform validation"
+                ) from exc
         return candidates
 
     @staticmethod
@@ -309,6 +485,18 @@ class MemoryConsolidator:
         if not candidate.future_utility:
             return False
         if candidate.evidence_authority not in {"user", "trusted_task"}:
+            return False
+        if candidate.evidence_authority == "user":
+            if candidate.subject_scope != "current_user":
+                return False
+            if candidate.durability_basis not in USER_DURABILITY_BASES:
+                return False
+            if not _has_self_attributed_identity(candidate):
+                return False
+        elif (
+            candidate.subject_scope != "workflow"
+            or candidate.durability_basis not in TRUSTED_DURABILITY_BASES
+        ):
             return False
         if candidate.sensitivity not in {"normal", "low"}:
             return False
@@ -399,11 +587,15 @@ class MemoryConsolidator:
                         "source_turn_id": source_conversation.get("turn_id"),
                         "extractor_version": candidate.extractor_version,
                         "evidence_authority": candidate.evidence_authority,
+                        "subject_scope": candidate.subject_scope,
+                        "durability_basis": candidate.durability_basis,
                     },
                     metadata={
                         "source_text": candidate.source_text,
                         "source_conversations": [source_conversation],
                         "future_utility": candidate.future_utility,
+                        "subject_scope": candidate.subject_scope,
+                        "durability_basis": candidate.durability_basis,
                     },
                 )
             )
@@ -413,12 +605,16 @@ class MemoryConsolidator:
 __all__ = [
     "ALLOWED_KINDS",
     "ALLOWED_SCOPES",
+    "USER_DURABILITY_BASES",
     "EXTRACTOR_VERSION",
     "LLM_EXTRACTOR_VERSION",
     "MemoryTagPolicy",
     "OFFICE_MEMORY_TAXONOMY",
     "MemoryCandidate",
     "MemoryConsolidator",
+    "MemoryExtractionContractError",
+    "MemoryExtractionError",
+    "MemoryExtractionToolCallError",
     "build_llm_extractor",
     "contains_prompt_injection",
     "normalize_memory_key",

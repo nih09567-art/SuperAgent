@@ -533,7 +533,14 @@ def _is_negated(text: str, start: int, keyword: str) -> bool:
     negators = ("不要", "不需要", "无需", "禁止", "别", "不涉及", "不必", "不可", "不允许")
     # 逗号/分号切断前一个分句的否定作用域。
     scope = re.split(r"[，,。；;但]", before)[-1] + keyword
-    return any(word in scope for word in negators)
+    directly_negated = bool(
+        re.search(
+            rf"(?:不|未|勿|别|禁止)\s*(?:再)?\s*{re.escape(keyword)}",
+            scope,
+            flags=re.IGNORECASE,
+        )
+    )
+    return directly_negated or any(word in scope for word in negators)
 
 
 def _is_consultation(text: str) -> bool:
@@ -573,6 +580,32 @@ def is_memory_lookup_query(text: str) -> bool:
     return has_history_reference and has_preference_target and has_question
 
 
+def is_memory_store_request(text: str) -> bool:
+    """识别显式的长期记忆写入指令，而不是其中提到的业务动作。"""
+    normalized = str(text or "").strip().casefold()
+    if not normalized:
+        return False
+    has_store_directive = bool(
+        re.search(
+            r"(?:请|帮我)?记住|长期(?:保存|记录)|保存(?:为|到)?(?:长期)?记忆|"
+            r"remember\s+(?:this|that|my)|save\s+(?:this|that|my).{0,12}(?:preference|memory)",
+            normalized,
+        )
+    )
+    has_memory_target = bool(
+        re.search(
+            r"(?:偏好|习惯|默认|以后|后续|回复|语言|风格|格式|约束|"
+            r"preference|prefer|default|style|format|constraint)",
+            normalized,
+        )
+    )
+    return (
+        has_store_directive
+        and has_memory_target
+        and not is_memory_lookup_query(normalized)
+    )
+
+
 def memory_lookup_keys(text: str) -> tuple[str, ...]:
     """Map an explicit preference query to allow-listed stable memory keys."""
     normalized = str(text or "").strip().casefold()
@@ -591,6 +624,12 @@ def memory_lookup_keys(text: str) -> tuple[str, ...]:
         normalized,
     ):
         keys.append("preference.report_style")
+    if re.search(
+        r"(?:文档.{0,4}格式|文件.{0,4}格式|输出.{0,4}格式|markdown|"
+        r"document.{0,4}format|output.{0,4}format|preferred.{0,4}format)",
+        normalized,
+    ):
+        keys.append("preference.document_format")
     return tuple(keys)
 
 
@@ -622,8 +661,12 @@ class RuleIntentRecognizer:
         candidates: list[tuple[int, IntentCandidate]] = []
         consultation = _is_consultation(text)
         memory_lookup = is_memory_lookup_query(text)
+        memory_store = is_memory_store_request(text)
         for name, definition in INTENT_CATALOG.items():
-            if memory_lookup and name in {"document_generation", "report_generation"}:
+            if (memory_lookup or memory_store) and name in {
+                "document_generation",
+                "report_generation",
+            }:
                 continue
             if consultation and name in {"knowledge_lookup", "salary_query"}:
                 # information_consultation 已表达“只咨询不执行”，避免重复生成同义读取任务。
@@ -690,7 +733,13 @@ class RuleIntentRecognizer:
         has_document_candidate = any(
             item.name == "document_generation" for _, item in candidates
         )
-        if document_span and not has_document_candidate and not consultation and not memory_lookup:
+        if (
+            document_span
+            and not has_document_candidate
+            and not consultation
+            and not memory_lookup
+            and not memory_store
+        ):
             position, span = document_span
             candidates.append(
                 (
@@ -706,7 +755,7 @@ class RuleIntentRecognizer:
                     ),
                 )
             )
-        if consultation or memory_lookup:
+        if consultation or memory_lookup or memory_store:
             candidates.append(
                 (
                     0,
@@ -716,7 +765,13 @@ class RuleIntentRecognizer:
                         source="rule",
                         provenance="explicit",
                         text_span=text,
-                        evidence=["历史偏好查询" if memory_lookup else "咨询/权限表达"],
+                        evidence=[
+                            "长期记忆写入"
+                            if memory_store
+                            else "历史偏好查询"
+                            if memory_lookup
+                            else "咨询/权限表达"
+                        ],
                     ),
                 )
             )
@@ -918,11 +973,12 @@ class IntentFusion:
         # 语义模型可能因“报告”一词误报 report_generation，不能让该误报
         # 触发 document.source 澄清，也不能把查询改造成生成任务。
         memory_lookup = is_memory_lookup_query(user_query)
-        if memory_lookup:
+        memory_store = is_memory_store_request(user_query)
+        if memory_lookup or memory_store:
             combined = [
                 item
                 for item in combined
-                if item.name not in {"document_generation", "report_generation"}
+                if item.name == "information_consultation" or item.negated
             ]
             if not any(
                 item.name == "information_consultation" and not item.negated
@@ -936,7 +992,9 @@ class IntentFusion:
                         source="rule",
                         provenance="explicit",
                         text_span=None,
-                        evidence=["历史偏好查询"],
+                        evidence=[
+                            "长期记忆写入" if memory_store else "历史偏好查询"
+                        ],
                     ),
                 )
             needs_clarification = False

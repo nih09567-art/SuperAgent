@@ -276,6 +276,21 @@ def test_reflection_prompt_excludes_audit_trace_body(tmp_path):
 
     assert reflected.reflection_accepted is True
     assert "DO_NOT_INJECT_AUDIT_PAYLOAD" not in model.prompt
+    assert model.prompt.count("turn-task-prompt") == 1
+    assert reflected.source_conversations == evidence.source_conversations
+
+
+def test_agent_skill_reflection_timeout_comes_from_settings(tmp_path):
+    settings = AgentSkillSettings(
+        reflection_timeout_seconds=73.0,
+        store_path=tmp_path / "configured-timeout.sqlite3",
+    )
+    manager = AgentSkillManager(
+        settings=settings,
+        store=AgentSkillStore(settings.store_path),
+    )
+
+    assert manager.reflection.timeout_seconds == 73.0
 
 
 def test_agent_skill_reflection_rejection_is_fail_closed(tmp_path):
@@ -378,6 +393,56 @@ def test_agent_skill_candidate_promotes_from_two_distinct_tasks_and_is_idempoten
         "turn-task-2",
     }
     assert len(manager.store.list_evidence("alice")) == 2
+
+
+def test_agent_skill_markdown_projection_tracks_candidate_promotion_and_sources(
+    tmp_path,
+):
+    manager = _manager(tmp_path)
+
+    first = manager.distill(_read_evidence("task-md-1")).card
+    target = manager.store.markdown_path("alice")
+    candidate_view = target.read_text(encoding="utf-8")
+
+    assert first.status == AgentSkillStatus.CANDIDATE
+    assert "# Agent Skills" in candidate_view
+    assert "- Candidate: 1" in candidate_view
+    assert "- Active: 0" in candidate_view
+    assert f"- Skill ID: `{first.skill_id}`" in candidate_view
+    assert "- What it does: Reusable metrics_retrieval invocation" in candidate_view
+    assert "### Distilled Procedure" in candidate_view
+    assert "- Expected outputs: `metrics`" in candidate_view
+    assert "`task-md-1`" in candidate_view
+    assert "turn-task-md-1" in candidate_view
+
+    promoted = manager.distill(_read_evidence("task-md-2")).card
+    active_view = target.read_text(encoding="utf-8")
+
+    assert promoted.status == AgentSkillStatus.ACTIVE
+    assert "- Candidate: 0" in active_view
+    assert "- Active: 1" in active_view
+    assert "- Evidence: 2" in active_view
+    assert "Aggregate reflection: **accepted**" in active_view
+    assert "`task-md-2`" in active_view
+    assert "turn-task-md-2" in active_view
+
+
+def test_agent_skill_markdown_projection_updates_after_status_and_outcome(tmp_path):
+    manager = _manager(tmp_path)
+    card = manager.distill(_read_evidence("task-md-status")).card
+    target = manager.store.markdown_path("alice")
+
+    manager.store.activate("alice", card.skill_id)
+    assert "- Active: 1" in target.read_text(encoding="utf-8")
+
+    manager.record_outcome("alice", card.skill_id, success=False)
+    failed_once = target.read_text(encoding="utf-8")
+    assert "- Failed uses: 1" in failed_once
+
+    manager.store.disable("alice", card.skill_id)
+    disabled_view = target.read_text(encoding="utf-8")
+    assert "- Disabled: 1" in disabled_view
+    assert "- Active: 0" in disabled_view
 
 
 def test_agent_skill_store_is_user_scoped_and_versions_contract_drift(tmp_path):

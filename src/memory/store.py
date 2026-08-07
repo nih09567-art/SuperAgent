@@ -35,6 +35,9 @@ class MemoryStoreError(RuntimeError):
     pass
 
 
+CURRENT_EXTRACTOR_VERSION = "llm-taxonomy-v3"
+
+
 class MemoryScopeError(MemoryStoreError):
     pass
 
@@ -165,7 +168,7 @@ class MemoryStore:
                     user_id TEXT NOT NULL,
                     session_id TEXT NOT NULL,
                     last_sequence INTEGER NOT NULL DEFAULT 0,
-                    extractor_version TEXT NOT NULL DEFAULT 'llm-taxonomy-v1',
+                    extractor_version TEXT NOT NULL DEFAULT 'llm-taxonomy-v3',
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY (user_id, session_id, extractor_version)
                 );
@@ -174,7 +177,7 @@ class MemoryStore:
                     user_id TEXT NOT NULL,
                     session_id TEXT NOT NULL,
                     turn_id TEXT NOT NULL,
-                    extractor_version TEXT NOT NULL DEFAULT 'llm-taxonomy-v1',
+                    extractor_version TEXT NOT NULL DEFAULT 'llm-taxonomy-v3',
                     last_sequence INTEGER NOT NULL,
                     status TEXT NOT NULL DEFAULT 'completed',
                     updated_at TEXT NOT NULL,
@@ -213,6 +216,36 @@ class MemoryStore:
                     "tags_json": "TEXT NOT NULL DEFAULT '[]'",
                 },
             )
+            # The extraction contract is versioned, but upgrading it must not
+            # replay every historical turn or invoke the LLM again. Carry
+            # completed v1/v2 watermarks and turns forward as an audit-only
+            # migration; newly appended turns use the current contract.
+            for previous_version in ("llm-taxonomy-v1", "llm-taxonomy-v2"):
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO memory_consolidation_watermarks (
+                        user_id, session_id, last_sequence, extractor_version,
+                        updated_at
+                    )
+                    SELECT user_id, session_id, last_sequence, ?, updated_at
+                    FROM memory_consolidation_watermarks
+                    WHERE extractor_version=?
+                    """,
+                    (CURRENT_EXTRACTOR_VERSION, previous_version),
+                )
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO memory_consolidated_turns (
+                        user_id, session_id, turn_id, extractor_version,
+                        last_sequence, status, updated_at
+                    )
+                    SELECT user_id, session_id, turn_id, ?, last_sequence,
+                           'completed', updated_at
+                    FROM memory_consolidated_turns
+                    WHERE extractor_version=? AND status='completed'
+                    """,
+                    (CURRENT_EXTRACTOR_VERSION, previous_version),
+                )
 
     @staticmethod
     def _ensure_columns(
@@ -457,37 +490,8 @@ class MemoryStore:
                     )
                     inserted = True
                 self._expire_records(connection, saved.user_id)
-                long_term_rows = connection.execute(
-                    """
-                    SELECT * FROM memory_long_term
-                    WHERE user_id=? AND status='active'
-                    ORDER BY updated_at DESC, memory_id ASC
-                    """,
-                    (saved.user_id,),
-                ).fetchall()
-                compaction_rows = connection.execute(
-                    """
-                    SELECT * FROM memory_compactions
-                    WHERE user_id=?
-                    ORDER BY session_id ASC, last_sequence DESC, created_at DESC
-                    """,
-                    (saved.user_id,),
-                ).fetchall()
-                projection_compactions: dict[str, CompactionRecord] = {}
-                for row in compaction_rows:
-                    projection_compactions.setdefault(
-                        row["session_id"], self._row_to_compaction(row)
-                    )
-                projection_record = projection_compactions[saved.session_id]
                 projection_started = True
-                self.project_compaction_markdown(projection_record)
-                self.project_markdown(
-                    saved.user_id,
-                    records_override=[
-                        self._row_to_long_term(row) for row in long_term_rows
-                    ],
-                    compactions_override=list(projection_compactions.values()),
-                )
+                self.project_compaction_markdown(saved)
                 connection.execute("COMMIT")
             except Exception as exc:
                 if connection.in_transaction:
@@ -847,7 +851,11 @@ class MemoryStore:
     forget = delete_long_term
 
     def get_consolidation_watermark(
-        self, user_id: str, session_id: str, *, extractor_version: str = "llm-taxonomy-v1"
+        self,
+        user_id: str,
+        session_id: str,
+        *,
+        extractor_version: str = CURRENT_EXTRACTOR_VERSION,
     ) -> int:
         self._validate_scope(user_id, session_id)
         with closing(self._connect()) as connection:
@@ -866,7 +874,7 @@ class MemoryStore:
         session_id: str,
         sequence: int,
         *,
-        extractor_version: str = "llm-taxonomy-v1",
+        extractor_version: str = CURRENT_EXTRACTOR_VERSION,
     ) -> int:
         self._validate_scope(user_id, session_id)
         now = _iso()
@@ -896,7 +904,7 @@ class MemoryStore:
         user_id: str,
         session_id: str,
         *,
-        extractor_version: str = "llm-taxonomy-v1",
+        extractor_version: str = CURRENT_EXTRACTOR_VERSION,
     ) -> set[str]:
         self._validate_scope(user_id, session_id)
         with closing(self._connect()) as connection:
@@ -917,7 +925,7 @@ class MemoryStore:
         turn_id: str,
         last_sequence: int,
         *,
-        extractor_version: str = "llm-taxonomy-v1",
+        extractor_version: str = CURRENT_EXTRACTOR_VERSION,
         lease_seconds: int = 300,
     ) -> bool:
         self._validate_scope(user_id, session_id)
@@ -960,7 +968,7 @@ class MemoryStore:
         session_id: str,
         turn_id: str,
         *,
-        extractor_version: str = "llm-taxonomy-v1",
+        extractor_version: str = CURRENT_EXTRACTOR_VERSION,
     ) -> None:
         self._validate_scope(user_id, session_id)
         identifier = str(turn_id).strip()
@@ -983,7 +991,7 @@ class MemoryStore:
         turn_id: str,
         last_sequence: int,
         *,
-        extractor_version: str = "llm-taxonomy-v1",
+        extractor_version: str = CURRENT_EXTRACTOR_VERSION,
     ) -> None:
         self._validate_scope(user_id, session_id)
         identifier = str(turn_id).strip()
@@ -1020,9 +1028,8 @@ class MemoryStore:
         scope: str | None = None,
         path: str | Path | None = None,
         records_override: Sequence[LongTermMemory] | None = None,
-        compactions_override: Sequence[CompactionRecord] | None = None,
     ) -> Path:
-        """Atomically materialize active labels as an inspectable MEMORY.md view."""
+        """Atomically materialize active long-term memories as a concise view."""
 
         self._validate_scope(user_id)
         records = (
@@ -1030,61 +1037,38 @@ class MemoryStore:
             if records_override is not None
             else self.list_long_term(user_id)
         )
-        compactions = (
-            list(compactions_override)
-            if compactions_override is not None
-            else self.latest_compactions_for_user(user_id)
-        )
         if any(record.user_id != user_id for record in records):
             raise MemoryScopeError("long-term projection user mismatch")
-        if any(record.user_id != user_id for record in compactions):
-            raise MemoryScopeError("compaction projection user mismatch")
         if scope:
             records = [item for item in records if item.scope in {"user", scope}]
         target = Path(path) if path else self.markdown_path(user_id, scope=scope)
         target.parent.mkdir(parents=True, exist_ok=True)
-        lines = ["# Memory", "", f"<!-- user: {user_id} -->", ""]
-        grouped: dict[str, list[LongTermMemory]] = {}
-        for record in records:
-            grouped.setdefault(record.kind, []).append(record)
-        for kind in sorted(grouped):
-            lines.extend([f"## {kind}", ""])
-            for record in sorted(
-                grouped[kind], key=lambda item: (item.memory_key or item.label or item.content)
-            ):
-                label = redact_secrets(record.label or record.content).strip()
-                key = f"`{record.memory_key}` " if record.memory_key else ""
-                evidence_at = record.last_reinforced_at or record.updated_at
-                lines.append(
-                    f"- {key}{label} _(evidence: {evidence_at.isoformat()})_"
+        lines = [
+            "# Long-term Memory",
+            "",
+            "<!-- Generated view. Audit metadata remains in SQLite. -->",
+            "",
+        ]
+        for record in sorted(
+            records, key=lambda item: (item.memory_key or item.label or item.content)
+        ):
+            tag = (record.memory_key or record.kind).strip()
+            if record.value is None:
+                display_value = record.label or record.content
+            elif isinstance(record.value, str):
+                display_value = record.value.strip()
+            else:
+                display_value = json.dumps(
+                    to_json_safe(record.value),
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
                 )
-            lines.append("")
-        if compactions:
-            lines.extend(
-                [
-                    "## Current Context Compaction (Diagnostic Only)",
-                    "",
-                    "<!-- This section is not a long-term memory record and is not recalled into prompts. -->",
-                    "",
-                ]
+            lines.append(
+                f"- {redact_secrets(tag)}: "
+                f"{redact_secrets(str(display_value)).strip()}"
             )
-            for record in compactions:
-                generation = int(
-                    record.metadata.get("compaction_generation") or 0
-                )
-                lines.extend(
-                    [
-                        f"### Session `{record.session_id}`",
-                        "",
-                        f"- Generation: {generation}",
-                        f"- Covered through: `{record.boundary.last_message_id}`",
-                        f"- Tokens: {record.boundary.token_count_before} -> {record.boundary.token_count_after}",
-                        f"- Snapshot: `{record.metadata.get('markdown_projection_path') or ''}`",
-                        "",
-                        redact_secrets(record.summary),
-                        "",
-                    ]
-                )
+        lines.append("")
         payload = "\n".join(lines).rstrip() + "\n"
         lock_key = str(target.resolve(strict=False)).casefold()
         with self._projection_lock_guard:
@@ -1277,7 +1261,6 @@ class MemoryStore:
                 latest_path.unlink(missing_ok=True)
             else:
                 self.project_compaction_markdown(previous)
-            self.project_markdown(failed.user_id)
         except Exception:
             # The authoritative row was already removed. A later successful
             # projection or process restart can rebuild these diagnostic views.
