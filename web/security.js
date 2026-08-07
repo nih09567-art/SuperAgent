@@ -15,6 +15,38 @@ let secApprovals = [];
 let secReconciliations = [];
 const SEC_MAX_DENIED_HISTORY = 5;
 
+const SECURITY_ROLE_LABELS_ZH = {
+    UniversalAssistant: "通用助理",
+    HRAgent: "人力资源智能体",
+    CodeAgent: "编程智能体",
+    ResearchAgent: "研究智能体",
+    CommunicationAgent: "通讯智能体",
+};
+
+const SECURITY_DEPARTMENT_LABELS_ZH = {
+    System: "系统",
+    HR: "人力资源",
+    Engineering: "工程研发",
+    Research: "研究",
+    General: "通用",
+    Office: "办公室",
+};
+
+const SECURITY_TRUST_LABELS_ZH = {
+    HIGH: "高",
+    MEDIUM: "中",
+    LOW: "低",
+};
+
+const SECURITY_USER_DESCRIPTIONS_ZH = {
+    admin: "拥有完整系统访问权限，可以调度任意智能体并使用任意工具。",
+    hr_manager: "人力资源经理，可访问人员信息、薪资和文档工作流。",
+    engineer: "软件工程师，可使用代码执行、搜索和浏览器工具。",
+    researcher_user: "研究分析员，可使用搜索和网页抓取工具。",
+    guest: "访客用户，仅拥有最低访问权限，只能使用基础搜索。",
+    communication_officer: "通讯专员，可在匹配的场景中发送邮件和生成文档。",
+};
+
 const SECURITY_AGENT_LABELS_ZH = {
     RemoteHRAssistantAgent: "员工与薪资查询",
     RemoteDocumentGeneratorAgent: "文档生成",
@@ -489,20 +521,20 @@ function renderSecurityStatus() {
     el.innerHTML = `
         <div class="sec-status-row">
             <span class="sec-status-dot ${enabled ? "on" : "off"}"></span>
-            <span class="sec-status-label">S-ABAC: <strong>${enabled ? "ENABLED" : "DISABLED"}</strong></span>
+            <span class="sec-status-label">S-ABAC：<strong>${enabled ? "已启用" : "已停用"}</strong></span>
         </div>
         <div class="sec-status-row">
             <span class="sec-status-dot ${schedulerEnabled ? "on" : "off"}"></span>
-            <span class="sec-status-label">TaskGraph Scheduler: <strong>${schedulerEnabled ? "ENABLED" : "DISABLED"}</strong></span>
+            <span class="sec-status-label">TaskGraph 调度器：<strong>${schedulerEnabled ? "已启用" : "已停用"}</strong></span>
         </div>
         <div class="sec-status-row">
             <span class="sec-status-dot ${recoveryEnabled ? "on" : "off"}"></span>
-            <span class="sec-status-label">DAG Auto Recovery: <strong>${recoveryEnabled ? "ENABLED" : "DISABLED"}</strong>${recoveryEnabled ? ` · max ${recoveryAttempts}` : ""}</span>
+            <span class="sec-status-label">DAG 自动恢复：<strong>${recoveryEnabled ? "已启用" : "已停用"}</strong>${recoveryEnabled ? ` · 最多尝试 ${recoveryAttempts} 次` : ""}</span>
         </div>
         <div class="sec-stats">
-            <div class="sec-stat"><span>${secSystemStatus.policies_count}</span><small>Policies</small></div>
-            <div class="sec-stat"><span>${secSystemStatus.agent_attributes_count}</span><small>Agent attrs</small></div>
-            <div class="sec-stat"><span>${secSystemStatus.resource_attributes_count}</span><small>Resource attrs</small></div>
+            <div class="sec-stat"><span>${secSystemStatus.policies_count}</span><small>策略</small></div>
+            <div class="sec-stat"><span>${secSystemStatus.agent_attributes_count}</span><small>智能体属性</small></div>
+            <div class="sec-stat"><span>${secSystemStatus.resource_attributes_count}</span><small>资源属性</small></div>
         </div>
     `;
 }
@@ -533,15 +565,19 @@ function renderUserProfile() {
 
     const p = secCurrentUser.profile;
     const levelBar = getClearanceBar(p.clearance_level);
+    const roleLabel = SECURITY_ROLE_LABELS_ZH[p.role] || p.role;
+    const departmentLabel = SECURITY_DEPARTMENT_LABELS_ZH[p.department] || p.department;
+    const trustLabel = SECURITY_TRUST_LABELS_ZH[p.trust_level] || p.trust_level;
+    const description = SECURITY_USER_DESCRIPTIONS_ZH[secCurrentUser.user_id] || p.description;
     el.innerHTML = `
         <div class="sec-profile-card">
             <div class="sec-profile-icon">${p.icon || "USER"}</div>
             <div class="sec-profile-info">
                 <strong>${escapeHtml(p.display_name)}</strong>
-                <div>Role: <span class="tag accent">${escapeHtml(p.role)}</span></div>
-                <div>Dept: ${escapeHtml(p.department)} | Trust: ${escapeHtml(p.trust_level)}</div>
-                <div class="sec-clearance">Clearance: ${levelBar}</div>
-                <div class="sec-desc">${escapeHtml(p.description)}</div>
+                <div>角色：<span class="tag accent">${escapeHtml(roleLabel)}</span></div>
+                <div>部门：${escapeHtml(departmentLabel)} | 信任等级：${escapeHtml(trustLabel)}</div>
+                <div class="sec-clearance">权限等级：${levelBar}</div>
+                <div class="sec-desc">${escapeHtml(description)}</div>
             </div>
         </div>
     `;
@@ -553,7 +589,7 @@ function getClearanceBar(level) {
     for (let i = 1; i <= max; i++) {
         bar += `<span class="clearance-seg ${i <= level ? "filled" : ""}" style="--lvl:${i}"></span>`;
     }
-    bar += `</span><span class="clearance-text">L${level}</span>`;
+    bar += `</span><span class="clearance-text">${level} 级</span>`;
     return bar;
 }
 
@@ -703,7 +739,7 @@ function bindSecurityCollapseButton(buttonId, contentId, defaultCollapsed) {
 }
 
 function initSecurityTab() {
-    bindSecurityCollapseButton("toggleToolAccessBtn", "toolAccessGrid", false);
+    bindSecurityCollapseButton("toggleToolAccessBtn", "toolAccessGrid", true);
     bindSecurityCollapseButton(
         "toggleAdvancedSecurityBtn",
         "advancedSecurityContent",

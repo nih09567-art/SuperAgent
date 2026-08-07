@@ -2439,6 +2439,10 @@ const switchTab = (tabId) => {
   tabs.forEach((tab) => tab.classList.toggle("active", tab.dataset.tab === tabId));
   panels.forEach((panel) => panel.classList.toggle("active", panel.id === `panel-${tabId}`));
   if (tabId === "chat") scheduleChatMirror();
+  if (tabId === "agents") fetchAgents();
+  if (tabId === "tools") fetchTools();
+  if (tabId === "workflows") fetchWorkflows();
+  if (tabId === "tasks") fetchTasks();
 };
 
 tabs.forEach((tab) => {

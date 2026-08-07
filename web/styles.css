@@ -3492,7 +3492,8 @@ button.small {
 }
 
 .sec-agent-item {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
@@ -3503,7 +3504,14 @@ button.small {
 
 .sec-agent-name {
   font-weight: 600;
-  flex: 1;
+  min-width: 0;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.sec-agent-item .tag {
+  max-width: 100%;
+  white-space: nowrap;
 }
 
 .sec-empty {
@@ -3523,6 +3531,17 @@ button.small {
 
 .sec-section-header h3 {
   margin: 0;
+}
+
+.sec-section-help {
+  margin: -4px 0 12px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.sec-advanced-toggle + .sec-section-help {
+  margin-top: 8px;
 }
 
 button.sec-collapse-button {

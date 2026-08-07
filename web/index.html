@@ -550,12 +550,15 @@
                     <div class="sec-section-header">
                       <h3>工具权限矩阵</h3>
                       <button id="toggleToolAccessBtn" class="ghost sec-collapse-button" type="button"
-                        aria-expanded="true" aria-controls="toolAccessGrid">
-                        <span class="sec-collapse-label">收起</span>
-                        <span class="sec-collapse-icon" aria-hidden="true">⌃</span>
+                        aria-expanded="false" aria-controls="toolAccessGrid">
+                        <span class="sec-collapse-label">展开</span>
+                        <span class="sec-collapse-icon" aria-hidden="true">⌄</span>
                       </button>
                     </div>
-                    <div id="toolAccessGrid" class="sec-tool-grid"></div>
+                    <p class="sec-section-help">
+                      展示当前用户对各工具的访问结果、敏感等级和允许角色；实际执行仍会结合任务场景与审批结果进行校验。
+                    </p>
+                    <div id="toolAccessGrid" class="sec-tool-grid" hidden></div>
                   </div>
                   <div class="detail-card">
                     <button id="toggleAdvancedSecurityBtn" class="sec-advanced-toggle" type="button"
@@ -566,6 +569,9 @@
                         <span class="sec-collapse-icon" aria-hidden="true">⌄</span>
                       </span>
                     </button>
+                    <p class="sec-section-help">
+                      展示底层安全策略和匹配条件，主要用于调试与审计；普通操作无需展开查看。
+                    </p>
                     <div id="advancedSecurityContent" class="sec-advanced-content" hidden>
                       <h4>安全策略</h4>
                       <div id="policyList" class="sec-policies"></div>
