@@ -3,7 +3,12 @@ from __future__ import annotations
 from typing import Any
 
 from src.contracts import ContextReference, ResolvedRequest
-from src.orchestrator.intent_recognition import extract_entities, is_person_candidate
+from src.orchestrator.intent_recognition import (
+    extract_entities,
+    is_memory_lookup_query,
+    is_memory_store_request,
+    is_person_candidate,
+)
 
 
 _ALLOWED_ENTITY_KEYS = {
@@ -155,6 +160,18 @@ def resolve_conversation_request(
     ]
     # 这里只提供最近的结构化候选；是否发生指代由语义识别器判断。
     artifact_inputs = available_artifacts[-3:]
+
+    # 显式记忆设置和查询是独立控制消息，不能被 Web 中尚未清理的业务追问
+    # 当成 document.source、recipient 等字段的补充答案。
+    if is_memory_lookup_query(raw_message) or is_memory_store_request(raw_message):
+        return ResolvedRequest(
+            raw_message=raw_message,
+            resolved_message=raw_message,
+            turn_type="request",
+            entity_overrides={},
+            artifact_inputs=artifact_inputs,
+            context_references=[],
+        )
 
     if turn_type == "clarification_answer":
         base_query = str(

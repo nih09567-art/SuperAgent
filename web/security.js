@@ -28,10 +28,61 @@ const SECURITY_AGENT_LABELS_ZH = {
 };
 
 const SECURITY_TOOL_LABELS_ZH = {
+    tavily_search_results_json: "联网搜索工具",
+    crawl_tool: "网页抓取工具",
+    python_repl: "Python 执行工具",
+    bash: "命令行执行工具",
+    browser: "浏览器工具",
+    write_file: "文件写入工具",
+    remote_person_info_tool: "员工信息查询工具",
+    remote_salary_info_tool: "薪资查询工具",
     remote_docx_generator_tool: "文档生成工具",
     remote_email_tool: "邮件发送工具",
+    knowledge_search_tool: "知识库查询工具",
+    save_leave_record: "请假记录写入工具",
+    query_leave_record: "请假记录查询工具",
+    save_travel_record: "差旅记录写入工具",
+    query_travel_record: "差旅记录查询工具",
+    remote_weather_tool: "天气查询工具",
+    remote_unicorn_db_tool: "企业信息查询工具",
+    remote_credit_risk_db_tool: "授信风险查询工具",
+    remote_report_builder_tool: "报告生成工具",
+    remote_contact_query_tool: "联系人查询工具",
+    remote_schedule_tool: "日程管理工具",
+    remote_todo_query_tool: "待办查询工具",
+    get_calendar_events_tool: "日历事件查询工具",
+    create_calendar_event_tool: "日历事件创建工具",
     remote_meeting_scheduling_tool: "会议安排工具",
     remote_notification_tool: "消息通知工具",
+};
+
+const SECURITY_ROLE_LABELS_ZH = {
+    UniversalAssistant: "通用助手",
+    HRAgent: "人力资源 Agent",
+    CodeAgent: "代码 Agent",
+    ResearchAgent: "研究 Agent",
+    CommunicationAgent: "沟通 Agent",
+    BrowserAgent: "浏览器 Agent",
+    ReportAgent: "报告 Agent",
+    DocumentAgent: "文档 Agent",
+    KnowledgeAgent: "知识 Agent",
+    RiskAgent: "风险 Agent",
+    OperationAgent: "运营 Agent",
+};
+
+const SECURITY_DEPARTMENT_LABELS_ZH = {
+    System: "系统",
+    HR: "人力资源",
+    Engineering: "工程",
+    Research: "研究",
+    General: "通用",
+    Office: "办公室",
+};
+
+const SECURITY_TRUST_LABELS_ZH = {
+    HIGH: "高",
+    MEDIUM: "中",
+    LOW: "低",
 };
 
 function formatSecurityTime(value) {
@@ -91,6 +142,17 @@ function governanceConversationContext(item) {
 
 const SECURITY_DISPLAY_TEXT_ZH = {
     "Admin (System Admin)": "管理员（系统管理员）",
+    "HR Manager (Zhang Wei)": "人力资源经理（张伟）",
+    "Engineer (Li Ming)": "工程师（李明）",
+    "Researcher (Wang Fang)": "研究员（王芳）",
+    "Guest (Limited Access)": "访客（受限访问）",
+    "Comm Officer (Zhao Min)": "沟通专员（赵敏）",
+    "Full system access. Can dispatch any agent and use any tool.": "拥有完整系统权限，可调度任意 Agent 并使用任意工具。",
+    "HR manager with access to personnel and salary workflows.": "可访问人员信息与薪资相关工作流的人力资源经理。",
+    "Software engineer. Can use code execution, search, and browser tools.": "可使用代码执行、搜索和浏览器工具的软件工程师。",
+    "Research analyst. Can use search and crawler tools.": "可使用搜索和网页抓取工具的研究分析员。",
+    "Guest user with minimal access. Can only use basic search.": "权限受限的访客用户，仅可使用基础搜索。",
+    "Communication officer. Can send emails and generate documents in matching scenarios.": "可在匹配场景中发送邮件和生成文档的沟通专员。",
     "Operation not allowed outside working hours": "该操作不允许在工作时间之外执行",
     "Operation not allowed from external network": "该操作仅允许从内部网络执行",
     "Permission denied": "权限被拒绝",
@@ -180,7 +242,6 @@ async function loadSecurityPolicies() {
 
 async function loadSecurityApprovals() {
     const el = document.getElementById("securityApprovals");
-    setSecurityCollapse("toggleApprovalsBtn", "securityApprovalsContent", true);
     try {
         secApprovals = await secFetch("/api/security/approvals");
         renderSecurityApprovals();
@@ -193,7 +254,6 @@ async function loadSecurityApprovals() {
 
 async function loadSecurityReconciliations() {
     const el = document.getElementById("securityReconciliations");
-    setSecurityCollapse("toggleReconciliationsBtn", "securityReconciliationsContent", true);
     try {
         secReconciliations = await secFetch("/api/security/reconciliations");
         renderSecurityReconciliations();
@@ -532,9 +592,9 @@ function renderSecurityStatus() {
             <span class="sec-status-label">DAG Auto Recovery: <strong>${recoveryEnabled ? "ENABLED" : "DISABLED"}</strong>${recoveryEnabled ? ` · max ${recoveryAttempts}` : ""}</span>
         </div>
         <div class="sec-stats">
-            <div class="sec-stat"><span>${secSystemStatus.policies_count}</span><small>Policies</small></div>
-            <div class="sec-stat"><span>${secSystemStatus.agent_attributes_count}</span><small>Agent attrs</small></div>
-            <div class="sec-stat"><span>${secSystemStatus.resource_attributes_count}</span><small>Resource attrs</small></div>
+            <div class="sec-stat"><span>${secSystemStatus.policies_count}</span><small>策略</small></div>
+            <div class="sec-stat"><span>${secSystemStatus.agent_attributes_count}</span><small>Agent 属性</small></div>
+            <div class="sec-stat"><span>${secSystemStatus.resource_attributes_count}</span><small>资源属性</small></div>
         </div>
     `;
 }
@@ -550,7 +610,10 @@ function populateUserSelects() {
     ).trim();
     sel.innerHTML = "";
     secUsers.forEach((u) => {
-        sel.innerHTML += `<option value="${u.user_id}">${u.icon} ${u.display_name}</option>`;
+        const option = document.createElement("option");
+        option.value = u.user_id;
+        option.textContent = `${u.icon || ""} ${localizeSecurityDisplayText(u.display_name)}`.trim();
+        sel.appendChild(option);
     });
     const selectedUser = secUsers.find((user) => user.user_id === requestedUserId)
         || secUsers[0];
@@ -567,13 +630,13 @@ function renderUserProfile() {
     const levelBar = getClearanceBar(p.clearance_level);
     el.innerHTML = `
         <div class="sec-profile-card">
-            <div class="sec-profile-icon">${p.icon || "USER"}</div>
+            <div class="sec-profile-icon">${p.icon || "用户"}</div>
             <div class="sec-profile-info">
-                <strong>${escapeHtml(p.display_name)}</strong>
-                <div>Role: <span class="tag accent">${escapeHtml(p.role)}</span></div>
-                <div>Dept: ${escapeHtml(p.department)} | Trust: ${escapeHtml(p.trust_level)}</div>
-                <div class="sec-clearance">Clearance: ${levelBar}</div>
-                <div class="sec-desc">${escapeHtml(p.description)}</div>
+                <strong>${escapeHtml(localizeSecurityDisplayText(p.display_name))}</strong>
+                <div>角色：<span class="tag accent">${escapeHtml(SECURITY_ROLE_LABELS_ZH[p.role] || p.role)}</span></div>
+                <div>部门：${escapeHtml(SECURITY_DEPARTMENT_LABELS_ZH[p.department] || p.department)} | 信任等级：${escapeHtml(SECURITY_TRUST_LABELS_ZH[p.trust_level] || p.trust_level)}</div>
+                <div class="sec-clearance">权限级别：${levelBar}</div>
+                <div class="sec-desc">${escapeHtml(localizeSecurityDisplayText(p.description))}</div>
             </div>
         </div>
     `;
@@ -595,15 +658,17 @@ function renderAgentsList() {
 
     const agents = secCurrentUser.available_agents || [];
     if (!agents.length) {
-        el.innerHTML = '<div class="sec-empty">No available agents for this user.</div>';
+        el.innerHTML = '<div class="sec-empty">当前用户没有可用的 Agent。</div>';
         return;
     }
 
     el.innerHTML = agents.map((a) => `
         <div class="sec-agent-item">
-            <span class="sec-agent-name">AGENT ${escapeHtml(a.agent_name)}</span>
-            <span class="tag">${escapeHtml(a.role)}</span>
-            <span class="tag accent">CL${a.clearance_level}</span>
+            <span class="sec-agent-name">${escapeHtml(a.agent_name)}</span>
+            <div class="sec-agent-meta">
+                <span class="tag">${escapeHtml(SECURITY_ROLE_LABELS_ZH[a.role] || a.role)}</span>
+                <span class="tag accent">权限级别 L${a.clearance_level}</span>
+            </div>
         </div>
     `).join("");
 }
@@ -614,19 +679,21 @@ function renderToolAccessGrid() {
 
     const tools = Object.entries(secToolAccess);
     if (!tools.length) {
-        el.innerHTML = '<div class="sec-empty">No tool-access data.</div>';
+        el.innerHTML = '<div class="sec-empty">暂无工具权限数据。</div>';
         return;
     }
 
     el.innerHTML = tools.map(([name, info]) => {
-        const icon = info.can_access ? "ALLOW" : "DENY";
+        const icon = info.can_access ? "允许" : "拒绝";
         const cls = info.can_access ? "allowed" : "denied";
+        const toolLabel = SECURITY_TOOL_LABELS_ZH[name] || name;
+        const allowedRoles = (info.allowed_roles || []).join(", ") || "所有 Agent";
         return `
             <div class="sec-tool-row ${cls}">
                 <span class="sec-tool-icon">${icon}</span>
-                <span class="sec-tool-name">${escapeHtml(name)}</span>
-                <span class="tag ${info.sensitivity === "HIGH" || info.sensitivity === "CRITICAL" ? "warn" : ""}">${info.sensitivity}</span>
-                <span class="sec-tool-roles">${(info.allowed_roles || []).join(", ") || "any"}</span>
+                <span class="sec-tool-name" title="${escapeHtml(name)}">${escapeHtml(toolLabel)}</span>
+                <span class="tag ${info.sensitivity === "HIGH" || info.sensitivity === "CRITICAL" ? "warn" : ""}">${escapeHtml(info.sensitivity)}</span>
+                <span class="sec-tool-roles">允许的 Agent：${escapeHtml(allowedRoles)}</span>
             </div>
         `;
     }).join("");
@@ -751,7 +818,12 @@ function setSecurityCollapse(buttonId, contentId, collapsed) {
 }
 
 function initSecurityTab() {
-    bindSecurityCollapseButton("toggleToolAccessBtn", "toolAccessGrid", false);
+    setSecurityCollapse(
+        "toggleAdvancedSecurityBtn",
+        "advancedSecurityContent",
+        true
+    );
+    bindSecurityCollapseButton("toggleToolAccessBtn", "toolAccessGrid", true);
     bindSecurityCollapseButton("toggleApprovalsBtn", "securityApprovalsContent", true);
     bindSecurityCollapseButton("toggleReconciliationsBtn", "securityReconciliationsContent", true);
     bindSecurityCollapseButton(

@@ -1243,7 +1243,7 @@ def test_demo_static_assets_disable_stale_cache_and_include_resume_fixes():
     script = client.get("/static/app.js")
 
     assert index.status_code == 200
-    assert "v=20260808-reconciliation-resume-1" in index.text
+    assert "v=20260808-collapsed-security-2" in index.text
     assert script.status_code == 200
     assert script.headers["cache-control"] == "no-store"
     assert "const uniqueOutputs = []" in script.text

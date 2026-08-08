@@ -18,6 +18,54 @@ def test_web_recognizes_scheduler_agents_and_result_events():
     assert "renderFinalResult(payload.data || {})" in source
 
 
+def test_web_displays_context_compaction_event_details():
+    source = _source()
+
+    assert source.count('eventName === "memory_compacted"') == 2
+    assert "const handleResumeEvent" in source
+    assert "token_count_before" in source
+    assert "token_count_after" in source
+    assert "covered_message_count" in source
+    assert "retained_turn_count" in source
+    assert "summary_mode" in source
+
+
+def test_web_assigns_and_preserves_stable_message_ids():
+    source = _source()
+    load_conversation = source[
+        source.index("const loadConversation") : source.index(
+            "const clearChatHistory = async"
+        )
+    ]
+
+    assert "const createConversationMessageId" in source
+    assert "message_id: metadata.message_id || createConversationMessageId(role)" in source
+    assert "message_id: message.message_id" in source
+    assert "message_id: message.message_id" in load_conversation
+    assert "execute-confirmed-plan" in source
+
+
+def test_web_memory_control_message_breaks_stale_clarification_state():
+    source = _source()
+
+    assert "const isStandaloneMemoryMessage" in source
+    assert "&& !isStandaloneMemoryMessage(message)" in source
+
+
+def test_web_handles_agent_skill_lifecycle_events():
+    source = _source()
+
+    assert 'eventName.startsWith("agent_skill_")' in source
+    for event_name in (
+        "agent_skill_matched",
+        "agent_skill_promoted",
+        "agent_skill_candidate",
+        "agent_skill_disabled",
+        "agent_skill_rejected",
+    ):
+        assert event_name in source
+
+
 def test_web_keys_parallel_step_cards_by_scheduler_event_identity():
     source = _source()
 
@@ -152,13 +200,53 @@ def test_security_details_use_expected_collapsed_visibility():
     assert 'id="securityLastDeniedCard" hidden' in index
     assert 'id="toggleToolAccessBtn"' in index
     assert 'aria-controls="toolAccessGrid"' in index
+    assert 'id="toolAccessGrid" class="sec-tool-grid" hidden' in index
     assert 'id="toggleAdvancedSecurityBtn"' in index
     assert 'id="advancedSecurityContent" class="sec-advanced-content" hidden' in index
     assert "高级/开发者信息" in index
-    assert 'bindSecurityCollapseButton("toggleToolAccessBtn", "toolAccessGrid", false)' in security_source
+    assert 'bindSecurityCollapseButton("toggleToolAccessBtn", "toolAccessGrid", true)' in security_source
     assert '"advancedSecurityContent",\n        true' in security_source
+    assert 'setSecurityCollapse(\n        "toggleAdvancedSecurityBtn"' in security_source
     assert "if (card) card.hidden = true" in security_source
     assert "if (card) card.hidden = false" in security_source
+
+
+def test_collection_views_auto_load_and_security_labels_are_localized():
+    source = _source()
+    security_source = (
+        Path(__file__).resolve().parents[1] / "web" / "security.js"
+    ).read_text(encoding="utf-8")
+    styles = (
+        Path(__file__).resolve().parents[1] / "web" / "styles.css"
+    ).read_text(encoding="utf-8")
+
+    auto_load = source[source.rindex("Promise.allSettled([") :]
+    for call in ("fetchAgents()", "fetchTools()", "fetchWorkflows()", "fetchTasks()"):
+        assert call in auto_load
+    for label in ("策略", "Agent 属性", "资源属性", "角色：", "部门：", "信任等级：", "权限级别："):
+        assert label in security_source
+    for label in ("允许", "拒绝", "允许的 Agent：", "所有 Agent"):
+        assert label in security_source
+    assert "sec-agent-meta" in security_source
+    assert ".sec-agent-meta" in styles
+    assert "overflow-wrap: anywhere" in styles
+
+
+def test_manual_queue_refresh_preserves_expanded_state():
+    security_source = (
+        Path(__file__).resolve().parents[1] / "web" / "security.js"
+    ).read_text(encoding="utf-8")
+    approvals_loader = security_source[
+        security_source.index("async function loadSecurityApprovals"):
+        security_source.index("async function loadSecurityReconciliations")
+    ]
+    reconciliations_loader = security_source[
+        security_source.index("async function loadSecurityReconciliations"):
+        security_source.index("async function decideSecurityReconciliation")
+    ]
+
+    assert "setSecurityCollapse" not in approvals_loader
+    assert "setSecurityCollapse" not in reconciliations_loader
 
 
 def test_clear_conversation_cascades_backend_history_before_local_storage():

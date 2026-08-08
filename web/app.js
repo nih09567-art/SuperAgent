@@ -904,6 +904,21 @@ const parseClarification = (content) => {
   return match ? match[1].trim() : "";
 };
 
+const isStandaloneMemoryMessage = (content) => {
+  const normalized = String(content || "").trim().toLowerCase();
+  if (!normalized) return false;
+  const isStoreRequest = (
+    /(?:请|帮我)?记住|长期(?:保存|记录)|保存(?:为|到)?(?:长期)?记忆|remember\s+(?:this|that|my)/i.test(normalized)
+    && /偏好|习惯|默认|以后|后续|回复|语言|风格|格式|约束|preference|default|style|format/i.test(normalized)
+  );
+  const isLookupRequest = (
+    /之前|以前|先前|历史|长期记忆|记得|告诉过|before|previous|history|remember/i.test(normalized)
+    && /偏好|习惯|风格|语言|回复|格式|preference|style|language|format/i.test(normalized)
+    && /什么|哪些|怎么|是否|吗|么|[?？]|what|which|how/i.test(normalized)
+  );
+  return isStoreRequest || isLookupRequest;
+};
+
 const buildRoutingClarification = (eventData) => {
   const profile = eventData?.task_profile || {};
   const route = eventData?.routing_decision || {};
@@ -961,6 +976,13 @@ const rememberPendingClarification = (eventData, question = "") => {
   };
 };
 
+const createConversationMessageId = (role = "message") => {
+  const randomId = globalThis.crypto?.randomUUID
+    ? globalThis.crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return `${activeConversationId || "conversation"}:${role}:${randomId}`;
+};
+
 const applyConversationMessageMetadata = (message, metadata = {}) => {
   if (Array.isArray(metadata.results) && metadata.results.length) {
     message.results = metadata.results
@@ -986,7 +1008,12 @@ const applyConversationMessageMetadata = (message, metadata = {}) => {
 const appendActiveConversationMessage = (role, content, metadata = {}) => {
   const normalized = String(content || "").trim();
   if (!normalized) return;
-  const message = { role, content: normalized.slice(0, CONVERSATION_MESSAGE_CHAR_LIMIT) };
+  const message = {
+    role,
+    content: normalized.slice(0, CONVERSATION_MESSAGE_CHAR_LIMIT),
+    message_id: metadata.message_id || createConversationMessageId(role),
+  };
+  if (activeConversationMessages.some((item) => item.message_id === message.message_id)) return;
   activeConversationMessages.push(message);
   activeConversationMessages = activeConversationMessages.slice(-ACTIVE_CONVERSATION_LIMIT);
   const transcriptMessage = applyConversationMessageMetadata({ ...message }, metadata);
@@ -1012,12 +1039,19 @@ const replaceLatestAssistantConversationMessage = (content, metadata = {}) => {
   const replacement = {
     role: "assistant",
     content: normalized.slice(0, CONVERSATION_MESSAGE_CHAR_LIMIT),
+    message_id: activeConversationTranscript[assistantIndex]?.message_id
+      || metadata.message_id
+      || createConversationMessageId("assistant"),
   };
   applyConversationMessageMetadata(replacement, metadata);
   activeConversationTranscript.splice(assistantIndex, 1, replacement);
   activeConversationMessages = activeConversationTranscript
     .slice(-ACTIVE_CONVERSATION_LIMIT)
-    .map((message) => ({ role: message.role, content: message.content }));
+    .map((message) => ({
+      role: message.role,
+      content: message.content,
+      message_id: message.message_id,
+    }));
   saveActiveConversation();
   return true;
 };
@@ -1479,13 +1513,19 @@ const normalizeStoredDecision = (decision, fallbackRound = 1) => {
 };
 const normalizeStoredConversation = (conversation) => {
   if (!conversation || typeof conversation !== "object") return null;
+  const conversationId = String(
+    conversation.id || `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+  );
   const messages = Array.isArray(conversation.messages)
     ? conversation.messages
       .filter((message) => message && ["user", "assistant"].includes(message.role) && String(message.content || "").trim())
-      .map((message) => {
+      .map((message, index) => {
         const normalizedMessage = {
           role: message.role,
           content: String(message.content).slice(0, CONVERSATION_MESSAGE_CHAR_LIMIT),
+          message_id: message.message_id
+            ? String(message.message_id)
+            : `${conversationId}:message:${index + 1}`,
         };
         return applyConversationMessageMetadata(normalizedMessage, message);
       })
@@ -1502,7 +1542,7 @@ const normalizeStoredConversation = (conversation) => {
     ))
     .slice(-DECISION_HISTORY_LIMIT);
   return {
-    id: String(conversation.id || `${Date.now()}-${Math.random().toString(16).slice(2)}`),
+    id: conversationId,
     title: String(conversation.title || firstUserMessage).trim().slice(0, 48),
     createdAt: conversation.createdAt || new Date().toISOString(),
     updatedAt: conversation.updatedAt || conversation.createdAt || new Date().toISOString(),
@@ -1949,7 +1989,11 @@ const loadConversation = (conversation) => {
   activeConversationTranscript = normalized.messages.map((message) => ({ ...message }));
   activeConversationMessages = activeConversationTranscript
     .slice(-ACTIVE_CONVERSATION_LIMIT)
-    .map((message) => ({ role: message.role, content: message.content }));
+    .map((message) => ({
+      role: message.role,
+      content: message.content,
+      message_id: message.message_id,
+    }));
   instructionHistory = activeConversationTranscript
     .filter((message) => message.role === "user")
     .map((message) => message.content)
@@ -4463,6 +4507,21 @@ const handleEvent = (eventName, payload) => {
     }
     return;
   }
+  if (eventName.startsWith("agent_skill_")) {
+    const data = payload.data || {};
+    if (eventName === "agent_skill_matched") {
+      showPlanHint(`Applied ${Number(data.matched_step_count || 0)} validated Agent Skill binding(s).`);
+    } else if (eventName === "agent_skill_promoted") {
+      appendOutput("skill", `\n[Agent Skill active] ${data.agent_name || "Agent"} / ${data.step_id || "step"}\n`);
+    } else if (eventName === "agent_skill_candidate") {
+      appendOutput("skill", `\n[Agent Skill candidate] ${data.agent_name || "Agent"} / ${data.step_id || "step"}\n`);
+    } else if (eventName === "agent_skill_disabled") {
+      appendOutput("skill", `\n[Agent Skill disabled] ${data.step_id || data.skill_id || "step"}\n`);
+    } else if (eventName === "agent_skill_rejected") {
+      appendOutput("skill", "\n[Agent Skill] Binding rejected; original plan retained.\n");
+    }
+    return;
+  }
   if (eventName === "start_of_agent") {
     const data = payload.data || {};
     const agentName = data.agent_name || payload.agent_name || "agent";
@@ -4751,6 +4810,19 @@ const handleEvent = (eventName, payload) => {
     }
     return;
   }
+  if (eventName === "memory_compacted") {
+    const data = payload.data || {};
+    const generation = Number(data.generation || 0);
+    const covered = Number(data.covered_message_count || 0);
+    const retained = Number(data.retained_turn_count || 0);
+    const before = Number(data.token_count_before || 0);
+    const after = Number(data.token_count_after || 0);
+    const summaryMode = data.summary_mode === "llm" ? "LLM" : "deterministic fallback";
+    const statusText = `Context compacted (generation ${generation}): ${covered} messages covered, ${retained} turns retained, tokens ${before} -> ${after}, ${summaryMode}.`;
+    appendOutput("memory", `\n[memory] ${statusText}\n`);
+    showSummaryHint(statusText);
+    return;
+  }
   if (eventName === "end_of_workflow") {
     const workflowData = payload.data || {};
     const rawStatus = workflowData.status || "";
@@ -4921,7 +4993,12 @@ const runWorkflow = async () => {
   if (activeConversationUserId !== userId) resetActiveConversation(userId);
   const isClarificationAnswer = Boolean(
     clarificationPending && pendingClarificationContext
+    && !isStandaloneMemoryMessage(message)
   );
+  if (!isClarificationAnswer && clarificationPending) {
+    clarificationPending = false;
+    pendingClarificationContext = null;
+  }
   const clarificationContextForRequest = isClarificationAnswer
     ? { ...pendingClarificationContext }
     : null;
@@ -5219,7 +5296,11 @@ const runExecution = async () => {
     context_artifacts: conversationContextArtifacts.map((item) => ({ ...item })),
     messages: [
       ...activeConversationMessages.map((item) => ({ ...item })),
-      { role: "user", content: "Execute the confirmed plan." },
+      {
+        role: "user",
+        content: "Execute the confirmed plan.",
+        message_id: `${activeConversationId || "conversation"}:execute-confirmed-plan:${workflowId}`,
+      },
     ],
     debug: debugInput.checked,
     deep_thinking_mode: deepThinkingInput.checked,
@@ -7615,6 +7696,13 @@ const resumeTask = async ({ inChat = false } = {}) => {
         appendResume(`\n[final result]\n${formatFinalResultContent(payload.data || {})}\n`);
         return;
       }
+      if (eventName === "memory_compacted") {
+        const data = payload.data || {};
+        appendResume(
+          `\n[context compacted generation ${Number(data.generation || 0)}: ${Number(data.covered_message_count || 0)} messages, ${Number(data.retained_turn_count || 0)} turns, tokens ${Number(data.token_count_before || 0)} -> ${Number(data.token_count_after || 0)}]\n`,
+        );
+        return;
+      }
       if (eventName === "end_of_workflow") {
         appendResume(`\n[workflow ${payload.data?.status || "completed"}]\n`);
         return;
@@ -7842,6 +7930,63 @@ clearResumeOutputBtn.addEventListener("click", () => {
   resumeOutput.textContent = "";
 });
 
+const PERMISSION_USER_LABELS_ZH = {
+  "Admin (System Admin)": "管理员（系统管理员）",
+  "HR Manager (Zhang Wei)": "人力资源经理（张伟）",
+  "Engineer (Li Ming)": "工程师（李明）",
+  "Researcher (Wang Fang)": "研究员（王芳）",
+  "Guest (Limited Access)": "访客（受限访问）",
+  "Comm Officer (Zhao Min)": "沟通专员（赵敏）",
+};
+
+const PERMISSION_ROLE_LABELS_ZH = {
+  UniversalAssistant: "通用助手",
+  HRAgent: "人力资源 Agent",
+  CodeAgent: "代码 Agent",
+  ResearchAgent: "研究 Agent",
+  CommunicationAgent: "沟通 Agent",
+};
+
+const PERMISSION_TOOL_LABELS_ZH = {
+  tavily_search_results_json: "联网搜索工具",
+  crawl_tool: "网页抓取工具",
+  python_repl: "Python 执行工具",
+  bash: "命令行执行工具",
+  browser: "浏览器工具",
+  write_file: "文件写入工具",
+  remote_person_info_tool: "员工信息查询工具",
+  remote_salary_info_tool: "薪资查询工具",
+  remote_docx_generator_tool: "文档生成工具",
+  remote_email_tool: "邮件发送工具",
+  knowledge_search_tool: "知识库查询工具",
+  save_leave_record: "请假记录写入工具",
+  query_leave_record: "请假记录查询工具",
+  save_travel_record: "差旅记录写入工具",
+  query_travel_record: "差旅记录查询工具",
+  remote_weather_tool: "天气查询工具",
+  remote_unicorn_db_tool: "企业信息查询工具",
+  remote_credit_risk_db_tool: "授信风险查询工具",
+  remote_report_builder_tool: "报告生成工具",
+  remote_contact_query_tool: "联系人查询工具",
+  remote_schedule_tool: "日程管理工具",
+  remote_todo_query_tool: "待办查询工具",
+  get_calendar_events_tool: "日历事件查询工具",
+  create_calendar_event_tool: "日历事件创建工具",
+  remote_meeting_scheduling_tool: "会议安排工具",
+};
+
+const localizePermissionReason = (reason) => String(reason || "权限不足")
+  .replace(/^Unregistered resource:\s*/i, "未注册的资源：")
+  .replace(/Role\s+/gi, "角色 ")
+  .replace(/Job role\s+/gi, "岗位角色 ")
+  .replace(/not in/gi, "不在允许范围")
+  .replace(/Missing grants\s*/gi, "缺少授权 ")
+  .replace(/Clearance\s*/gi, "权限级别 ")
+  .replace(/below/gi, "低于")
+  .replace(/needs/gi, "需要")
+  .replace(/Operation mode\s*/gi, "操作模式 ")
+  .replace(/not allowed/gi, "不允许");
+
 // S-ABAC Demo: User role selector sync
 (function() {
   const demoRole = document.getElementById("demoUserRole");
@@ -7865,6 +8010,8 @@ clearResumeOutputBtn.addEventListener("click", () => {
         window.SecurityModule.loadUserSecurityProfile(demoRole.value);
       }
       loadPermissionSummary(demoRole.value);
+      workflowsPage = 1;
+      Promise.allSettled([fetchAgents(), fetchTools(), fetchWorkflows()]);
       updateRunSettingsSummary();
     });
   }
@@ -7909,32 +8056,32 @@ function renderPermissionSummary(precheck) {
 
   summary.innerHTML = `
     <div class="perm-summary-row">
-      <span class="perm-summary-icon">${profile.icon || '[user]'}</span>
-      <span class="perm-summary-name">${escapeHtml(profile.display_name || precheck.user_id)}</span>
-      <span class="tag accent">${escapeHtml(profile.role || '?')}</span>
-      <span class="tag">CL${profile.clearance_level || 0}</span>
+      <span class="perm-summary-icon">${profile.icon || "用户"}</span>
+      <span class="perm-summary-name">${escapeHtml(PERMISSION_USER_LABELS_ZH[profile.display_name] || profile.display_name || precheck.user_id)}</span>
+      <span class="tag accent">${escapeHtml(PERMISSION_ROLE_LABELS_ZH[profile.role] || profile.role || "未知角色")}</span>
+      <span class="tag">权限级别 L${profile.clearance_level || 0}</span>
     </div>
     <div class="perm-summary-stats">
       <div class="perm-stat green">
         <span class="perm-stat-num">${accessible.length}</span>
-        <span class="perm-stat-label">Directly accessible</span>
+        <span class="perm-stat-label">可直接使用</span>
       </div>
       <div class="perm-stat">
         <span class="perm-stat-num">${review.length}</span>
-        <span class="perm-stat-label">Approval required</span>
+        <span class="perm-stat-label">需要审批</span>
       </div>
       <div class="perm-stat red">
         <span class="perm-stat-num">${blocked.length}</span>
-        <span class="perm-stat-label">Blocked</span>
+        <span class="perm-stat-label">已阻止</span>
       </div>
     </div>
     ${blocked.length > 0 ? `
     <div class="perm-blocked-list">
-      <div class="perm-blocked-title">Blocked tools:</div>
+      <div class="perm-blocked-title">不可用工具：</div>
       ${blocked.map(([name, info]) => `
         <div class="perm-blocked-item">
-          <span class="perm-blocked-name">${escapeHtml(name)}</span>
-          <span class="perm-blocked-reason">${escapeHtml(info.blocked_reason || 'Insufficient permission')}</span>
+          <span class="perm-blocked-name" title="${escapeHtml(name)}">${escapeHtml(PERMISSION_TOOL_LABELS_ZH[name] || name)}</span>
+          <span class="perm-blocked-reason">${escapeHtml(localizePermissionReason(info.blocked_reason))}</span>
         </div>
       `).join('')}
     </div>` : ''}
@@ -7978,11 +8125,11 @@ const _origCreateAgentCard = function(card, agent) {
   if (agent._unavailable_to_user) {
     card.style.opacity = "0.45";
     card.style.pointerEvents = "none";
-    card.title = "This agent is unavailable for the current user.";
+    card.title = "当前用户无权使用该 Agent。";
     const badge = document.createElement("span");
     badge.className = "tag warn";
     badge.style.cssText = "position:absolute;top:4px;right:4px;font-size:10px;";
-    badge.textContent = "[no access]";
+    badge.textContent = "[无权限]";
     card.style.position = "relative";
     card.appendChild(badge);
   }
@@ -8001,7 +8148,7 @@ const _origCreateAgentCard = function(card, agent) {
           if (access && !access.available_to_user) {
             card.style.opacity = "0.45";
             card.style.pointerEvents = "none";
-            card.title = "This agent is unavailable for the current user.";
+            card.title = "当前用户无权使用该 Agent。";
           }
         }
       });
@@ -8023,7 +8170,7 @@ const _origCreateAgentCard = function(card, agent) {
         if (!info) return;
         if (info.decision === "REVIEW_REQUIRED") {
           card.style.opacity = "0.8";
-          card.title = "This tool requires governance approval at execution time.";
+          card.title = "此工具在执行时需要人工审批。";
           let badge = card.querySelector(".tool-perm-badge");
           if (!badge) {
             badge = document.createElement("span");
@@ -8032,20 +8179,20 @@ const _origCreateAgentCard = function(card, agent) {
             card.style.position = "relative";
             card.appendChild(badge);
           }
-          badge.textContent = "[approval]";
+          badge.textContent = "[需审批]";
         } else if (info.decision === "DENY" || !info.can_access) {
           card.style.opacity = "0.45";
-          card.title = info.blocked_reason || "Insufficient permission";
+          card.title = localizePermissionReason(info.blocked_reason);
           let badge = card.querySelector(".tool-perm-badge");
           if (!badge) {
             badge = document.createElement("span");
             badge.className = "tag warn tool-perm-badge";
             badge.style.cssText = "position:absolute;top:4px;right:4px;font-size:10px;";
-            badge.textContent = "[blocked]";
+            badge.textContent = "[已阻止]";
             card.style.position = "relative";
             card.appendChild(badge);
           }
-          badge.textContent = "[blocked]";
+          badge.textContent = "[已阻止]";
         } else {
           card.style.opacity = "1";
           const badge = card.querySelector(".tool-perm-badge");
@@ -8055,3 +8202,12 @@ const _origCreateAgentCard = function(card, agent) {
     }
   };
 })();
+
+// Populate the main collection views as soon as the page is ready. Manual
+// refresh buttons remain available for users who want to fetch fresh data.
+Promise.allSettled([
+  fetchAgents(),
+  fetchTools(),
+  fetchWorkflows(),
+  fetchTasks(),
+]);

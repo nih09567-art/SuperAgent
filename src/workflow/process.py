@@ -4,12 +4,20 @@ import asyncio
 import json
 from typing import Any
 from collections import deque
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Mapping
 from src.workflow import build_graph
 from src.manager import agent_manager
 from rich.console import Console
 from src.interface.agent import State
-from src.service.env import USE_BROWSER, AUTO_RECOVERY_ENABLED, DISABLE_DEFAULT_AGENTS, S_ABAC_ENABLED
+from src.service.env import (
+    AUTO_RECOVERY_ENABLED,
+    DISABLE_DEFAULT_AGENTS,
+    MEMORY_ENABLED,
+    S_ABAC_ENABLED,
+    USE_BROWSER,
+)
+from src.memory import get_memory_manager
+from src.memory.provenance import build_conversation_provenance
 from src.workflow.cache import workflow_cache as cache
 from src.workflow.graph import CompiledWorkflow
 from src.interface.agent import WorkMode
@@ -31,13 +39,22 @@ from src.robust.hooks import (
 from src.security.enforcement import PermissionDeniedError
 from src.security.scenario_analyzer import analyze_task_context
 from src.orchestrator import make_routing_decision
+from src.orchestrator.intent_recognition import memory_lookup_keys
+# Compatibility import for callers/tests that inspect the retired manager; the
+# production workflow no longer invokes it.
 from src.skills.workflow_skill import get_workflow_skill_manager
+from src.skills.agent_skill import (
+    get_agent_skill_manager,
+    slice_agent_skill_evidence,
+)
 from src.skills.execution_evidence import (
+    SIDE_EFFECT_MODES,
     SkillExecutionEvidence,
+    VerificationStatus,
     build_legacy_evidence,
-    evaluate_distillation_evidence,
     load_execution_evidence,
 )
+from src.skills.execution_trace import build_execution_trace
 
 logging.basicConfig(
     level=logging.WARNING,
@@ -50,12 +67,58 @@ console = Console()
 DEFAULT_PLANNER_AGENTS = ["researcher", "coder", "reporter", "browser"]
 
 
+def _checkpoint_user_message(
+    routing_query: str,
+    identity_messages: list,
+    memory_context: dict[str, Any] | None,
+) -> dict[str, Any]:
+    checkpoint_message: dict[str, Any] = {
+        "role": "user",
+        "content": routing_query,
+    }
+    for message in reversed(identity_messages):
+        if not isinstance(message, dict):
+            continue
+        if str(message.get("role") or "").casefold() != "user":
+            continue
+        if message.get("message_id"):
+            checkpoint_message["message_id"] = str(message["message_id"])
+        if isinstance(message.get("metadata"), dict):
+            checkpoint_message["metadata"] = dict(message["metadata"])
+        break
+    memory_turn_id = str((memory_context or {}).get("current_turn_id") or "").strip()
+    if memory_turn_id:
+        checkpoint_message.setdefault("message_id", memory_turn_id)
+        checkpoint_message.setdefault("metadata", {})["turn_id"] = memory_turn_id
+    return checkpoint_message
+
+
 def enable_debug_logging():
     """Enable debug level logging for more detailed execution information."""
     logging.getLogger("src").setLevel(logging.DEBUG)
 
 
 logger = logging.getLogger(__name__)
+
+
+# LLM reflection is post-terminal bookkeeping. Track tasks so tests and
+# controlled shutdowns can drain them, while production requests do not wait
+# for a reasoning model before emitting the workflow terminal event.
+_AGENT_SKILL_BACKGROUND_TASKS: set[asyncio.Task[Any]] = set()
+
+
+def _track_agent_skill_background_task(task: asyncio.Task[Any]) -> None:
+    _AGENT_SKILL_BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_AGENT_SKILL_BACKGROUND_TASKS.discard)
+
+
+async def wait_for_agent_skill_background_tasks() -> None:
+    """Drain currently scheduled Skill reflection jobs (primarily for tests)."""
+
+    while _AGENT_SKILL_BACKGROUND_TASKS:
+        await asyncio.gather(
+            *_AGENT_SKILL_BACKGROUND_TASKS.copy(), return_exceptions=True
+        )
 
 
 def _normalize_planning_steps(raw: Any) -> list:
@@ -79,6 +142,135 @@ def _normalize_planning_steps(raw: Any) -> list:
             return []
         return _normalize_planning_steps(parsed)
     return []
+
+
+def _skill_source_conversation(
+    source_state: Mapping[str, Any], task_logger: TaskLogger
+) -> dict[str, Any]:
+    """Build a bounded audit snapshot from the current user turn and visible outputs."""
+
+    messages = source_state.get("messages") or []
+    source_user_message = next(
+        (
+            message
+            for message in reversed(messages)
+            if (
+                isinstance(message, Mapping)
+                and str(message.get("role") or "").casefold() == "user"
+            )
+            or (
+                not isinstance(message, Mapping)
+                and str(getattr(message, "role", "") or "").casefold() == "user"
+            )
+        ),
+        None,
+    )
+    source_user_id = (
+        source_user_message.get("message_id")
+        if isinstance(source_user_message, Mapping)
+        else getattr(source_user_message, "message_id", None)
+    )
+    source_user_metadata = (
+        source_user_message.get("metadata", {})
+        if isinstance(source_user_message, Mapping)
+        else getattr(source_user_message, "metadata", {})
+    )
+    source_user_metadata = (
+        source_user_metadata if isinstance(source_user_metadata, Mapping) else {}
+    )
+    current_user = {
+        "role": "user",
+        "content": source_state.get("original_user_query")
+        or source_state.get("USER_QUERY")
+        or getattr(task_logger, "user_query", ""),
+        "message_id": source_state.get("current_turn_id")
+        or source_state.get("memory_turn_id")
+        or source_state.get("message_id")
+        or source_user_metadata.get("turn_id")
+        or source_user_id
+        or "",
+    }
+    visible_messages: list[Any] = [current_user]
+    for message in messages:
+        if isinstance(message, Mapping):
+            role = str(message.get("role") or "").casefold()
+            tool = str(message.get("tool") or "").casefold()
+        else:
+            role = str(getattr(message, "role", "") or "").casefold()
+            tool = str(getattr(message, "tool", "") or "").casefold()
+        if role == "assistant" and tool in {"agent_proxy", "publisher", "assistant"}:
+            visible_messages.append(message)
+    if len(visible_messages) == 1:
+        for entry in getattr(task_logger, "history", []) or []:
+            if not isinstance(entry, Mapping) or entry.get("event") != "message":
+                continue
+            node_name = str(entry.get("node_name") or "").casefold()
+            if node_name in {"agent_proxy", "publisher", "assistant"}:
+                visible_messages.append(
+                    {
+                        "role": "assistant",
+                        "tool": node_name,
+                        "content": entry.get("content", ""),
+                        "message_id": entry.get("message_id", ""),
+                        "created_at": entry.get("timestamp", ""),
+                    }
+                )
+    turn_id = str(
+        current_user.get("message_id")
+        or f"task:{getattr(task_logger, 'task_id', '')}"
+    )
+    snapshot = build_conversation_provenance(visible_messages, turn_id=turn_id)
+    snapshot["task_id"] = str(getattr(task_logger, "task_id", ""))
+    snapshot["workflow_id"] = str(getattr(task_logger, "workflow_id", ""))
+    snapshot["created_at"] = str(getattr(task_logger, "created_at", ""))
+    snapshot["finished_at"] = str(getattr(task_logger, "finished_at", ""))
+    return snapshot
+
+
+def _agent_skill_bindings_from_steps(steps: Any) -> dict[str, str]:
+    bindings: dict[str, str] = {}
+    for index, step in enumerate(_normalize_planning_steps(steps)):
+        if not isinstance(step, dict):
+            continue
+        binding = step.get("agent_skill_binding")
+        if not isinstance(binding, dict) or not binding.get("skill_id"):
+            continue
+        step_id = str(
+            step.get("step_id") or step.get("subtask_id") or f"step_{index + 1}"
+        )
+        bindings[step_id] = str(binding["skill_id"])
+    return bindings
+
+
+def _strip_agent_skill_runtime_state(state: dict[str, Any]) -> None:
+    """Remove attempt-local bindings/evidence before a resumed execution."""
+
+    stripped_steps: list[dict[str, Any]] = []
+    for step in _normalize_planning_steps(state.get("planning_steps")):
+        if not isinstance(step, dict):
+            continue
+        clean = dict(step)
+        clean.pop("agent_skill_binding", None)
+        clean.pop("agent_skill_guidance", None)
+        stripped_steps.append(clean)
+    if stripped_steps:
+        state["planning_steps"] = stripped_steps
+        try:
+            cache.restore_planning_steps(
+                str(state.get("workflow_id") or ""),
+                stripped_steps,
+                str(state.get("user_id") or ""),
+            )
+        except Exception:  # pragma: no cover - cache may be absent in unit tests
+            pass
+    task_graph = state.get("task_graph")
+    if isinstance(task_graph, dict) and isinstance(task_graph.get("steps"), list):
+        for raw_step in task_graph["steps"]:
+            if isinstance(raw_step, dict):
+                raw_step.pop("agent_skill_binding", None)
+                raw_step.pop("agent_skill_guidance", None)
+    state["agent_skill_bindings"] = {}
+    state["agent_skill_applied_steps"] = {}
 
 
 def _resume_step_evidence(raw: Any, resume_step: int | None) -> dict[str, Any]:
@@ -626,7 +818,10 @@ async def run_agent_workflow(
     instruction_history: list[str] | None = None,
     original_user_query: str | None = None,
     memory_session_id: str | None = None,
+    memory_enabled: bool | None = None,
     memory_context: dict[str, Any] | None = None,
+    project_id: str | None = None,
+    compaction_model_type: str | None = None,
     skill_reuse_enabled: bool | None = None,
     request_input_messages: list | None = None,
     current_request: str | None = None,
@@ -646,6 +841,14 @@ async def run_agent_workflow(
         The final state after the workflow completes
     """
     identity_messages = request_input_messages or user_input_messages
+    effective_memory_enabled = bool(
+        MEMORY_ENABLED
+        and (
+            memory_enabled
+            if memory_enabled is not None
+            else bool(memory_session_id)
+        )
+    )
     if not workflow_id:
         if not polish_id:
             if workmode == "launch":
@@ -743,6 +946,11 @@ async def run_agent_workflow(
         or str(original_user_query or "").strip()
         or str(user_input_messages[-1]["content"])
     )
+    checkpoint_message = _checkpoint_user_message(
+        routing_query,
+        identity_messages,
+        memory_context,
+    )
     task_profile_model, agent_cards, routing_decision_model = await make_routing_decision(
         user_query=routing_query,
         task_id=task_id,
@@ -763,6 +971,61 @@ async def run_agent_workflow(
     routing_decision_for_prompt = dict(routing_decision)
     routing_decision_for_prompt.pop("excluded_agents", None)
     task_profile = task_profile_model.to_legacy_scenario()
+    resolved_memory_context = dict(memory_context or {})
+    if effective_memory_enabled and memory_session_id:
+        try:
+            scenario_memory_tags = tuple(
+                dict.fromkeys(
+                    [
+                        str(tag)
+                        for tag in task_profile.get("scenario_tags", [])
+                        if str(tag).strip()
+                    ]
+                    + [
+                        f"task.{tag}"
+                        for tag in task_profile.get("scenario_tags", [])
+                        if str(tag).strip()
+                    ]
+                    + [
+                        f"task.{item.get('intent')}"
+                        for item in task_profile.get("subtasks", [])
+                        if isinstance(item, dict) and item.get("intent")
+                    ]
+                )
+            )
+            memory_manager = get_memory_manager()
+            recall_context = getattr(memory_manager, "recall_context", None)
+            requested_memory_keys = memory_lookup_keys(routing_query)
+            if callable(recall_context):
+                reference, memory_ids, memory_entries = await recall_context(
+                    user_id=user_id,
+                    query=routing_query,
+                    intent_tags=scenario_memory_tags,
+                    scopes=("user", "task", "project") if project_id else ("user", "task"),
+                    project_id=project_id or str(resolved_memory_context.get("project_id") or "") or None,
+                    memory_keys=requested_memory_keys,
+                )
+            else:
+                reference, memory_ids = await memory_manager.recall_labels(
+                    user_id=user_id,
+                    query=routing_query,
+                    intent_tags=scenario_memory_tags,
+                    scopes=("user", "task", "project") if project_id else ("user", "task"),
+                    project_id=project_id or str(resolved_memory_context.get("project_id") or "") or None,
+                )
+                memory_entries = ()
+            if reference:
+                resolved_memory_context["long_term_reference"] = reference
+            if memory_ids:
+                resolved_memory_context["retrieved_memory_ids"] = list(memory_ids)
+            if memory_entries:
+                resolved_memory_context["retrieved_memories"] = [
+                    dict(item) for item in memory_entries
+                ]
+        except Exception as exc:
+            logger.warning(
+                "Scenario-tag memory recall skipped: %s", type(exc).__name__
+            )
     routed_member_ids = [
         item.agent_id for item in routing_decision_model.candidate_agents
     ]
@@ -798,6 +1061,9 @@ async def run_agent_workflow(
     execution_phase = TaskLogger.determine_execution_phase(
         workmode, instruction_history_list)
     logger.info(f"Execution phase determined: {execution_phase}")
+    serialized_agent_cards = [card.model_dump() for card in agent_cards]
+    contract_fingerprints = _agent_contract_fingerprints(serialized_agent_cards)
+    capability_bindings = _agent_capability_bindings(serialized_agent_cards)
 
     async for event_data in _process_workflow(
         graph,
@@ -812,7 +1078,7 @@ async def run_agent_workflow(
             "original_user_query": routing_query,
             # LLM 工作节点只处理本轮已解析请求。完整聊天记录已经由记忆系统
             # 独立保存，不能作为多条 user message 再次进入 Planner。
-            "messages": [{"role": "user", "content": routing_query}],
+            "messages": [checkpoint_message],
             "deep_thinking_mode": deep_thinking_mode,
             "search_before_planning": search_before_planning,
             "workflow_id": workflow_id,
@@ -841,13 +1107,19 @@ async def run_agent_workflow(
                 ensure_ascii=False,
                 indent=2,
             ),
-            "agent_cards": [card.model_dump() for card in agent_cards],
+            "agent_cards": serialized_agent_cards,
+            "agent_contract_fingerprints": contract_fingerprints,
+            "agent_capability_bindings": capability_bindings,
             "memory_session_id": memory_session_id or "",
-            "memory_context": dict(memory_context or {}),
+            "memory_enabled": effective_memory_enabled,
+            "memory_context": resolved_memory_context,
+            "compaction_model_type": compaction_model_type or "basic",
             "skill_reuse_enabled": skill_reuse_enabled is not False,
             "reused_skill_id": "",
             "reused_skill_owner_id": "",
             "workflow_skill_match": {},
+            "agent_skill_bindings": {},
+            "agent_skill_applied_steps": {},
             "workflow_execution_failed": False,
             "skill_step_evidence": {},
             "skill_execution_evidence": {},
@@ -884,6 +1156,9 @@ async def _process_workflow(
             "TEAM_MEMBERS_DESCRIPTION",
             "TOOLS",
             "RESOURCE_CATALOG",
+            "agent_cards",
+            "agent_contract_fingerprints",
+            "agent_capability_bindings",
         )
         if initial_state.get(key) is not None
     }
@@ -914,10 +1189,14 @@ async def _process_workflow(
             "routing_decision",
             "ROUTING_DECISION_TEXT",
             "agent_cards",
+            "agent_contract_fingerprints",
+            "agent_capability_bindings",
             "skill_reuse_enabled",
             "reused_skill_id",
             "reused_skill_owner_id",
             "workflow_skill_match",
+            "agent_skill_bindings",
+            "agent_skill_applied_steps",
             "workflow_execution_failed",
             "skill_step_evidence",
             "skill_execution_evidence",
@@ -977,31 +1256,11 @@ async def _process_workflow(
         )
         target_state["business_success"] = None
         target_state["workflow_execution_failed"] = False
+        _strip_agent_skill_runtime_state(target_state)
         if hasattr(task_logger, "set_skill_execution_evidence"):
             task_logger.set_skill_execution_evidence({})
         else:
             task_logger.skill_execution_evidence = {}
-
-    def _record_reused_skill_outcome(
-        source_state: dict[str, Any] | None,
-        success: bool,
-    ):
-        source = source_state if isinstance(source_state, dict) else initial_state
-        skill_id = str(source.get("reused_skill_id") or "")
-        owner_id = str(source.get("reused_skill_owner_id") or source.get("user_id") or "")
-        if not skill_id or not owner_id:
-            return None
-        try:
-            manager = get_workflow_skill_manager()
-            return manager.store.record_outcome(
-                owner_id,
-                skill_id,
-                success=success,
-                failure_threshold=manager.settings.failure_disable_threshold,
-            )
-        except Exception as exc:
-            logger.warning("Could not update reused workflow skill health: %s", exc)
-            return None
 
     def _resolve_skill_execution_evidence(
         source_state: dict[str, Any],
@@ -1046,82 +1305,233 @@ async def _process_workflow(
             source_state,
             execution_failed=execution_failed,
         )
-        decision = evaluate_distillation_evidence(evidence)
         events: list[dict[str, Any]] = []
-        manager = get_workflow_skill_manager()
-        distilled_card = None
+        planning_steps = (
+            _normalize_planning_steps(getattr(task_logger, "planning_steps", []))
+            or evidence.planning_steps
+            or _normalize_planning_steps(source_state.get("planning_steps"))
+            or _normalize_planning_steps(cache.get_planning_steps(workflow_id))
+        )
 
-        if manager.settings.enabled and manager.settings.auto_distill_enabled and decision.eligible:
-            planning_steps = (
-                _normalize_planning_steps(getattr(task_logger, "planning_steps", []))
-                or evidence.planning_steps
-                or _normalize_planning_steps(source_state.get("planning_steps"))
-            )
-            if planning_steps:
-                distilled_card = manager.distill(
-                    user_id=source_state.get("user_id", ""),
-                    task_id=task_id,
-                    user_query=user_query,
+        # Agent Skills learn and account independently for each completed step.
+        try:
+            agent_skill_manager = get_agent_skill_manager()
+            if (
+                planning_steps
+                and agent_skill_manager.settings.enabled
+                and agent_skill_manager.settings.auto_distill_enabled
+            ):
+                user_id = str(source_state.get("user_id") or "")
+                contract_fingerprints = (
+                    getattr(task_logger, "agent_contract_fingerprints", {})
+                    or source_state.get("agent_contract_fingerprints")
+                    or _agent_contract_fingerprints(source_state.get("agent_cards"))
+                )
+                capability_bindings = (
+                    getattr(task_logger, "agent_capability_bindings", {})
+                    or source_state.get("agent_capability_bindings")
+                    or _agent_capability_bindings(source_state.get("agent_cards"))
+                )
+                source_conversation = _skill_source_conversation(
+                    source_state, task_logger
+                )
+                execution_trace = build_execution_trace(
+                    history=getattr(task_logger, "history", []) or [],
+                    runtime_events=getattr(
+                        task_logger, "skill_execution_trace_events", []
+                    ) or [],
                     planning_steps=planning_steps,
-                    task_profile=getattr(task_logger, "task_profile", {})
-                    or source_state.get("task_profile")
-                    or {},
-                    agent_contracts=getattr(
-                        task_logger,
-                        "agent_contract_fingerprints",
-                        _agent_contract_fingerprints(source_state.get("agent_cards")),
+                    task_profile=(
+                        getattr(task_logger, "task_profile", {})
+                        or source_state.get("task_profile")
+                        or {}
                     ),
-                    agent_capabilities=getattr(
-                        task_logger,
-                        "agent_capability_bindings",
-                        _agent_capability_bindings(source_state.get("agent_cards")),
+                    task_id=str(getattr(task_logger, "task_id", "")),
+                    workflow_id=str(getattr(task_logger, "workflow_id", "")),
+                )
+                sliced_evidence = slice_agent_skill_evidence(
+                    user_id=user_id,
+                    evidence=evidence,
+                    planning_steps=planning_steps,
+                    task_profile=(
+                        getattr(task_logger, "task_profile", {})
+                        or source_state.get("task_profile")
+                        or {}
                     ),
-                    outcome_summary=evidence.outcome_summary(),
+                    agent_contracts=contract_fingerprints,
+                    agent_capabilities=capability_bindings,
+                    source_conversations=(source_conversation,),
+                    execution_trace=execution_trace,
                 )
-                events.append(
-                    {
-                        "event": "skill_distilled",
-                        "data": {
-                            "skill_id": distilled_card.skill_id,
-                            "status": distilled_card.status.value,
-                            "version": distilled_card.version,
-                            "schema_version": distilled_card.schema_version,
-                            "evidence_count": distilled_card.evidence_count,
-                            "bucket_signature": distilled_card.family_signature,
-                            "quality": distilled_card.quality.model_dump(mode="json"),
-                            "promotion_ready": decision.promotion_ready,
-                        },
-                    }
-                )
-
-        reused_skill_id = str(source_state.get("reused_skill_id") or "")
-        if reused_skill_id:
-            if not evidence.technical_success or evidence.business_success is False:
-                failed_skill = _record_reused_skill_outcome(source_state, success=False)
-                if failed_skill is not None:
+                for step_evidence in sliced_evidence:
+                    reflected = agent_skill_manager.reflect(
+                        step_evidence,
+                        source_conversations=(source_conversation,),
+                    )
+                    if not reflected.reflection_accepted:
+                        events.append(
+                            {
+                                "event": "agent_skill_reflection_rejected",
+                                "data": {
+                                    "step_id": reflected.step_id,
+                                    "agent_name": reflected.agent_name,
+                                    "reasons": list(reflected.reflection_reasons),
+                                    "confidence": reflected.reflection_confidence,
+                                    "source_turn_ids": [
+                                        str(item.get("turn_id") or "")
+                                        for item in reflected.source_conversations
+                                        if isinstance(item, Mapping)
+                                    ],
+                                },
+                            }
+                        )
+                        continue
+                    result = agent_skill_manager.distill(reflected)
                     events.append(
                         {
-                            "event": "skill_disabled"
-                            if failed_skill.status.value == "disabled"
-                            else "skill_execution_failed",
+                            "event": (
+                                "agent_skill_promoted"
+                                if result.promoted
+                                else "agent_skill_candidate"
+                            ),
                             "data": {
-                                "skill_id": failed_skill.skill_id,
-                                "status": failed_skill.status.value,
-                                "consecutive_failures": failed_skill.consecutive_failures,
+                                "skill_id": result.card.skill_id,
+                                "step_id": step_evidence.step_id,
+                                "agent_name": step_evidence.agent_name,
+                                "status": result.card.status.value,
+                                "version": result.card.version,
+                                "evidence_count": result.card.evidence_count,
+                                "promotion_ready": result.decision.promotion_ready,
+                                "reasons": list(result.decision.reasons),
+                                "reflection": {
+                                    "family": reflected.reflection_family,
+                                    "confidence": reflected.reflection_confidence,
+                                    "reasons": list(reflected.reflection_reasons),
+                                    "model_version": reflected.reflection_model_version,
+                                },
+                                "source_turn_ids": [
+                                    str(item.get("turn_id") or "")
+                                    for item in reflected.source_conversations
+                                    if isinstance(item, Mapping)
+                                ],
                             },
                         }
                     )
-            elif evidence.business_success is True:
-                owner_id = str(
-                    source_state.get("reused_skill_owner_id")
-                    or source_state.get("user_id")
-                    or ""
-                )
-                if distilled_card is not None and distilled_card.skill_id == reused_skill_id:
-                    manager.store.mark_successful_reuse(owner_id, reused_skill_id)
-                else:
-                    _record_reused_skill_outcome(source_state, success=True)
+
+                plan_by_id: dict[str, dict[str, Any]] = {}
+                aliases: dict[str, str] = {}
+                agent_to_steps: dict[str, list[str]] = {}
+                for index, raw_step in enumerate(planning_steps):
+                    if not isinstance(raw_step, dict):
+                        continue
+                    step_id = str(
+                        raw_step.get("step_id")
+                        or raw_step.get("subtask_id")
+                        or f"step_{index + 1}"
+                    )
+                    plan_by_id[step_id] = raw_step
+                    aliases[step_id] = step_id
+                    for alias in raw_step.get("subtask_ids") or ():
+                        aliases[str(alias)] = step_id
+                    if raw_step.get("subtask_id"):
+                        aliases[str(raw_step["subtask_id"])] = step_id
+                    agent_name = str(raw_step.get("agent_name") or "")
+                    if agent_name:
+                        agent_to_steps.setdefault(agent_name, []).append(step_id)
+
+                observed_by_step: dict[str, Any] = {}
+                for observed in evidence.steps:
+                    step_id = aliases.get(observed.step_id)
+                    if step_id is None:
+                        candidates = agent_to_steps.get(observed.agent_name, [])
+                        if len(candidates) == 1:
+                            step_id = candidates[0]
+                    if step_id:
+                        observed_by_step[step_id] = observed
+
+                for step_id, skill_id in dict(
+                    source_state.get("agent_skill_applied_steps") or {}
+                ).items():
+                    observed = observed_by_step.get(str(step_id))
+                    if observed is None:
+                        continue  # skipped or not reached is neutral
+                    is_side_effect = (
+                        str(observed.operation_mode).casefold()
+                        in SIDE_EFFECT_MODES
+                    )
+                    success = bool(
+                        observed.technical_success
+                        and not observed.needs_reconciliation
+                        and (
+                            not is_side_effect
+                            or (
+                                observed.business_success is True
+                                and observed.verification_status
+                                == VerificationStatus.VERIFIED
+                            )
+                        )
+                    )
+                    updated = agent_skill_manager.record_outcome(
+                        user_id, str(skill_id), success=success
+                    )
+                    if updated is None:
+                        continue
+                    events.append(
+                        {
+                            "event": (
+                                "agent_skill_execution_succeeded"
+                                if success
+                                else "agent_skill_disabled"
+                                if updated.status.value == "disabled"
+                                else "agent_skill_execution_failed"
+                            ),
+                            "data": {
+                                "skill_id": updated.skill_id,
+                                "step_id": str(step_id),
+                                "status": updated.status.value,
+                                "consecutive_failures": updated.consecutive_failures,
+                            },
+                        }
+                    )
+        except Exception as exc:
+            logger.warning("Agent Skill completion failed: %s", exc)
+
+        # Whole-workflow Skill automation has been retired. Step/Agent Skill
+        # reflection, promotion and reuse accounting above is authoritative.
         return evidence, events
+
+    async def _run_agent_skill_completion_in_background(
+        source_state: dict[str, Any], *, execution_failed: bool
+    ) -> None:
+        try:
+            _, events = await asyncio.to_thread(
+                _complete_workflow_skill,
+                dict(source_state),
+                execution_failed=execution_failed,
+            )
+            # Skill events are persisted in the task log for later Web/API
+            # inspection. They are deliberately not sent before the terminal
+            # event, because that would put model latency back on the SSE path.
+            if hasattr(task_logger, "log_event"):
+                for skill_event in events:
+                    task_logger.log_event(
+                        node_name="agent_skill",
+                        event=str(skill_event.get("event") or "agent_skill_event"),
+                        extra={"skill_event": skill_event.get("data") or {}},
+                    )
+        except Exception as exc:
+            logger.warning("Background Agent Skill completion failed: %s", exc)
+
+    def _schedule_agent_skill_completion(
+        source_state: dict[str, Any], *, execution_failed: bool
+    ) -> None:
+        _track_agent_skill_background_task(
+            asyncio.create_task(
+                _run_agent_skill_completion_in_background(
+                    source_state, execution_failed=execution_failed
+                )
+            )
+        )
 
     # Initialize hook system (controlled by AUTO_RECOVERY_ENABLED)
     hook_engine = None
@@ -1168,6 +1578,12 @@ async def _process_workflow(
                         state, checkpoint_zero.state)
             except Exception:
                 pass
+
+        # Historical checkpoints may contain whole-workflow Skill references.
+        # They are intentionally ignored now that only Step/Agent Skills run.
+        state["workflow_skill_match"] = {}
+        state["reused_skill_id"] = ""
+        state["reused_skill_owner_id"] = ""
 
         if not state.get("task_profile"):
             original_user_query = state.get(
@@ -1227,6 +1643,9 @@ async def _process_workflow(
                     planning_snapshot,
                     state.get("task_profile") or {},
                 )
+                state["agent_skill_bindings"] = (
+                    _agent_skill_bindings_from_steps(planning_snapshot)
+                )
                 if hasattr(task_logger, "set_agent_contract_fingerprints"):
                     task_logger.set_agent_contract_fingerprints(
                         _agent_contract_fingerprints(state.get("agent_cards"))
@@ -1235,77 +1654,6 @@ async def _process_workflow(
                     task_logger.set_agent_capability_bindings(
                         _agent_capability_bindings(state.get("agent_cards"))
                     )
-
-        if (
-            state.get("workflow_mode") == "launch"
-            and state.get("skill_reuse_enabled", True)
-            and not should_resume
-        ):
-            try:
-                skill_manager = get_workflow_skill_manager()
-                if not skill_manager.settings.enabled or not skill_manager.settings.reuse_enabled:
-                    skill_manager = None
-                skill_match = (
-                    skill_manager.match(
-                        user_id=state.get("user_id", ""),
-                        query=state.get("USER_QUERY", ""),
-                        task_profile=state.get("task_profile") or {},
-                        available_agents=state.get("TEAM_MEMBERS") or [],
-                        agent_contracts=_agent_contract_fingerprints(
-                            state.get("agent_cards")
-                        ),
-                    )
-                    if (
-                        skill_manager is not None
-                        and (
-                            not state.get("routing_decision")
-                            or (state.get("routing_decision") or {}).get("decision")
-                            == "DISPATCH"
-                        )
-                    )
-                    else None
-                )
-                if skill_match is not None:
-                    state["reused_skill_id"] = skill_match.skill.skill_id
-                    state["reused_skill_owner_id"] = skill_match.skill.user_id
-                    state["workflow_skill_match"] = {
-                        "skill_id": skill_match.skill.skill_id,
-                        "owner_user_id": skill_match.skill.user_id,
-                        "version": skill_match.skill.version,
-                        "score": skill_match.score,
-                        "reason": skill_match.reason,
-                    }
-                    state["planning_steps"] = skill_match.bound_planning_steps
-                    cache.restore_planning_steps(
-                        workflow_id,
-                        skill_match.bound_planning_steps,
-                        state["user_id"],
-                    )
-                    if isinstance(cache.cache.get(workflow_id), dict):
-                        cache.cache[workflow_id]["workflow_skill_match"] = state["workflow_skill_match"]
-                        cache.cache[workflow_id]["reused_skill_id"] = state["reused_skill_id"]
-                        cache.cache[workflow_id]["reused_skill_owner_id"] = state["reused_skill_owner_id"]
-                    yield {
-                        "event": "skill_matched",
-                        "data": {
-                            **state["workflow_skill_match"],
-                            "schema_version": skill_match.skill.schema_version,
-                            "applicability_checks": skill_match.applicability_checks,
-                            "quality": skill_match.skill.quality.model_dump(mode="json"),
-                            "planning_steps": skill_match.bound_planning_steps,
-                        },
-                    }
-                elif skill_manager is not None:
-                    yield {
-                        "event": "skill_fallback",
-                        "data": {"reason": "no_valid_skill_match"},
-                    }
-            except Exception as exc:
-                logger.warning("Workflow skill matching failed; using normal planning: %s", exc)
-                yield {
-                    "event": "skill_fallback",
-                    "data": {"reason": "skill_match_error"},
-                }
 
         if should_resume:
             try:
@@ -1393,6 +1741,11 @@ async def _process_workflow(
                     state.get("workflow_id"),
                 )
 
+            if should_resume:
+                # Snapshot loading can restore the prior attempt's reference;
+                # a resumed attempt starts without historical Skill binding.
+                _strip_agent_skill_runtime_state(state)
+
             ready, category, detail = scheduler_ready(state)
             if category == "no_graph" and state.get("task_graph_rejection_reason"):
                 category = "invalid"
@@ -1416,12 +1769,13 @@ async def _process_workflow(
                             (terminal_event or {}).get("data", {}).get("status")
                             != WorkflowStatus.SUCCEEDED.value
                         )
-                        _, skill_events = _complete_workflow_skill(
-                            state,
+                        _resolve_skill_execution_evidence(
+                            state, execution_failed=scheduler_failed
+                        )
+                        _schedule_agent_skill_completion(
+                            dict(state),
                             execution_failed=scheduler_failed,
                         )
-                        for skill_event in skill_events:
-                            yield skill_event
                     except Exception as exc:
                         logger.warning(
                             "Scheduler workflow skill completion failed: %s", exc
@@ -1463,12 +1817,10 @@ async def _process_workflow(
                 )
                 if state.get("workflow_mode") == "production":
                     try:
-                        _, skill_events = _complete_workflow_skill(
-                            state,
-                            execution_failed=True,
+                        _resolve_skill_execution_evidence(state, execution_failed=True)
+                        _schedule_agent_skill_completion(
+                            dict(state), execution_failed=True
                         )
-                        for skill_event in skill_events:
-                            yield skill_event
                     except Exception as exc:
                         logger.warning(
                             "Scheduler gate skill failure recording failed: %s", exc
@@ -1553,6 +1905,12 @@ async def _process_workflow(
 
             if hasattr(command, "update") and command.update:
                 for key, value in command.update.items():
+                    if key == "skill_execution_trace_events":
+                        if hasattr(task_logger, "add_skill_execution_trace_events"):
+                            task_logger.add_skill_execution_trace_events(
+                                value if isinstance(value, list) else []
+                            )
+                        continue
                     if key != "messages":
                         state[key] = value
 
@@ -1722,12 +2080,9 @@ async def _process_workflow(
 
         if state.get("workflow_mode") == "production":
             try:
-                skill_execution_evidence, skill_events = _complete_workflow_skill(
-                    state,
-                    execution_failed=execution_failed,
+                _schedule_agent_skill_completion(
+                    dict(state), execution_failed=execution_failed
                 )
-                for skill_event in skill_events:
-                    yield skill_event
             except Exception as exc:
                 logger.warning("Workflow skill completion failed: %s", exc)
 
@@ -1769,21 +2124,6 @@ async def _process_workflow(
             )
         except Exception as evidence_exc:
             logger.warning("Could not persist permission failure evidence: %s", evidence_exc)
-        failed_skill = _record_reused_skill_outcome(
-            failure_state,
-            success=False,
-        )
-        if failed_skill is not None:
-            yield {
-                "event": "skill_disabled"
-                if failed_skill.status.value == "disabled"
-                else "skill_execution_failed",
-                "data": {
-                    "skill_id": failed_skill.skill_id,
-                    "status": failed_skill.status.value,
-                    "consecutive_failures": failed_skill.consecutive_failures,
-                },
-            }
         yield {
             "event": "permission_denied",
             "data": {
@@ -1818,22 +2158,6 @@ async def _process_workflow(
             )
         except Exception as evidence_exc:
             logger.warning("Could not persist workflow failure evidence: %s", evidence_exc)
-        failed_skill = _record_reused_skill_outcome(
-            failure_state,
-            success=False,
-        )
-        if failed_skill is not None:
-            yield {
-                "event": "skill_disabled"
-                if failed_skill.status.value == "disabled"
-                else "skill_execution_failed",
-                "data": {
-                    "skill_id": failed_skill.skill_id,
-                    "status": failed_skill.status.value,
-                    "consecutive_failures": failed_skill.consecutive_failures,
-                },
-            }
-
         # === Hook: ERROR ===
         if hook_engine:
             hook_ctx = HookContext(

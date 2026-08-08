@@ -987,6 +987,12 @@ def plan_to_task_graph(
             input_bindings=inputs,
             title=raw.get("title", ""),
             description=raw.get("description", ""),
+            **({"note": raw.get("note")} if "note" in raw else {}),
+            **(
+                {"memory_constraints": _as_list(raw.get("memory_constraints"))}
+                if raw.get("memory_constraints")
+                else {}
+            ),
             task_type=raw.get("task_type", ""),
             scenario_tags=raw.get("scenario_tags", []) or [],
             scenario_contract_id=(
@@ -1017,6 +1023,10 @@ def plan_to_task_graph(
             verification_contract=dict(raw.get("verification_contract") or {}),
             subtask_ids=_subtask_ids_for(raw),
             intents=_list_field(raw, "intents", "intent"),
+            # A user-editable plan carries only an immutable reference. The
+            # runtime reloads the current Active card before using guidance.
+            agent_skill_binding=dict(raw.get("agent_skill_binding") or {}),
+            capability=raw.get("capability"),
             # trusted classification audit trail
             operation_mode_source=operation_mode_source,
             operation_mode_reason=operation_mode_reason,

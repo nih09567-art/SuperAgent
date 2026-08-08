@@ -1950,6 +1950,10 @@ button:disabled {
   flex-shrink: 0;
 }
 
+.agent-card-head > div {
+  min-width: 0;
+}
+
 .agent-name {
   font-size: 15px;
   font-weight: 600;
@@ -3492,9 +3496,11 @@ button.small {
 }
 
 .sec-agent-item {
-  display: flex;
-  align-items: center;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 8px;
+  width: 100%;
+  min-width: 0;
   padding: 8px 12px;
   background: var(--bg-soft);
   border-radius: 8px;
@@ -3503,7 +3509,16 @@ button.small {
 
 .sec-agent-name {
   font-weight: 600;
-  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.sec-agent-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
 }
 
 .sec-empty {
@@ -3592,7 +3607,9 @@ button.sec-collapse-button {
 .sec-tool-row {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
+  min-width: 0;
   padding: 8px 12px;
   border-radius: 8px;
   font-size: 13px;
@@ -3616,11 +3633,15 @@ button.sec-collapse-button {
 .sec-tool-name {
   font-weight: 600;
   flex: 1;
+  min-width: 120px;
+  overflow-wrap: anywhere;
 }
 
 .sec-tool-roles {
   font-size: 11px;
   color: var(--muted);
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .sec-tool-approval {
