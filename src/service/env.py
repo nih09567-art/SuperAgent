@@ -145,6 +145,10 @@ SCHEDULER_RETRY_DELAY_SECONDS = max(
     0.0,
     _parse_float("SCHEDULER_RETRY_DELAY_SECONDS", 0.0),
 )
+SCHEDULER_ROUTING_TIMEOUT_SECONDS = max(
+    0.1,
+    _parse_float("SCHEDULER_ROUTING_TIMEOUT_SECONDS", 30.0),
+)
 
 # 意图识别：默认混合模式；Basic LLM 未配置或调用异常时由识别层自动降级为 rule。
 INTENT_RECOGNITION_MODE = _parse_choice(
@@ -218,10 +222,6 @@ WORKFLOW_SKILL_ADMIN_API_KEY = os.getenv("WORKFLOW_SKILL_ADMIN_API_KEY")
 # Governance actions use one server-configured trusted principal; request
 # bodies never choose the approver/operator identity.
 GOVERNANCE_ADMIN_ACTOR_ID = os.getenv("GOVERNANCE_ADMIN_ACTOR_ID", "admin")
-
-# JSON object mapping authenticated execution principals to API credentials.
-# Example: {"hr_manager":"a-long-random-secret"}
-EXECUTION_USER_API_KEYS_JSON = os.getenv("EXECUTION_USER_API_KEYS_JSON", "")
 
 if not DEBUG:
     logging.basicConfig(

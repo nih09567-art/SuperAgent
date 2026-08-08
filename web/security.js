@@ -89,22 +89,52 @@ function governanceConversationContext(item) {
       </div>`;
 }
 
+const SECURITY_DISPLAY_TEXT_ZH = {
+    "Admin (System Admin)": "管理员（系统管理员）",
+    "Operation not allowed outside working hours": "该操作不允许在工作时间之外执行",
+    "Operation not allowed from external network": "该操作仅允许从内部网络执行",
+    "Permission denied": "权限被拒绝",
+    "Unknown user": "未知用户",
+    "Unknown role": "未知角色",
+    "Unknown object": "未知目标",
+};
+
+const SECURITY_ACTION_TEXT_ZH = {
+    delegate: "委派",
+    orchestrate: "编排",
+    send: "发送",
+    read: "读取",
+    query: "查询",
+    generate: "生成",
+    write: "写入",
+    update: "更新",
+};
+
+const SECURITY_OBJECT_TEXT_ZH = {
+    RemoteEmailDispatchAgent: "远程邮件发送智能体",
+};
+
+const localizeSecurityDisplayText = (value) => {
+    const text = String(value || "");
+    return SECURITY_DISPLAY_TEXT_ZH[text] || text;
+};
+
 function formatScenarioFitSummary(fitResult) {
     if (!fitResult || typeof fitResult !== "object") return "";
 
     const fit = fitResult.fit || "uncertain";
     const confidence = typeof fitResult.confidence === "number"
-        ? ` (confidence ${Math.round(fitResult.confidence * 100)}%)`
+        ? `（置信度 ${Math.round(fitResult.confidence * 100)}%）`
         : "";
     const reason = fitResult.reason
-        ? escapeHtml(fitResult.reason)
-        : "No scenario-fit explanation provided.";
+        ? escapeHtml(localizeSecurityDisplayText(fitResult.reason))
+        : "未提供场景匹配说明。";
     const labelMap = {
-        match: "Scenario match",
-        mismatch: "Scenario mismatch",
-        uncertain: "Scenario uncertain",
+        match: "场景匹配",
+        mismatch: "场景不匹配",
+        uncertain: "场景匹配不确定",
     };
-    const label = labelMap[fit] || "Scenario uncertain";
+    const label = labelMap[fit] || "场景匹配不确定";
 
     return `<div style="margin-top:8px"><strong>${label}</strong>${confidence}<br><span style="color:var(--muted)">${reason}</span></div>`;
 }
@@ -150,6 +180,7 @@ async function loadSecurityPolicies() {
 
 async function loadSecurityApprovals() {
     const el = document.getElementById("securityApprovals");
+    setSecurityCollapse("toggleApprovalsBtn", "securityApprovalsContent", true);
     try {
         secApprovals = await secFetch("/api/security/approvals");
         renderSecurityApprovals();
@@ -162,6 +193,7 @@ async function loadSecurityApprovals() {
 
 async function loadSecurityReconciliations() {
     const el = document.getElementById("securityReconciliations");
+    setSecurityCollapse("toggleReconciliationsBtn", "securityReconciliationsContent", true);
     try {
         secReconciliations = await secFetch("/api/security/reconciliations");
         renderSecurityReconciliations();
@@ -644,23 +676,27 @@ function renderLastDeniedEvent() {
         const action = d.action || {};
         const scenarioFit = d.scenario_fit_result || {};
 
-        const subjectName = subject.subject_name || subject.attributes?.display_name || subject.id || "Unknown user";
+        const subjectName = localizeSecurityDisplayText(
+            subject.subject_name || subject.attributes?.display_name || subject.id || "Unknown user"
+        );
         const subjectRole = subject.attributes?.job_role || subject.attributes?.role || "Unknown role";
-        const objectName = object.object_name || object.id || "Unknown object";
+        const rawObjectName = object.object_name || object.id || "Unknown object";
+        const objectName = SECURITY_OBJECT_TEXT_ZH[rawObjectName] || localizeSecurityDisplayText(rawObjectName);
         const objectSensitivity = object.attributes?.sensitivity || "UNKNOWN";
-        const actionVerb = action.attributes?.action_type || action.verb || "unknown";
-        const deniedReason = policy.reason || d.error || "Permission denied";
+        const rawActionVerb = action.attributes?.action_type || action.verb || "unknown";
+        const actionVerb = SECURITY_ACTION_TEXT_ZH[rawActionVerb] || rawActionVerb;
+        const deniedReason = localizeSecurityDisplayText(policy.reason || d.error || "Permission denied");
 
         return `
             <div class="sec-policy-card" style="border-left:3px solid var(--danger); margin-bottom:${idx === secLastDeniedEvents.length - 1 ? "0" : "10px"}">
                 <div class="sec-policy-header">
-                    <strong>${idx === 0 ? "Most recent denied event" : `Denied history #${idx + 1}`}</strong>
+                    <strong>${idx === 0 ? "最近一次拒绝事件" : `历史拒绝记录 #${idx + 1}`}</strong>
                     <span class="tag warn">${escapeHtml(objectSensitivity)}</span>
                 </div>
                 <div class="sec-policy-desc">
-                    <div><strong>Subject:</strong> ${escapeHtml(subjectName)} <span class="tag accent">${escapeHtml(subjectRole)}</span></div>
-                    <div style="margin-top:6px"><strong>Target:</strong> ${escapeHtml(actionVerb)} -> ${escapeHtml(objectName)}</div>
-                    <div style="margin-top:6px;color:var(--danger)"><strong>Reason:</strong> ${escapeHtml(deniedReason)}</div>
+                    <div><strong>主体：</strong>${escapeHtml(subjectName)} <span class="tag accent">${escapeHtml(subjectRole)}</span></div>
+                    <div style="margin-top:6px"><strong>目标：</strong>${escapeHtml(actionVerb)} → ${escapeHtml(objectName)}</div>
+                    <div style="margin-top:6px;color:var(--danger)"><strong>原因：</strong>${escapeHtml(deniedReason)}</div>
                     ${formatScenarioFitSummary(scenarioFit)}
                 </div>
             </div>
@@ -702,8 +738,22 @@ function bindSecurityCollapseButton(buttonId, contentId, defaultCollapsed) {
     button.addEventListener("click", () => update(!content.hidden));
 }
 
+function setSecurityCollapse(buttonId, contentId, collapsed) {
+    const button = document.getElementById(buttonId);
+    const content = document.getElementById(contentId);
+    if (!button || !content) return;
+    content.hidden = Boolean(collapsed);
+    button.setAttribute("aria-expanded", String(!collapsed));
+    const label = button.querySelector(".sec-collapse-label");
+    const icon = button.querySelector(".sec-collapse-icon");
+    if (label) label.textContent = collapsed ? "展开" : "收起";
+    if (icon) icon.textContent = collapsed ? "⌄" : "⌃";
+}
+
 function initSecurityTab() {
     bindSecurityCollapseButton("toggleToolAccessBtn", "toolAccessGrid", false);
+    bindSecurityCollapseButton("toggleApprovalsBtn", "securityApprovalsContent", true);
+    bindSecurityCollapseButton("toggleReconciliationsBtn", "securityReconciliationsContent", true);
     bindSecurityCollapseButton(
         "toggleAdvancedSecurityBtn",
         "advancedSecurityContent",

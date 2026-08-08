@@ -50,6 +50,16 @@ _TOOL_SECURITY_ARGUMENTS: Dict[str, frozenset[str]] = {
     "remote_meeting_scheduling_tool": frozenset({"date", "start_date", "end_date", "location", "recipient", "recipients"}),
 }
 
+_CANONICAL_EMPLOYEE_QUERY_TOOLS = frozenset(
+    {"query_leave_record", "query_travel_record"}
+)
+_EMPLOYEE_IDENTITY_ALIASES = (
+    "employee_name",
+    "keyword",
+    "employee_id",
+    "employee_id_list",
+)
+
 
 def _normalize_security_value(value: Any, *, plural: bool = False) -> Any:
     if isinstance(value, str):
@@ -100,8 +110,62 @@ def _arguments_match_authorization(
     expected: Dict[str, Any],
     actual: Dict[str, Any],
 ) -> bool:
+    if tool_name == "remote_email_tool":
+        # The Agent may name the recipient as the trusted semantic label from
+        # TaskProfile (for example "Wang Manager"), while the platform
+        # manifest holds the directory-resolved mailbox. Accept only either
+        # representation and canonicalize to the mailbox before transport.
+        _, expected_addresses = _find_argument(
+            expected,
+            ("resolved_recipient_addresses",),
+        )
+        normalized_addresses = _normalize_security_value(
+            expected_addresses, plural=True
+        )
+        if not normalized_addresses:
+            return False
+        semantic_recipients = {
+            _normalize_security_value(expected[key], plural=True)
+            for key in ("recipient", "recipients")
+            if expected.get(key) not in (None, "", [], {})
+        }
+        actual_recipients = _find_all_arguments(
+            actual,
+            (
+                "resolved_recipient_addresses",
+                "recipient",
+                "recipients",
+                "names",
+                "to",
+            ),
+        )
+        if not actual_recipients:
+            return False
+        return all(
+            _normalize_security_value(value, plural=True)
+            in {normalized_addresses, *semantic_recipients}
+            for value in actual_recipients
+        )
+
+    canonical_employee_query = tool_name in _CANONICAL_EMPLOYEE_QUERY_TOOLS
+    if canonical_employee_query:
+        expected_identities = {
+            _normalize_security_value(value)
+            for value in _find_all_arguments(expected, _EMPLOYEE_IDENTITY_ALIASES)
+        }
+        actual_identities = {
+            _normalize_security_value(value)
+            for value in _find_all_arguments(actual, _EMPLOYEE_IDENTITY_ALIASES)
+        }
+        if bool(expected_identities) != bool(actual_identities):
+            return False
+        if expected_identities and expected_identities.isdisjoint(actual_identities):
+            return False
+
     keys = _TOOL_SECURITY_ARGUMENTS.get(tool_name, frozenset())
     for key in keys:
+        if canonical_employee_query and key in {"employee_name", "employee_id"}:
+            continue
         aliases = _SECURITY_ARGUMENT_ALIASES[key]
         expected_found, expected_value = _find_argument(expected, aliases)
         actual_values = _find_all_arguments(actual, aliases)
@@ -129,6 +193,15 @@ def _canonical_authorized_arguments(
     outbound = dict(actual)
     # Capability markers are never accepted from a model or remote caller.
     outbound.pop("__trusted_administrator", None)
+    if tool_name in _CANONICAL_EMPLOYEE_QUERY_TOOLS:
+        for alias in _EMPLOYEE_IDENTITY_ALIASES:
+            outbound.pop(alias, None)
+        for key in ("employee_name", "employee_id"):
+            found, value = _find_argument(
+                expected, _SECURITY_ARGUMENT_ALIASES[key]
+            )
+            if found:
+                outbound[key] = value
     if tool_name == "remote_email_tool":
         found, addresses = _find_argument(
             expected, _SECURITY_ARGUMENT_ALIASES["resolved_recipient_addresses"]

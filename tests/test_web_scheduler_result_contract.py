@@ -53,6 +53,34 @@ def test_web_handles_all_scheduler_terminal_statuses():
         assert f'case "{status}"' in source
 
 
+def test_web_treats_approval_as_paused_instead_of_retry_blocked():
+    source = _source()
+
+    assert 'terminalStatus === "APPROVAL_REQUIRED"' in source
+    assert 'status: "approval_pending"' in source
+    assert 'approval_pending: "等待人工审批"' in source
+    assert 'approval_approved: "审批已通过"' in source
+    resume_source = source[source.index("const resumeTask = async"):]
+    assert "activePendingPlan = null;" in resume_source
+
+
+def test_web_treats_reconciliation_as_paused_and_refreshable():
+    source = _source()
+
+    assert 'terminalStatus === "NEEDS_RECONCILIATION"' in source
+    assert 'serverStatus === "NEEDS_RECONCILIATION"' in source
+    assert 'status: "reconciliation_pending"' in source
+    assert 'normalized.startsWith("reconciliation_")' in source
+    assert 'normalized.status.startsWith("reconciliation_")' in source
+    assert 'reconciliation_pending: "等待人工核对"' in source
+    assert 'reconciliation_retry_ready: "检查核对状态"' in source
+    assert 'reconciliation_confirmed_succeeded: "检查核对状态"' in source
+    assert 'reconciliation_terminated: "已人工终止"' in source
+    assert '/api/security/reconciliations?task_id=${encodeURIComponent(normalized.taskId)}' in source
+    resume_source = source[source.index("const resumeTask = async"):]
+    assert 'resumeTerminalStatus === "NEEDS_RECONCILIATION"' in resume_source
+
+
 def test_web_prefers_structured_failure_and_keeps_legacy_error_fallback():
     source = _source()
 

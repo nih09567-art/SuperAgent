@@ -7,27 +7,14 @@ const tabs = document.querySelectorAll(".tab");
 const panels = document.querySelectorAll(".panel");
 
 const jsonRequestHeaders = { "Content-Type": "application/json" };
+const getWorkflowRequestHeaders = (userId) => ({
+  ...jsonRequestHeaders,
+  "X-Authenticated-User": String(userId || "").trim(),
+});
 
-const EXECUTION_API_KEY_PREFIX = "superagentExecutionApiKey";
-const getExecutionApiKeyStorageKey = (userId) => (
-  `${EXECUTION_API_KEY_PREFIX}:${encodeURIComponent(String(userId || "").trim())}`
-);
-const clearExecutionApiKey = (userId) => {
-  window.sessionStorage.removeItem(getExecutionApiKeyStorageKey(userId));
-};
 const getExecutionAuthorizationHeaders = (userId, confirmationRequestId) => {
-  const storageKey = getExecutionApiKeyStorageKey(userId);
-  let credential = window.sessionStorage.getItem(storageKey) || "";
-  if (!credential) {
-    credential = window.prompt(
-      "\u8bf7\u8f93\u5165\u5f53\u524d\u7528\u6237\u7684\u751f\u4ea7\u6267\u884c\u51ed\u636e\uff1a",
-      ""
-    ) || "";
-    if (!credential) throw new Error("Production execution credential is required");
-    window.sessionStorage.setItem(storageKey, credential);
-  }
   return {
-    "Authorization": `Bearer ${credential}`,
+    ...getWorkflowRequestHeaders(userId),
     "Idempotency-Key": confirmationRequestId,
   };
 };
@@ -122,6 +109,40 @@ const decisionRoundSelect = document.getElementById("decisionRoundSelect");
 const decisionHistoryMeta = document.getElementById("decisionHistoryMeta");
 
 let chatMirrorController = null;
+
+const compactWorkflowId = (value) => {
+  const normalized = String(value || "").trim();
+  if (!normalized) return "新工作流";
+  const workflowPart = normalized.includes(":")
+    ? normalized.slice(normalized.lastIndexOf(":") + 1)
+    : normalized;
+  return `工作流 ${workflowPart.length > 8 ? `${workflowPart.slice(0, 6)}…` : workflowPart}`;
+};
+
+const selectedRoleLabel = () => {
+  const roleSelect = document.getElementById("demoUserRole");
+  const raw = roleSelect?.selectedOptions?.[0]?.textContent || userIdInput?.value || "未选择角色";
+  return String(raw)
+    .replace(/^[^\p{L}\p{N}]+/u, "")
+    .replace(/\s*\([^)]*\)\s*$/, "")
+    .trim();
+};
+
+const updateRunSettingsSummary = () => {
+  const role = selectedRoleLabel();
+  const thinking = deepThinkingInput?.checked ? "Deep Thinking 开启" : "Deep Thinking 关闭";
+  const workflow = compactWorkflowId(workflowIdInput?.value);
+  document.querySelectorAll(".run-settings-role-value").forEach((element) => {
+    element.textContent = role;
+  });
+  document.querySelectorAll(".run-settings-thinking-value").forEach((element) => {
+    element.textContent = thinking;
+  });
+  document.querySelectorAll(".run-settings-workflow-value").forEach((element) => {
+    element.textContent = workflow;
+    element.title = String(workflowIdInput?.value || "").trim();
+  });
+};
 
 const initializeChatPanelLayout = () => {
   const runPanel = document.getElementById("panel-run");
@@ -233,6 +254,7 @@ const initializeChatPanelLayout = () => {
   const sync = () => {
     mirrorFrame = null;
     syncConfig();
+    updateRunSettingsSummary();
     const conversationClones = Array.from(chatConversation.childNodes).map((node) =>
       stripCloneIds(node.cloneNode(true))
     );
@@ -305,6 +327,15 @@ const initializeChatPanelLayout = () => {
   historyView.addEventListener("click", (event) => {
     const item = event.target.closest(".conversation-history-item");
     if (!item) return;
+    const deleteButton = event.target.closest(".conversation-history-delete");
+    if (deleteButton) {
+      event.stopPropagation();
+      const sourceItem = Array.from(
+        conversationHistoryList.querySelectorAll(".conversation-history-item")
+      ).find((candidate) => candidate.dataset.conversationId === deleteButton.dataset.conversationId);
+      sourceItem?.querySelector(".conversation-history-delete")?.click();
+      return;
+    }
     const index = Array.from(historyView.querySelectorAll(".conversation-history-item")).indexOf(item);
     conversationHistoryList.querySelectorAll(".conversation-history-item")[index]?.click();
     chatMessage.value = messageInput.value;
@@ -317,6 +348,20 @@ const initializeChatPanelLayout = () => {
     if (sourceInput) sourceInput.value = event.target.value;
   });
   conversationView.addEventListener("click", (event) => {
+    const stepHeader = event.target.closest(".chat-execution-steps-content .step-card-header");
+    if (stepHeader) {
+      const headers = Array.from(
+        conversationView.querySelectorAll(".chat-execution-steps-content .step-card-header")
+      );
+      const index = headers.indexOf(stepHeader);
+      if (index >= 0) {
+        chatConversation.querySelectorAll(
+          ".chat-execution-steps-content .step-card-header"
+        )[index]?.click();
+      }
+      schedule();
+      return;
+    }
     const button = event.target.closest("button");
     if (!button) return;
     const actions = [
@@ -336,7 +381,10 @@ const initializeChatPanelLayout = () => {
 };
 
 chatMirrorController = initializeChatPanelLayout();
-const scheduleChatMirror = () => chatMirrorController?.schedule();
+const scheduleChatMirror = () => {
+  updateRunSettingsSummary();
+  chatMirrorController?.schedule();
+};
 
 let currentAbortController = null;
 let planningOutputBlocks = new Map();
@@ -346,6 +394,7 @@ let executionStepCardsByKey = new Map();
 let workflowFailureSummary = null;
 let currentStepCard = null;        // Currently active (running) step card
 let executionStepCount = 0;        // Monotonic step counter
+let chatCollapsedStepIds = new Set();
 let finalResultReceived = false;
 let latestFinalResultText = "";
 let activeDecisionDetailTab = null;
@@ -511,15 +560,15 @@ const ensureChatLifecycle = () => {
   progressDetail.className = "chat-progress-detail";
   progressSection.append(progressHeader, progressTrack, progressDetail);
 
-  const resultSection = document.createElement("section");
-  resultSection.className = "chat-lifecycle-section chat-final-result hidden";
-  const resultTitle = document.createElement("h4");
-  resultTitle.textContent = "最终结果";
-  const resultContent = document.createElement("div");
-  resultContent.className = "chat-final-result-content";
-  resultSection.append(resultTitle, resultContent);
+  const stepsSection = document.createElement("section");
+  stepsSection.className = "chat-lifecycle-section chat-execution-steps hidden";
+  const stepsTitle = document.createElement("h4");
+  stepsTitle.textContent = "执行步骤";
+  const stepsContent = document.createElement("div");
+  stepsContent.className = "chat-execution-steps-content";
+  stepsSection.append(stepsTitle, stepsContent);
 
-  root.append(planSection, progressSection, resultSection);
+  root.append(planSection, progressSection, stepsSection);
   answerOutput.appendChild(root);
   currentChatLifecycle = {
     answerElement: answerOutput,
@@ -538,9 +587,8 @@ const ensureChatLifecycle = () => {
     progressBadge,
     progressFill,
     progressDetail,
-    resultSection,
-    resultTitle,
-    resultContent,
+    stepsSection,
+    stepsContent,
   };
   confirmPlanButton.addEventListener("click", confirmChatPlanExecution);
   modifyPlanButton.addEventListener("click", () => {
@@ -621,7 +669,10 @@ const setChatPlanActionsDisabled = (disabled) => {
 };
 
 async function confirmChatPlanExecution() {
-  if (["recovery_pending", "recovery_unknown"].includes(activePendingPlan?.status)) {
+  if (
+    ["recovery_pending", "recovery_unknown"].includes(activePendingPlan?.status)
+    || String(activePendingPlan?.status || "").startsWith("reconciliation_")
+  ) {
     await resolvePendingExecution(activePendingPlan);
     return;
   }
@@ -720,22 +771,56 @@ const updateChatExecutionProgress = (status, detail = "") => {
   scrollChatToLatest();
 };
 
+const toggleChatStepCard = (card) => {
+  const body = card?.querySelector(".step-card-body");
+  const toggle = card?.querySelector(".step-toggle");
+  if (!card || !body) return;
+  const stepId = String(card.dataset.stepId || "");
+  const collapsed = !body.classList.contains("hidden");
+  body.classList.toggle("hidden", collapsed);
+  if (stepId) {
+    if (collapsed) chatCollapsedStepIds.add(stepId);
+    else chatCollapsedStepIds.delete(stepId);
+  }
+  if (toggle) toggle.textContent = collapsed ? ">" : "v";
+};
+
+const applyChatStepExpansionState = (container) => {
+  if (!container) return;
+  container.querySelectorAll(".step-card").forEach((card) => {
+    const body = card.querySelector(".step-card-body");
+    const toggle = card.querySelector(".step-toggle");
+    const header = card.querySelector(".step-card-header");
+    if (!body) return;
+    const stepId = String(card.dataset.stepId || "");
+    const collapsed = Boolean(stepId && chatCollapsedStepIds.has(stepId));
+    body.classList.toggle("hidden", collapsed);
+    if (toggle) toggle.textContent = collapsed ? ">" : "v";
+    if (header && !header.dataset.chatToggleBound) {
+      header.dataset.chatToggleBound = "true";
+      header.addEventListener("click", () => toggleChatStepCard(card));
+    }
+  });
+};
+
 const syncAnswerFromExecutionLog = () => {
-  if (!answerOutput || !executionOutput || answerSyncFrame !== null || finalResultReceived) return;
+  if (!answerOutput || !executionOutput || answerSyncFrame !== null) return;
   answerSyncFrame = requestAnimationFrame(() => {
-    if (finalResultReceived) {
+    const lifecycle = ensureChatLifecycle();
+    if (!lifecycle) {
       answerSyncFrame = null;
       return;
     }
-    const lifecycle = ensureChatLifecycle();
-    if (!lifecycle || !executionOutput.childNodes.length) {
+    if (!executionOutput.childNodes.length) {
+      lifecycle.stepsContent.replaceChildren();
+      lifecycle.stepsSection.classList.add("hidden");
       answerSyncFrame = null;
       return;
     }
     const clonedNodes = Array.from(executionOutput.childNodes).map((node) => node.cloneNode(true));
-    lifecycle.resultSection.classList.remove("hidden");
-    lifecycle.resultTitle.textContent = executionInProgress ? "执行输出" : "最终结果";
-    lifecycle.resultContent.replaceChildren(...clonedNodes);
+    lifecycle.stepsSection.classList.remove("hidden");
+    lifecycle.stepsContent.replaceChildren(...clonedNodes);
+    applyChatStepExpansionState(lifecycle.stepsContent);
     scrollChatToLatest();
     answerSyncFrame = null;
   });
@@ -1038,6 +1123,13 @@ const normalizePendingPlan = (pendingPlan) => {
   };
 };
 
+const isExecutionPlanLockedStatus = (status) => {
+  const normalized = String(status || "");
+  return normalized.startsWith("recovery_")
+    || normalized.startsWith("approval_")
+    || normalized.startsWith("reconciliation_");
+};
+
 const recoverInterruptedPendingPlan = (pendingPlan) => {
   const normalized = normalizePendingPlan(pendingPlan);
   if (!normalized) return { pendingPlan: null, recovered: false, needsResolution: false };
@@ -1065,7 +1157,12 @@ const recoverInterruptedPendingPlan = (pendingPlan) => {
     };
   }
   const needsResolution = ["recovery_checking", "recovery_pending"].includes(normalized.status)
-    || (normalized.status === "recovery_unknown" && Boolean(normalized.taskId));
+    || (normalized.status === "recovery_unknown" && Boolean(normalized.taskId))
+    || (
+      normalized.status.startsWith("reconciliation_")
+      && Boolean(normalized.taskId)
+      && normalized.status !== "reconciliation_terminated"
+    );
   return { pendingPlan: normalized, recovered: false, needsResolution };
 };
 
@@ -1122,7 +1219,6 @@ const createExecutionIdentity = async (
   });
   const responseBody = await response.json().catch(() => ({}));
   if (!response.ok) {
-    if (response.status === 401) clearExecutionApiKey(userId);
     const detail = responseBody.detail || responseBody;
     const message = detail.message || detail.code || `HTTP ${response.status}`;
     const error = new Error(`Execution authorization failed: ${message}`);
@@ -1227,6 +1323,98 @@ const resolvePendingExecution = async (pendingPlan = activePendingPlan) => {
         status: "recovery_completed",
         serverStatus,
         recoveryMessage: "原任务已在服务端完成。为防止重复业务操作，本计划不能再次执行。",
+      });
+    }
+    if (serverStatus === "APPROVAL_REQUIRED") {
+      let approvalStatus = "approval_pending";
+      try {
+        const approvalResponse = await fetch(
+          `/api/security/approvals?task_id=${encodeURIComponent(normalized.taskId)}`
+        );
+        if (approvalResponse.ok) {
+          const approvals = await approvalResponse.json();
+          if (Array.isArray(approvals) && approvals.some(
+            (item) => String(item.status || "").toLowerCase() === "approved"
+          )) {
+            approvalStatus = "approval_approved";
+          }
+        }
+      } catch (_) {
+        // Task status remains authoritative when the queue refresh fails.
+      }
+      return applyPendingExecutionRecoveryState(conversationId, normalized, {
+        status: approvalStatus,
+        serverStatus,
+        recoveryMessage: approvalStatus === "approval_approved"
+          ? "人工审批已通过，请在 Security 页面恢复原任务。"
+          : "任务已暂停并等待人工审批；审批通过后请在 Security 页面恢复原任务。",
+      });
+    }
+    if (serverStatus === "NEEDS_RECONCILIATION") {
+      let reconciliationStatus = "reconciliation_pending";
+      let reconciliationMessage = "任务已暂停并等待人工核对；处理后请在 Security 页面继续原任务。";
+      try {
+        const reconciliationResponse = await fetch(
+          `/api/security/reconciliations?task_id=${encodeURIComponent(normalized.taskId)}`
+        );
+        if (reconciliationResponse.ok) {
+          const reconciliations = await reconciliationResponse.json();
+          const actionableStatuses = new Set([
+            "pending",
+            "frozen",
+            "retry_ready",
+            "confirmed_succeeded",
+            "resuming",
+          ]);
+          const reconciliation = Array.isArray(reconciliations)
+            ? reconciliations.find((item) => actionableStatuses.has(
+              String(item.status || "").toLowerCase()
+            )) || reconciliations[0]
+            : null;
+          const queueStatus = String(reconciliation?.status || "pending").toLowerCase();
+          const statusPresentation = {
+            pending: {
+              status: "reconciliation_pending",
+              message: "任务已暂停并等待人工核对；处理后请在 Security 页面继续原任务。",
+            },
+            frozen: {
+              status: "reconciliation_frozen",
+              message: "人工核对已冻结，任务不会自动重试；请在 Security 页面继续处理。",
+            },
+            retry_ready: {
+              status: "reconciliation_retry_ready",
+              message: "已确认外部操作未执行，可以在 Security 页面安全地继续原任务。",
+            },
+            confirmed_succeeded: {
+              status: "reconciliation_confirmed_succeeded",
+              message: "已确认外部操作成功，可以在 Security 页面继续原任务并执行后续步骤。",
+            },
+            resuming: {
+              status: "reconciliation_resuming",
+              message: "人工核对后的原任务正在恢复执行，请稍后再次检查任务状态。",
+            },
+            consumed: {
+              status: "reconciliation_completed",
+              message: "人工核对恢复已完成，正在等待任务最终状态更新。",
+            },
+            terminated: {
+              status: "reconciliation_terminated",
+              message: "任务已人工终止，不会继续执行。",
+            },
+          };
+          const presentation = statusPresentation[queueStatus];
+          if (presentation) {
+            reconciliationStatus = presentation.status;
+            reconciliationMessage = presentation.message;
+          }
+        }
+      } catch (_) {
+        // Task status remains authoritative when the queue refresh fails.
+      }
+      return applyPendingExecutionRecoveryState(conversationId, normalized, {
+        status: reconciliationStatus,
+        serverStatus,
+        recoveryMessage: reconciliationMessage,
       });
     }
     return applyPendingExecutionRecoveryState(conversationId, normalized, {
@@ -1453,8 +1641,10 @@ const renderChatHistory = () => {
     return;
   }
   conversations.forEach((conversation) => {
-    const item = document.createElement("button");
-    item.type = "button";
+    const item = document.createElement("div");
+    item.setAttribute("role", "button");
+    item.tabIndex = 0;
+    item.dataset.conversationId = conversation.id;
     item.className = "conversation-history-item";
     if (conversation.id === (viewedConversationId || activeConversationId)) item.classList.add("active");
     const content = document.createElement("span");
@@ -1463,8 +1653,27 @@ const renderChatHistory = () => {
     const timestamp = document.createElement("time");
     timestamp.dateTime = conversation.updatedAt;
     timestamp.textContent = formatConversationTime(conversation.updatedAt);
-    item.append(content, timestamp);
-    item.addEventListener("click", () => loadConversation(conversation));
+    const deleteButton = document.createElement("button");
+    deleteButton.type = "button";
+    deleteButton.className = "conversation-history-delete";
+    deleteButton.dataset.conversationId = conversation.id;
+    deleteButton.title = "删除会话";
+    deleteButton.setAttribute("aria-label", `删除会话：${conversation.title}`);
+    deleteButton.textContent = "×";
+    deleteButton.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      await deleteConversation(conversation);
+    });
+    item.append(content, timestamp, deleteButton);
+    item.addEventListener("click", (event) => {
+      if (!event.target.closest(".conversation-history-delete")) loadConversation(conversation);
+    });
+    item.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        loadConversation(conversation);
+      }
+    });
     conversationHistoryList.appendChild(item);
   });
   renderDecisionHistoryControls();
@@ -1516,32 +1725,27 @@ const renderLoadedAssistantMessage = (message) => {
   const resultText = outcomeMessage && content.startsWith(outcomeMessage)
     ? content.slice(outcomeMessage.length).trim()
     : content;
-  if (results.length || resultText) {
-    lifecycle.resultSection.classList.remove("hidden");
-    lifecycle.resultTitle.textContent = outcomeStatus
-      && !["succeeded", "completed"].includes(outcomeStatus)
-      ? "执行输出（失败前）"
-      : "最终结果";
-    lifecycle.resultContent.replaceChildren();
-    if (results.length) {
-      const fragment = document.createDocumentFragment();
-      results.forEach((result, index) => {
-        renderStepCardInto({
-          id: index + 1,
-          total: results.length,
-          agentName: result.agentName,
-          displayName: result.agentName,
-          status: "done",
-          content: result.content,
-          startTime: null,
-          endTime: null,
-          summary: "历史执行结果",
-        }, fragment);
-      });
-      lifecycle.resultContent.appendChild(fragment);
-    } else {
-      lifecycle.resultContent.appendChild(formatResult(resultText));
-    }
+  const stepResults = results.length
+    ? results
+    : (resultText ? [{ agentName: "执行结果", content: resultText }] : []);
+  if (stepResults.length) {
+    const fragment = document.createDocumentFragment();
+    stepResults.forEach((result, index) => {
+      renderStepCardInto({
+        id: index + 1,
+        total: stepResults.length,
+        agentName: result.agentName,
+        displayName: result.agentName,
+        status: "done",
+        content: result.content,
+        startTime: null,
+        endTime: null,
+        summary: "历史执行结果",
+      }, fragment, { bindToggle: false });
+    });
+    lifecycle.stepsSection.classList.remove("hidden");
+    lifecycle.stepsContent.replaceChildren(fragment);
+    applyChatStepExpansionState(lifecycle.stepsContent);
   }
 };
 
@@ -1573,7 +1777,10 @@ const renderPendingPlanForCurrentAnswer = (pendingPlan, interactive = true) => {
   lifecycle.planActions.classList.remove("hidden");
   const interruptedRevision = normalized.interruptedFrom === "revising";
   const recoveryStatus = String(normalized.status || "").startsWith("recovery_");
-  const recoveryCanCheck = ["recovery_pending", "recovery_unknown"].includes(normalized.status);
+  const approvalStatus = String(normalized.status || "").startsWith("approval_");
+  const reconciliationStatus = String(normalized.status || "").startsWith("reconciliation_");
+  const recoveryCanCheck = ["recovery_pending", "recovery_unknown"].includes(normalized.status)
+    || (reconciliationStatus && normalized.status !== "reconciliation_terminated");
   const confirmLabels = {
     executing: "执行中...",
     recovery_checking: "正在恢复...",
@@ -1581,9 +1788,24 @@ const renderPendingPlanForCurrentAnswer = (pendingPlan, interactive = true) => {
     recovery_unknown: "重新检查状态",
     recovery_completed: "任务已完成",
     recovery_blocked: "已禁止重复执行",
+    approval_pending: "等待人工审批",
+    approval_approved: "审批已通过",
+    reconciliation_pending: "等待人工核对",
+    reconciliation_frozen: "核对已冻结",
+    reconciliation_retry_ready: "检查核对状态",
+    reconciliation_confirmed_succeeded: "检查核对状态",
+    reconciliation_resuming: "检查恢复状态",
+    reconciliation_completed: "检查任务状态",
+    reconciliation_terminated: "已人工终止",
   };
   lifecycle.confirmPlanButton.textContent = confirmLabels[normalized.status] || "确认执行";
-  if (recoveryStatus || interruptedRevision || normalized.recoveryMessage) {
+  if (
+    recoveryStatus
+    || approvalStatus
+    || reconciliationStatus
+    || interruptedRevision
+    || normalized.recoveryMessage
+  ) {
     lifecycle.recoveryNotice.textContent = normalized.recoveryMessage || (
       interruptedRevision
         ? "上次计划修改被中断，可继续修改或执行原计划。"
@@ -1592,7 +1814,10 @@ const renderPendingPlanForCurrentAnswer = (pendingPlan, interactive = true) => {
     lifecycle.recoveryNotice.classList.remove("hidden");
   }
   lifecycle.revisionInput.value = normalized.revisionText;
-  lifecycle.revisionForm.classList.toggle("hidden", recoveryStatus || !normalized.revisionOpen);
+  lifecycle.revisionForm.classList.toggle(
+    "hidden",
+    recoveryStatus || approvalStatus || reconciliationStatus || !normalized.revisionOpen
+  );
   setChatPlanActionsDisabled(true);
   if (interactive && normalized.status === "awaiting_confirmation") {
     setChatPlanActionsDisabled(false);
@@ -1821,6 +2046,53 @@ const clearChatHistory = async () => {
   }
 };
 
+const conversationTaskIds = (conversation) => [...new Set([
+  ...(Array.isArray(conversation?.taskIds) ? conversation.taskIds : []),
+  ...(Array.isArray(conversation?.decisions)
+    ? conversation.decisions.flatMap((decision) => (
+      Array.isArray(decision.taskIds) ? decision.taskIds : []
+    ))
+    : []),
+].map((value) => String(value || "").trim()).filter(Boolean))];
+
+const deleteConversation = async (conversation) => {
+  const userId = userIdInput.value.trim();
+  if (!userId || !conversation?.id) return;
+  if (runningConversationId === conversation.id && isConversationRuntimeActive()) {
+    window.alert("该会话仍在执行，停止任务后才能删除。");
+    return;
+  }
+  if (!window.confirm(`确定删除会话“${conversation.title}”吗？`)) return;
+  try {
+    await Promise.all(conversationTaskIds(conversation).map(async (taskId) => {
+      const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}`, { method: "DELETE" });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok && response.status !== 404) {
+        throw new Error(data.detail || `清理任务 ${taskId} 失败（HTTP ${response.status}）`);
+      }
+    }));
+    if (conversation.workflowId) {
+      const query = new URLSearchParams({ workflow_id: conversation.workflowId, user_id: userId });
+      const response = await fetch(`/api/conversation-history?${query}`, { method: "DELETE" });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.detail || `清理会话关联记录失败（HTTP ${response.status}）`);
+    }
+  } catch (err) {
+    window.alert(`会话没有删除：后端关联记录清理失败。${err.message}`);
+    return;
+  }
+  const remaining = loadChatHistory(userId).filter((item) => item.id !== conversation.id);
+  persistChatHistory(userId, remaining);
+  if (activeConversationId === conversation.id) {
+    resetActiveConversation(userId);
+  } else if (viewedConversationId === conversation.id) {
+    viewedConversationId = activeConversationId;
+  }
+  renderChatHistory();
+  window.SecurityModule?.loadSecurityReconciliations?.();
+  window.SecurityModule?.loadSecurityApprovals?.();
+};
+
 const resetActiveConversation = (userId = userIdInput.value.trim()) => {
   if (currentAbortController || executionInProgress) return false;
   activeConversationUserId = userId;
@@ -2018,7 +2290,7 @@ const showPlanValidationHint = (text, isError = false) => {
 const updateConfirmExecuteState = () => {
   const recoveryLocked = Boolean(
     activePendingPlan?.interruptedFrom === "executing"
-    && String(activePendingPlan?.status || "").startsWith("recovery_")
+    && isExecutionPlanLockedStatus(activePendingPlan?.status)
   );
   if (confirmExecuteBtn) {
     const hasPlan = planSteps.length > 0;
@@ -2402,7 +2674,7 @@ const runPlannerUpdate = async (instruction, appendHistory = true, runtime = nul
   try {
     const response = await fetch("/api/workflows/run", {
       method: "POST",
-      headers: jsonRequestHeaders,
+      headers: getWorkflowRequestHeaders(userId),
       body: JSON.stringify(payload),
       signal: plannerOnlyController.signal,
     });
@@ -2453,6 +2725,7 @@ const clearStepCards = () => {
   workflowFailureSummary = null;
   currentStepCard = null;
   executionStepCount = 0;
+  chatCollapsedStepIds = new Set();
   finalResultReceived = false;
   latestFinalResultText = "";
   if (executionOutput) executionOutput.innerHTML = "";
@@ -2483,6 +2756,7 @@ const createStepCard = (displayName, subAgentName, eventKey = "", stepId = "") =
     endTime: null,
     summary: "",
     governance: null,
+    structuredResult: undefined,
   };
   executionStepCards.push(card);
   if (normalizedKey) executionStepCardsByKey.set(normalizedKey, card);
@@ -2510,35 +2784,40 @@ const isExecutionAgentEvent = (agentName) => {
   return normalized.includes("agent_proxy") || normalized.startsWith("scheduler");
 };
 
-const formatStepResultContent = (data) => {
+const getStepResultValue = (data) => {
   const outputs = data && typeof data.outputs === "object" && data.outputs
     ? data.outputs
     : {};
   const outputNames = Object.keys(outputs);
-  let value = outputs;
-  if (outputNames.length > 0) {
-    // One Agent result may be published under several logical output aliases
-    // for downstream binding.  Those aliases are not separate business rows;
-    // rendering every identical value produced four duplicate tables for the
-    // HR query.  Collapse only byte-equivalent values and keep genuinely
-    // different outputs keyed by their logical names.
-    const uniqueOutputs = [];
-    const seen = new Set();
-    outputNames.forEach((name) => {
-      const candidate = outputs[name];
-      let fingerprint;
-      try { fingerprint = JSON.stringify(candidate); } catch (e) { fingerprint = `${candidate}`; }
-      if (!seen.has(fingerprint)) {
-        seen.add(fingerprint);
-        uniqueOutputs.push([name, candidate]);
-      }
-    });
-    value = uniqueOutputs.length === 1
+  if (!outputNames.length) return { available: false, value: null };
+
+  // One Agent result may be published under several logical output aliases
+  // for downstream binding. Those aliases are not separate business rows;
+  // rendering every identical value produced duplicate tables. Collapse only
+  // byte-equivalent values and keep genuinely different outputs keyed by name.
+  const uniqueOutputs = [];
+  const seen = new Set();
+  outputNames.forEach((name) => {
+    const candidate = outputs[name];
+    let fingerprint;
+    try { fingerprint = JSON.stringify(candidate); } catch (e) { fingerprint = `${candidate}`; }
+    if (!seen.has(fingerprint)) {
+      seen.add(fingerprint);
+      uniqueOutputs.push([name, candidate]);
+    }
+  });
+  return {
+    available: true,
+    value: uniqueOutputs.length === 1
       ? uniqueOutputs[0][1]
-      : Object.fromEntries(uniqueOutputs);
-  }
-  if (outputNames.length > 0) {
-    return typeof value === "string" ? value : JSON.stringify(value, null, 2);
+      : Object.fromEntries(uniqueOutputs),
+  };
+};
+
+const formatStepResultContent = (data) => {
+  const result = getStepResultValue(data);
+  if (result.available) {
+    return typeof result.value === "string" ? result.value : JSON.stringify(result.value, null, 2);
   }
   const unavailable = Object.keys(data?.unavailable_outputs || {});
   if (unavailable.length > 0) {
@@ -2699,6 +2978,7 @@ const formatFailureDetails = (failure) => {
 const appendStepContent = (content, card = currentStepCard) => {
   if (!card) return;
   card.content += content;
+  card.structuredResult = undefined;
   const cardEl = executionOutput?.querySelector(`[data-step-id="${card.id}"]`);
   if (cardEl) {
     const bodyEl = cardEl.querySelector(".step-card-body");
@@ -2706,6 +2986,17 @@ const appendStepContent = (content, card = currentStepCard) => {
       bodyEl.textContent = card.content;
     }
   }
+  if (autoScrollEnabled && executionOutput) {
+    executionOutput.scrollTop = executionOutput.scrollHeight;
+  }
+};
+
+const setStepResultContent = (data, card = currentStepCard) => {
+  if (!card) return;
+  const result = getStepResultValue(data);
+  card.content = formatStepResultContent(data);
+  card.structuredResult = result.available ? result.value : undefined;
+  renderAllStepCards();
   if (autoScrollEnabled && executionOutput) {
     executionOutput.scrollTop = executionOutput.scrollHeight;
   }
@@ -2786,12 +3077,6 @@ const formatFinalResultContent = (data = {}) => {
 const renderFinalResult = (data = {}) => {
   latestFinalResultText = formatFinalResultContent(data);
   finalResultReceived = true;
-  const lifecycle = ensureChatLifecycle();
-  if (!lifecycle) return;
-  lifecycle.resultSection.classList.remove("hidden");
-  lifecycle.resultTitle.textContent = "最终结果";
-  lifecycle.resultContent.replaceChildren();
-  lifecycle.resultContent.appendChild(formatResult(latestFinalResultText));
   scrollChatToLatest();
 };
 
@@ -2862,7 +3147,7 @@ const renderAllStepCards = () => {
   executionOutput.appendChild(frag);
 };
 
-const renderStepCardInto = (card, parent) => {
+const renderStepCardInto = (card, parent, { bindToggle = true } = {}) => {
   const total = Math.max(
     Number(card.total) || 0,
     planSteps.length,
@@ -2883,12 +3168,14 @@ const renderStepCardInto = (card, parent) => {
   // Header (clickable toggle)
   const header = document.createElement("div");
   header.className = "step-card-header";
-  header.addEventListener("click", () => {
-    const body = cardEl.querySelector(".step-card-body");
-    const toggle = cardEl.querySelector(".step-toggle");
-    if (body) body.classList.toggle("hidden");
-    if (toggle) toggle.textContent = body?.classList.contains("hidden") ? ">" : "v";
-  });
+  if (bindToggle) {
+    header.addEventListener("click", () => {
+      const body = cardEl.querySelector(".step-card-body");
+      const toggle = cardEl.querySelector(".step-toggle");
+      if (body) body.classList.toggle("hidden");
+      if (toggle) toggle.textContent = body?.classList.contains("hidden") ? ">" : "v";
+    });
+  }
 
   header.innerHTML =
     `<span class="step-status-icon">${icon}</span>` +
@@ -2918,6 +3205,8 @@ const renderStepCardInto = (card, parent) => {
     div.className = "step-result";
     div.innerHTML = formatFailureDetails(card.failure);
     body.appendChild(div);
+  } else if (card.structuredResult !== undefined) {
+    body.appendChild(formatResult(card.structuredResult));
   } else if (card.content) {
     if (card._isHtml) {
       const div = document.createElement("div");
@@ -3091,8 +3380,17 @@ const buildStructuredResult = (rawValue) => {
     return buildKeyValueList(value, 0);
   }
 
-  if (Array.isArray(value) && value.length && typeof value[0] === "object") {
-    return buildResultTable(value);
+  if (Array.isArray(value)) {
+    if (!value.length) {
+      const empty = document.createElement("div");
+      empty.className = "step-result-empty";
+      empty.textContent = "暂无数据";
+      return empty;
+    }
+    if (value.every((item) => item && typeof item === "object" && !Array.isArray(item))) {
+      return buildResultTable(value);
+    }
+    return buildResultValueList(value);
   }
 
   const pre = document.createElement("pre");
@@ -3233,6 +3531,21 @@ const buildResultTable = (records) => {
   return wrapper;
 };
 
+const buildResultValueList = (values) => {
+  const list = document.createElement("ul");
+  list.className = "step-result-value-list";
+  values.forEach((value) => {
+    const item = document.createElement("li");
+    if (value && typeof value === "object") {
+      item.appendChild(buildStructuredResult(value));
+    } else {
+      item.textContent = value === null || value === undefined ? "-" : String(value);
+    }
+    list.appendChild(item);
+  });
+  return list;
+};
+
 const buildKeyValueList = (obj, depth) => {
   depth = depth || 0;
   const dl = document.createElement("dl");
@@ -3266,9 +3579,15 @@ const buildKeyValueList = (obj, depth) => {
         pre.textContent = v;
         dd.appendChild(pre);
       }
-    } else if (Array.isArray(v) && v.length > 0 && typeof v[0] === "object" && depth === 0) {
-      dd.appendChild(buildResultTable(v));
-    } else if (typeof v === "object" && depth < 1) {
+    } else if (Array.isArray(v)) {
+      if (!v.length) {
+        dd.textContent = "-";
+      } else if (v.every((item) => item && typeof item === "object" && !Array.isArray(item))) {
+        dd.appendChild(buildResultTable(v));
+      } else {
+        dd.appendChild(buildResultValueList(v));
+      }
+    } else if (typeof v === "object" && depth < 3) {
       dd.appendChild(buildKeyValueList(v, depth + 1));
     } else if (typeof v === "object") {
       const pre = document.createElement("pre");
@@ -4065,6 +4384,7 @@ const handleEvent = (eventName, payload) => {
     if (typeof agentName === "string" && agentName.toLowerCase().includes("planner")) {
       refreshPlannerTimeout();
       plannerFinalMessageBuffer += content;
+      if (content) appendOutput(agentName, content, "planning");
       return;
     }
     if (!plannerOnlyMode) {
@@ -4203,7 +4523,7 @@ const handleEvent = (eventName, payload) => {
       if (data.failure || (status && status !== "SUCCEEDED")) {
         errorStepCard(content, card, data.failure);
       } else {
-        appendStepContent(content, card);
+        setStepResultContent(data, card);
       }
     }
     return;
@@ -4471,7 +4791,6 @@ const handleEvent = (eventName, payload) => {
         showSummaryHint("Workflow completed.");
         if (currentRunContext === "executing") {
           updateChatExecutionProgress("completed");
-          if (currentChatLifecycle) currentChatLifecycle.resultTitle.textContent = "最终结果";
           setStatus("Completed", true);
         }
         showPlanValidationHint("Execution completed. You can review the execution log.");
@@ -4536,7 +4855,6 @@ const handleEvent = (eventName, payload) => {
         showSummaryHint("Workflow completed.");
         if (currentRunContext === "executing") {
           updateChatExecutionProgress("completed");
-          if (currentChatLifecycle) currentChatLifecycle.resultTitle.textContent = "最终结果";
           setStatus("Completed", true);
           showPlanValidationHint("Execution completed. You can review the execution log.");
           showPlanHint("Plan execution completed.");
@@ -4581,7 +4899,7 @@ const runWorkflow = async () => {
   if (runBtn.disabled || executionInProgress || currentAbortController) return;
   if (
     activePendingPlan?.interruptedFrom === "executing"
-    && String(activePendingPlan?.status || "").startsWith("recovery_")
+    && isExecutionPlanLockedStatus(activePendingPlan?.status)
   ) {
     setStatus("Recovery required", false);
     showPlanValidationHint(
@@ -4686,7 +5004,7 @@ const runWorkflow = async () => {
   try {
     const response = await fetch("/api/workflows/run", {
       method: "POST",
-      headers: jsonRequestHeaders,
+      headers: getWorkflowRequestHeaders(userId),
       body: JSON.stringify(payload),
       signal: controller.signal,
     });
@@ -4761,7 +5079,7 @@ const runWorkflow = async () => {
 const runExecution = async () => {
   const recoveryLocked = Boolean(
     activePendingPlan?.interruptedFrom === "executing"
-    && String(activePendingPlan?.status || "").startsWith("recovery_")
+    && isExecutionPlanLockedStatus(activePendingPlan?.status)
   );
   if (recoveryLocked) {
     showPlanValidationHint(
@@ -4923,7 +5241,7 @@ const runExecution = async () => {
   try {
     const response = await fetch("/api/workflows/run", {
       method: "POST",
-      headers: jsonRequestHeaders,
+      headers: getWorkflowRequestHeaders(userId),
       body: JSON.stringify(payload),
       signal: controller.signal,
     });
@@ -5011,6 +5329,30 @@ const runExecution = async () => {
         serverStatus: "",
       };
       saveActiveConversation();
+    } else if (terminalStatus === "APPROVAL_REQUIRED") {
+      activePendingPlan = {
+        ...executionIdentityState,
+        status: "approval_pending",
+        recoveryMessage: "任务已暂停并等待人工审批；审批通过后请在 Security 页面恢复原任务。",
+        serverStatus: terminalStatus,
+      };
+      saveActiveConversation();
+      captureAssistantConversationContext({
+        outcomeStatus: "approval_required",
+        outcomeMessage: "任务已暂停，等待人工审批。",
+      });
+    } else if (terminalStatus === "NEEDS_RECONCILIATION") {
+      activePendingPlan = {
+        ...executionIdentityState,
+        status: "reconciliation_pending",
+        recoveryMessage: "任务已暂停并等待人工核对；处理后请在 Security 页面继续原任务。",
+        serverStatus: terminalStatus,
+      };
+      saveActiveConversation();
+      captureAssistantConversationContext({
+        outcomeStatus: "needs_reconciliation",
+        outcomeMessage: "任务已暂停，等待人工核对。",
+      });
     } else if (!terminalSucceeded) {
       activePendingPlan = {
         ...executionIdentityState,
@@ -6658,7 +7000,10 @@ userIdInput.addEventListener("input", () => {
   const nextUserId = userIdInput.value.trim();
   if (nextUserId !== activeConversationUserId) resetActiveConversation(nextUserId);
   renderChatHistory();
+  updateRunSettingsSummary();
 });
+deepThinkingInput?.addEventListener("change", updateRunSettingsSummary);
+workflowIdInput?.addEventListener("input", updateRunSettingsSummary);
 if (clearChatHistoryBtn) clearChatHistoryBtn.addEventListener("click", clearChatHistory);
 clearOutputBtn.addEventListener("click", clearOutput);
 autoScrollBtn.addEventListener("click", toggleAutoScroll);
@@ -7224,7 +7569,7 @@ const resumeTask = async ({ inChat = false } = {}) => {
   try {
     const response = await fetch("/api/tasks/resume", {
       method: "POST",
-      headers: jsonRequestHeaders,
+      headers: getWorkflowRequestHeaders(userId),
       body: JSON.stringify(payload),
       signal: resumeAbortController.signal,
     });
@@ -7301,6 +7646,7 @@ const resumeTask = async ({ inChat = false } = {}) => {
   } finally {
     if (inChat) {
       if (resumeTerminalStatus === "SUCCEEDED" && !currentRunHasError) {
+        activePendingPlan = null;
         captureAssistantConversationContext({
           replaceLatest: true,
           outcomeStatus: "succeeded",
@@ -7310,6 +7656,7 @@ const resumeTask = async ({ inChat = false } = {}) => {
           currentChatLifecycle.confirmPlanButton.disabled = true;
           currentChatLifecycle.modifyPlanButton.disabled = true;
         }
+        saveActiveConversation();
       } else {
         const reportedOutcomeStatus = resumeTerminalStatus.toLowerCase();
         const outcomeStatus = reportedOutcomeStatus === "succeeded" && currentRunHasError
@@ -7322,6 +7669,32 @@ const resumeTask = async ({ inChat = false } = {}) => {
           outcomeMessage = "恢复执行过程中出现错误，请在 Task History 中核对任务状态。";
         } else if (resumeTerminalStatus === "PARTIAL_FAILED") {
           outcomeMessage = "恢复执行部分失败，已保留失败前产生的可用结果。";
+        } else if (resumeTerminalStatus === "APPROVAL_REQUIRED") {
+          outcomeMessage = "恢复执行再次进入人工审批，任务仍处于暂停状态。";
+          activePendingPlan = normalizePendingPlan({
+            ...(activePendingPlan || {}),
+            steps: planSteps.map((step) => normalizeStep(step)),
+            workflowId: workflowId || activePendingPlan?.workflowId || "",
+            taskId,
+            interruptedFrom: "executing",
+            status: "approval_pending",
+            serverStatus: resumeTerminalStatus,
+            recoveryMessage: "任务已暂停并等待人工审批；审批通过后请在 Security 页面恢复原任务。",
+          });
+          saveActiveConversation();
+        } else if (resumeTerminalStatus === "NEEDS_RECONCILIATION") {
+          outcomeMessage = "恢复执行仍需人工核对，任务已再次暂停。";
+          activePendingPlan = normalizePendingPlan({
+            ...(activePendingPlan || {}),
+            steps: planSteps.map((step) => normalizeStep(step)),
+            workflowId: workflowId || activePendingPlan?.workflowId || "",
+            taskId,
+            interruptedFrom: "executing",
+            status: "reconciliation_pending",
+            serverStatus: resumeTerminalStatus,
+            recoveryMessage: "恢复执行产生了新的不确定结果，请在 Security 页面处理新的人工核对记录。",
+          });
+          saveActiveConversation();
         } else if (resumeTerminalStatus) {
           outcomeMessage = `恢复执行未成功，任务状态：${resumeTerminalStatus}。`;
         }
@@ -7492,11 +7865,13 @@ clearResumeOutputBtn.addEventListener("click", () => {
         window.SecurityModule.loadUserSecurityProfile(demoRole.value);
       }
       loadPermissionSummary(demoRole.value);
+      updateRunSettingsSummary();
     });
   }
   if (demoRole && demoRole.value) {
     loadPermissionSummary(demoRole.value);
   }
+  updateRunSettingsSummary();
 })();
 
 // S-ABAC Permission Summary for Run Tab
@@ -7565,6 +7940,22 @@ function renderPermissionSummary(precheck) {
     </div>` : ''}
   `;
 }
+
+(function bindPermissionSummaryCollapse() {
+  const button = document.getElementById("togglePermissionSummaryBtn");
+  const content = document.getElementById("permissionSummaryContent");
+  if (!button || !content) return;
+  const update = (collapsed) => {
+    content.hidden = collapsed;
+    button.setAttribute("aria-expanded", String(!collapsed));
+    const label = button.querySelector(".sec-collapse-label");
+    const icon = button.querySelector(".sec-collapse-icon");
+    if (label) label.textContent = collapsed ? "展开" : "收起";
+    if (icon) icon.textContent = collapsed ? "⌄" : "⌃";
+  };
+  update(true);
+  button.addEventListener("click", () => update(!content.hidden));
+})();
 
 // Update Agents Panel: filter by current user permissions
 const originalRenderAgents = renderAgents;

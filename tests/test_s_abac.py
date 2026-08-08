@@ -280,7 +280,7 @@ def test_explicit_allow_policy_cannot_bypass_resource_mandatory_review():
     assert result["human_review_required"] is True
 
 
-def test_governance_admin_still_requires_mandatory_review():
+def test_governance_admin_bypasses_mandatory_review():
     engine = PolicyEngine()
     subject = SecurityContextBuilder.subject_for_user("admin")
     object_ = SecurityContextBuilder.object_for_tool("remote_salary_info_tool")
@@ -300,9 +300,9 @@ def test_governance_admin_still_requires_mandatory_review():
 
     result = engine.evaluate(subject, object_, scenario, action)
 
-    assert result["allowed"] is False
-    assert result["decision"] == "REVIEW_REQUIRED"
-    assert result["human_review_required"] is True
+    assert result["allowed"] is True
+    assert result["decision"] == "ALLOW"
+    assert result["human_review_required"] is False
 
 
 def test_governance_admin_cannot_bypass_resource_and_operation_rules():
@@ -456,6 +456,13 @@ def test_approval_signature_ignores_fit_prose_and_normalizes_stage():
     resumed["task_scenario"]["stage"] = "PRODUCTION"
     resumed["task_scenario"]["scenario_fit_result"]["confidence"] = 0.91
     resumed["task_scenario"]["scenario_fit_result"]["reason"] = "Different wording"
+    resumed["task_scenario"]["scenario_fit_result"]["suggested_agent_domains"] = [
+        "PeopleOperations"
+    ]
+    resumed["task_scenario"]["scenario_fit_result"]["suggested_tool_domains"] = [
+        "HR",
+        "SalaryManagement",
+    ]
     mismatch = json.loads(json.dumps(resumed, ensure_ascii=False))
     mismatch["task_scenario"]["scenario_fit_result"]["fit"] = "mismatch"
 

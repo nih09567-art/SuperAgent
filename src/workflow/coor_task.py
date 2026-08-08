@@ -1534,7 +1534,7 @@ async def _finalize_validated_plan(
             len(task_graph.steps),
         )
     except Exception as exc:  # noqa: BLE001 - scheduler mode must fail closed
-        logger.warning(
+        logger.exception(
             "scheduler wiring: validated plan finalization failed: %s", exc
         )
         return _block_scheduler_plan("TaskGraph 或 PlanSnapshot 持久化失败")

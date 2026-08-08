@@ -361,6 +361,64 @@ def test_trusted_report_subtask_matches_reporter_in_cross_domain_workflow():
     )
 
 
+def test_admin_can_dispatch_office_agent_for_trusted_hr_leave_subtask(monkeypatch):
+    state = {
+        "workflow_id": "wf-leave-records",
+        "user_id": "admin",
+        "original_user_query": "查询员工李娜的请假记录",
+        "task_profile": {
+            "task_type": "HR",
+            "business_goal": "查询李娜请假记录",
+            "risk_profile": "MEDIUM",
+            "subtasks": [
+                {
+                    "id": "subtask_2",
+                    "intent": "leave_record_query",
+                    "task_type": "HR",
+                    "goal": "查询李娜请假记录",
+                    "data_scope": ["employee.leave_records"],
+                    "expected_capabilities": ["HR", "Office"],
+                    "scenario_tags": [
+                        "leave_record_query",
+                        "hr_service",
+                        "leave_request",
+                    ],
+                }
+            ],
+        },
+    }
+    step = TaskStep(
+        step_id="step_2",
+        agent_name="RemoteOfficeAssistantAgent",
+        preferred_resource_id="RemoteOfficeAssistantAgent",
+        operation_mode="read",
+        subtask_ids=["subtask_2"],
+    )
+
+    context = _build_execution_context(
+        state,
+        step,
+        "RemoteOfficeAssistantAgent",
+    )
+    profile = context.metadata["task_profile"]
+
+    assert profile["task_type"] == "HR"
+    assert profile["trusted_resource_fit"]["fit"] == "match"
+
+    import src.security.enforcement as enforcement
+
+    monkeypatch.setattr(enforcement, "S_ABAC_ENABLED", True)
+    decision = asyncio.run(
+        enforcement.enforce_agent_dispatch(
+            SimpleNamespace(agent_name="RemoteOfficeAssistantAgent"),
+            context,
+        )
+    )
+
+    assert decision["allowed"] is True
+    assert decision["decision"] == "ALLOW"
+
+
 def _collect(state):
     async def _run():
         events = []

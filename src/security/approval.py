@@ -38,8 +38,9 @@ def _stable_approval_scenario(scenario: Dict[str, Any]) -> Dict[str, Any]:
     """Return stable policy facts for an approval fingerprint.
 
     Scenario-fit prose may be model-assisted and vary on checkpoint resume.
-    Bind the fit verdict and stable domains, never generated wording or its
-    nondeterministic confidence score.
+    Only the fit verdict participates in policy evaluation. Generated wording,
+    confidence and suggested domains are advisory and may vary when the same
+    checkpoint is resumed, so none of them may invalidate a human approval.
     """
 
     stable = json.loads(json.dumps(scenario, ensure_ascii=False, default=str))
@@ -52,12 +53,6 @@ def _stable_approval_scenario(scenario: Dict[str, Any]) -> Dict[str, Any]:
         if isinstance(fit_result, dict):
             task_scenario["scenario_fit_result"] = {
                 "fit": str(fit_result.get("fit") or "").lower(),
-                "suggested_agent_domains": sorted(
-                    str(item) for item in fit_result.get("suggested_agent_domains", [])
-                ),
-                "suggested_tool_domains": sorted(
-                    str(item) for item in fit_result.get("suggested_tool_domains", [])
-                ),
             }
     return stable
 

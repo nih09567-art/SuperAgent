@@ -33,6 +33,20 @@ class _MapRouting:
         return self._verdicts[step.step_id]
 
 
+class _SlowToCancelRouting:
+    def __init__(self):
+        self.calls = 0
+
+    async def decide(self, step, **kwargs):
+        self.calls += 1
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            # Model HTTP clients may take time to unwind after cancellation.
+            await asyncio.sleep(0.2)
+            raise
+
+
 def _step(step_id, deps=None, mode="read", **extra):
     return TaskStep(step_id=step_id, depends_on=deps or [], operation_mode=mode, **extra)
 
@@ -110,6 +124,75 @@ def test_dispatch_without_agent_does_not_start_hook_or_execute():
     assert started == []  # start hook never invoked
     assert result["s"].status == StepStatus.FAILED
     assert result["s"].metrics.get("routing_decision") == "DISPATCH_NO_AGENT"
+
+
+def test_unresponsive_routing_falls_back_to_authorized_trusted_plan():
+    routing = _SlowToCancelRouting()
+    execute = _RecordingExecutor()
+    trusted_agent = type("TrustedAgent", (), {"agent_name": "AgentA"})()
+    graph = _graph(
+        _step("first", preferred_resource_id="AgentA"),
+        _step("second", deps=["first"], preferred_resource_id="AgentA"),
+    )
+    scheduler = TaskScheduler(
+        execute_step=execute,
+        routing_provider=routing,
+        routing_timeout_seconds=0.01,
+    )
+
+    async def run():
+        result = await scheduler.run(
+            graph,
+            context={
+                "task_id": "t",
+                "agents": [trusted_agent],
+                "authorized_agent_ids": {"AgentA"},
+            },
+        )
+        # Let the cancelled provider unwind so the test loop closes cleanly.
+        await asyncio.sleep(0.21)
+        return result
+
+    result = asyncio.run(run())
+
+    assert result.terminal_status == WorkflowStatus.SUCCEEDED
+    assert execute.calls == ["first", "second"]
+    assert routing.calls == 1
+    assert scheduler._routes["first"].reason_codes == [
+        "ROUTING_TIMEOUT_TRUSTED_PLAN_FALLBACK"
+    ]
+    assert scheduler._routes["second"].reason_codes == [
+        "ROUTING_TIMEOUT_TRUSTED_PLAN_FALLBACK"
+    ]
+
+
+def test_unresponsive_routing_never_falls_back_to_unauthorized_plan():
+    routing = _SlowToCancelRouting()
+    execute = _RecordingExecutor()
+    trusted_agent = type("TrustedAgent", (), {"agent_name": "AgentA"})()
+    scheduler = TaskScheduler(
+        execute_step=execute,
+        routing_provider=routing,
+        routing_timeout_seconds=0.01,
+    )
+
+    async def run():
+        result = await scheduler.run(
+            _graph(_step("only", preferred_resource_id="AgentA")),
+            context={
+                "task_id": "t",
+                "agents": [trusted_agent],
+                "authorized_agent_ids": set(),
+            },
+        )
+        await asyncio.sleep(0.21)
+        return result
+
+    result = asyncio.run(run())
+
+    assert result.terminal_status == WorkflowStatus.FAILED
+    assert execute.calls == []
+    assert scheduler._routes["only"].decision == "ROUTING_ERROR"
 
 
 def test_reject_isolates_branch_but_independent_readonly_survives():

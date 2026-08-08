@@ -144,6 +144,87 @@ def test_converter_accepts_forward_input_binding_by_structural_step_id():
     assert graph.topological_order() == ["producer", "consumer"]
 
 
+def test_user_instruction_binding_is_context_only_not_a_dag_dependency():
+    graph = plan_to_task_graph(
+        [
+            {
+                "step_id": "document",
+                "agent_name": "DocumentAgent",
+                "expected_outputs": ["document.file"],
+            },
+            {
+                "step_id": "email",
+                "agent_name": "EmailAgent",
+                "inputs": [
+                    {
+                        "parameter_name": "email.attachment",
+                        "source_step": "document",
+                        "source_output": "document.file",
+                    },
+                    {
+                        "parameter_name": "email.recipient",
+                        "source_step": "user_instruction",
+                        "source_output": "recipient_name",
+                        "value": "attacker@example.com",
+                    },
+                ],
+            },
+        ],
+        task_id="context-source",
+    )
+
+    email = graph.step_map()["email"]
+    assert email.depends_on == ["document"]
+    assert email.input_bindings == [
+        {
+            "parameter_name": "email.attachment",
+            "source_step": "document",
+            "source_output": "document.file",
+        }
+    ]
+
+
+def test_unknown_context_like_source_still_fails_closed():
+    with pytest.raises(TaskGraphValidationError, match="unknown step 'user_input'"):
+        plan_to_task_graph(
+            [
+                {
+                    "agent_name": "EmailAgent",
+                    "inputs": [
+                        {
+                            "parameter_name": "email.recipient",
+                            "source_step": "user_input",
+                            "source_output": "recipient_name",
+                        }
+                    ],
+                }
+            ],
+            task_id="unknown-context-source",
+        )
+
+
+def test_user_instruction_cannot_satisfy_required_agent_contract_input():
+    with pytest.raises(TaskGraphValidationError, match="missing trusted input bindings"):
+        plan_to_task_graph(
+            [
+                {
+                    "agent_name": "RemoteReportAgent",
+                    "inputs": [
+                        {
+                            "parameter_name": "report.sources",
+                            "source_step": "user_instruction",
+                            "source_output": "report_sources",
+                        }
+                    ],
+                }
+            ],
+            task_id="required-context-source",
+            agent_contracts={
+                "RemoteReportAgent": RemoteReportAgent().contract,
+            },
+        )
+
+
 def test_converter_rejects_unknown_dependency_instead_of_dropping_it():
     with pytest.raises(
         TaskGraphValidationError,
@@ -939,3 +1020,30 @@ def test_single_producer_output_normalizes_planner_output_alias():
     )
 
     assert graph.steps[1].input_bindings[0]["source_output"] == "research.markdown"
+
+
+def test_single_required_contract_output_normalizes_planner_output_alias():
+    contract = RemoteHRAssistantAgent().contract
+    graph = plan_to_task_graph(
+        [
+            {
+                "agent_name": "RemoteHRAssistantAgent",
+                "step_id": "step_1",
+            },
+            {
+                "agent_name": "reporter",
+                "step_id": "step_2",
+                "inputs": [
+                    {
+                        "parameter_name": "report.source_data",
+                        "source_step": "step_1",
+                        "source_output": "employee.basic_profile",
+                    }
+                ],
+            },
+        ],
+        task_id="required-output-alias",
+        agent_contracts={"RemoteHRAssistantAgent": contract},
+    )
+
+    assert graph.steps[1].input_bindings[0]["source_output"] == "employee.info"

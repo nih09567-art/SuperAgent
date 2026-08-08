@@ -548,9 +548,13 @@ def _build_step_task_profile(state: dict, step: Any, selected_agent: str) -> dic
             value.lower()
             for value in _list_value(trusted_attrs.get("scenario_tags"))
         }
-        resource_task_type = str(
-            trusted_attrs.get("capability_domain") or ""
-        ).strip().lower()
+        resource_task_types = {
+            value.lower()
+            for value in (
+                _list_value(trusted_attrs.get("capability_domain"))
+                + _list_value(trusted_attrs.get("expected_capabilities"))
+            )
+        }
         mismatch_reasons: list[str] = []
         if not trusted_attrs:
             mismatch_reasons.append(
@@ -586,8 +590,8 @@ def _build_step_task_profile(state: dict, step: Any, selected_agent: str) -> dic
                     f"{subtask_id} scenario tags do not match trusted resource"
                 )
             if subtask_task_type and (
-                not resource_task_type
-                or subtask_task_type != resource_task_type
+                not resource_task_types
+                or subtask_task_type not in resource_task_types
             ):
                 mismatch_reasons.append(
                     f"{subtask_id} task type does not match trusted resource"
@@ -884,6 +888,7 @@ async def run_scheduler_workflow(
     routing_provider: Optional[RoutingProvider] = None,
     redispatch_enabled: Optional[bool] = None,
     retry_delay_seconds: Optional[float] = None,
+    routing_timeout_seconds: Optional[float] = None,
     trusted_agents: Optional[list[Any]] = None,
     authorized_agent_ids: Optional[set[str]] = None,
 ) -> AsyncGenerator[dict, None]:
@@ -1017,16 +1022,23 @@ async def run_scheduler_workflow(
     resolver = ArtifactResolver(
         store, guard=PolicyEngineArtifactGuard(scenario=scenario_ctx))
 
-    if redispatch_enabled is None or retry_delay_seconds is None:
+    if (
+        redispatch_enabled is None
+        or retry_delay_seconds is None
+        or routing_timeout_seconds is None
+    ):
         from src.service.env import (
             SCHEDULER_REDISPATCH_ENABLED,
             SCHEDULER_RETRY_DELAY_SECONDS,
+            SCHEDULER_ROUTING_TIMEOUT_SECONDS,
         )
 
         if redispatch_enabled is None:
             redispatch_enabled = SCHEDULER_REDISPATCH_ENABLED
         if retry_delay_seconds is None:
             retry_delay_seconds = SCHEDULER_RETRY_DELAY_SECONDS
+        if routing_timeout_seconds is None:
+            routing_timeout_seconds = SCHEDULER_ROUTING_TIMEOUT_SECONDS
 
     routing = routing_provider or MainAgentRoutingProvider()
     agents: list[Any]
@@ -1811,6 +1823,7 @@ async def run_scheduler_workflow(
         receipt_store=receipt_store,
         redispatch_enabled=bool(redispatch_enabled),
         retry_delay_seconds=max(0.0, float(retry_delay_seconds)),
+        routing_timeout_seconds=max(0.1, float(routing_timeout_seconds)),
     )
     ctx = {
         "user_query": state.get("USER_QUERY", "") or state.get("original_user_query", ""),

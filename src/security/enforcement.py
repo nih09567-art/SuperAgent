@@ -102,11 +102,29 @@ def _enforce(
         metadata = metadata if isinstance(metadata, dict) else {}
         task_id = str(metadata.get("task_id") or "")
         if task_id:
+            # The same step can cross more than one policy gate. Reuse a
+            # consumed approval only inside this exact in-memory execution
+            # context; a new resume/request still needs its own approval.
+            approved_cache = getattr(context, "_approved_policy_decisions", None)
+            if isinstance(approved_cache, dict) and signature in approved_cache:
+                return {
+                    **result,
+                    "allowed": True,
+                    "decision": "ALLOW_APPROVED",
+                    "reason": "Matching human approval already consumed in this execution context",
+                    "approval_id": approved_cache[signature],
+                    "approval_signature": signature,
+                }
+
             approval_store = get_approval_store()
             approved = approval_store.consume_if_approved(
                 task_id=task_id, signature=signature
             )
             if approved is not None:
+                if not isinstance(approved_cache, dict):
+                    approved_cache = {}
+                    setattr(context, "_approved_policy_decisions", approved_cache)
+                approved_cache[signature] = approved.approval_id
                 return {
                     **result,
                     "allowed": True,

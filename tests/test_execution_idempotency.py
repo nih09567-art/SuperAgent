@@ -23,14 +23,8 @@ class ExecutionIdempotencyTests(unittest.TestCase):
             return_value="a" * 64,
         )
         self._server_plan_hash.start()
-        self._execution_credentials = patch(
-            "src.service.web_app.EXECUTION_USER_API_KEYS_JSON",
-            '{"u1":"execution-key-u1","u2":"execution-key-u2"}',
-        )
-        self._execution_credentials.start()
 
     def tearDown(self):
-        self._execution_credentials.stop()
         self._server_plan_hash.stop()
         task_logger_mod.checkpoints_dir = self._original_checkpoints_dir
         self._temp_dir.cleanup()
@@ -63,10 +57,10 @@ class ExecutionIdempotencyTests(unittest.TestCase):
     @staticmethod
     def _authorization_headers(
         confirmation_request_id="confirmation-request-1",
-        credential="execution-key-u1",
+        user_id="u1",
     ):
         return {
-            "Authorization": f"Bearer {credential}",
+            "X-Authenticated-User": user_id,
             "Idempotency-Key": confirmation_request_id,
         }
 
@@ -75,15 +69,12 @@ class ExecutionIdempotencyTests(unittest.TestCase):
         client,
         *,
         confirmation_request_id="confirmation-request-1",
-        credential="execution-key-u1",
         **authorization_updates,
     ):
         authorization = client.post(
             "/api/workflows/execution-authorizations",
             json=self._authorization_payload(**authorization_updates),
-            headers=self._authorization_headers(
-                confirmation_request_id, credential
-            ),
+            headers=self._authorization_headers(confirmation_request_id),
         )
         self.assertEqual(authorization.status_code, 200, authorization.text)
         identity = authorization.json()
@@ -400,7 +391,7 @@ class ExecutionIdempotencyTests(unittest.TestCase):
             "EXECUTION_TASK_ID_MISMATCH",
         )
 
-    def test_authorization_requires_a_server_configured_user_credential(self):
+    def test_authorization_requires_an_authenticated_user_header(self):
         app = create_app()
         with TestClient(app) as client:
             missing = client.post(
@@ -408,30 +399,31 @@ class ExecutionIdempotencyTests(unittest.TestCase):
                 json=self._authorization_payload(),
                 headers={"Idempotency-Key": "confirmation-missing-auth"},
             )
-            wrong = client.post(
+            bearer_only = client.post(
                 "/api/workflows/execution-authorizations",
                 json=self._authorization_payload(),
-                headers=self._authorization_headers(
-                    "confirmation-wrong-auth", "wrong-key"
-                ),
+                headers={
+                    "Authorization": "Bearer obsolete-browser-credential",
+                    "Idempotency-Key": "confirmation-bearer-only",
+                },
             )
 
         self.assertEqual(missing.status_code, 401)
-        self.assertEqual(wrong.status_code, 401)
+        self.assertEqual(bearer_only.status_code, 401)
 
-    def test_authorization_fails_closed_when_credentials_are_not_configured(self):
+    def test_authorization_needs_no_browser_or_server_user_credential(self):
         app = create_app()
-        with patch("src.service.web_app.EXECUTION_USER_API_KEYS_JSON", ""):
-            with TestClient(app) as client:
-                response = client.post(
-                    "/api/workflows/execution-authorizations",
-                    json=self._authorization_payload(),
-                    headers=self._authorization_headers(
-                        "confirmation-no-server-config"
-                    ),
-                )
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/workflows/execution-authorizations",
+                json=self._authorization_payload(),
+                headers=self._authorization_headers(
+                    "confirmation-no-production-credential"
+                ),
+            )
 
-        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertTrue(response.json()["execution_authorization_token"])
 
     def test_request_body_user_id_cannot_impersonate_workflow_owner(self):
         app = create_app()
@@ -472,10 +464,27 @@ class ExecutionIdempotencyTests(unittest.TestCase):
             replay["execution_idempotency_key"],
             first["execution_idempotency_key"],
         )
-        self.assertEqual(
+        self.assertNotEqual(
             replay["execution_authorization_token"],
             first["execution_authorization_token"],
         )
+        old_claimed, _, old_failure = TaskLogger.claim_execution_authorization(
+            task_id=first["task_id"],
+            authorization_token=first["execution_authorization_token"],
+            user_id="u1",
+            workflow_id="u1:wf-1",
+            plan_hash="a" * 64,
+        )
+        replay_claimed, _, replay_failure = TaskLogger.claim_execution_authorization(
+            task_id=replay["task_id"],
+            authorization_token=replay["execution_authorization_token"],
+            user_id="u1",
+            workflow_id="u1:wf-1",
+            plan_hash="a" * 64,
+        )
+        self.assertFalse(old_claimed)
+        self.assertEqual(old_failure, "EXECUTION_AUTHORIZATION_MISMATCH")
+        self.assertTrue(replay_claimed, replay_failure)
 
     def test_used_confirmation_request_cannot_authorize_again(self):
         async def fake_workflow(request):

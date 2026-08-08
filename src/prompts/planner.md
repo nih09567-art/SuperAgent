@@ -222,7 +222,7 @@ For each step, you MUST specify the `inputs` field to map the agent's required p
 - **Remote agents without "Requires" field are autonomous**: They extract parameters from the conversation context themselves. Leave `inputs` empty for these agents.
 - **For agents WITH "Requires" field**: Every required parameter MUST have an explicit InputMapping
 - **NO implicit parameters**: If an agent has a "Requires" field, every parameter must be mapped
-- **NO "through instruction parsing"**: If a parameter comes from user instructions, you must still create a mapping (use a special source_step like "user_instruction" if needed, but prefer to have a dedicated step that extracts this information)
+- **NO fake source steps**: `source_step` is only for a real prior Agent step that produces an Artifact. Never use `user_instruction` or another placeholder as a DAG source.
 - **If a required parameter has no source**: Add a new step to fetch/extract that data BEFORE the current step
 - **User-provided data**: If data comes from user input, create a step that extracts or queries this information, then map it
 - **MANDATORY VALIDATION**: After creating your plan, verify that every `source_step` referenced in any InputMapping actually exists as a step in your `steps` array BEFORE the step that references it. If not, you MUST insert the missing step.
@@ -302,23 +302,19 @@ generate_report -> RemoteReportAgent   -> report.markdown@v1
 }
 ```
 
-**Example - CORRECT (Agent with "Requires" field)**:
+**Example - CORRECT (autonomous Agent without a "Requires" field)**:
 ```json
 {
-  "agent_name": "SomeStructuredAgent",
+  "agent_name": "SomeAutonomousAgent",
   "description": "Query person info for '行长秘书'",
-  "inputs": [
-    {
-      "parameter_name": "person.query",
-      "source_step": "user_instruction",
-      "source_output": "query_text",
-      "description": "Query text '行长秘书' from user instruction"
-    }
-  ]
+  "inputs": []
 }
 ```
 
-Or better yet, if the query is simple and constant, you can include it in the description and leave inputs empty ONLY if the agent can infer it from context. But this is NOT recommended - always prefer explicit mappings.
+The user request and server-generated TaskProfile are already present in the
+execution context. Only autonomous agents may read user entities from that
+context. If an Agent has a required contract input, add a real prior step that
+produces the required Artifact and map it explicitly.
 
 **Example**:
 ```json

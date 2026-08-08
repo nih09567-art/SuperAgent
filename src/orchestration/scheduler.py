@@ -238,6 +238,7 @@ class TaskScheduler:
         receipt_store: Optional[ReceiptStore] = None,
         redispatch_enabled: bool = False,
         retry_delay_seconds: float = 0.0,
+        routing_timeout_seconds: float = 30.0,
     ) -> None:
         self._execute_step = execute_step
         self._authorize_step = authorize_step
@@ -247,6 +248,7 @@ class TaskScheduler:
         self.receipt_store = receipt_store
         self.redispatch_enabled = bool(redispatch_enabled)
         self.retry_delay_seconds = max(0.0, float(retry_delay_seconds))
+        self.routing_timeout_seconds = max(0.1, float(routing_timeout_seconds))
 
         # Runtime state (reset per run)
         self._outputs: Dict[str, Dict[str, Any]] = {}
@@ -255,6 +257,7 @@ class TaskScheduler:
         self._agent_to_steps: Dict[str, List[str]] = {}
         # Cached routing verdict per step id, filled by the pre-flight pass.
         self._routes: Dict[str, RoutingResult] = {}
+        self._routing_unresponsive = False
         self._on_attempt_start: Optional[StepHook] = None
         self._on_attempt_end: Optional[StepHook] = None
 
@@ -294,6 +297,7 @@ class TaskScheduler:
         self._on_attempt_end = on_attempt_end
 
         self._outputs = {}
+        self._routing_unresponsive = False
         if initial_outputs:
             for sid, outs in initial_outputs.items():
                 if isinstance(outs, dict):
@@ -461,7 +465,7 @@ class TaskScheduler:
             if step.step_id in skip:
                 continue
             try:
-                routes[step.step_id] = await self._route(step, context)
+                routes[step.step_id] = await self._preflight_route(step, context)
             except Exception as exc:  # noqa: BLE001 - degrade to a routing error
                 routes[step.step_id] = RoutingResult(
                     selected_agent=None,
@@ -469,6 +473,73 @@ class TaskScheduler:
                     reason_codes=[f"routing_error: {exc}"],
                 )
         return routes
+
+    @staticmethod
+    def _consume_background_route(task: asyncio.Task) -> None:
+        """Consume a late route result without making timeout handling wait for it."""
+        try:
+            task.result()
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    @staticmethod
+    def _trusted_preferred_route(step: TaskStep, context: dict) -> Optional[RoutingResult]:
+        """Use the planned Agent only when the runtime trust roots still authorize it."""
+        preferred = str(getattr(step, "preferred_resource_id", "") or "")
+        authorized = {
+            str(agent_id)
+            for agent_id in (context.get("authorized_agent_ids") or set())
+        }
+        trusted = {
+            str(getattr(agent, "agent_name", "") or "")
+            for agent in (context.get("agents") or ())
+        }
+        if not preferred or preferred not in authorized or preferred not in trusted:
+            return None
+        return RoutingResult(
+            selected_agent=preferred,
+            decision="DISPATCH",
+            confidence=1.0,
+            reason_codes=["ROUTING_TIMEOUT_TRUSTED_PLAN_FALLBACK"],
+        )
+
+    async def _preflight_route(self, step: TaskStep, context: dict) -> RoutingResult:
+        """Route a step without allowing one unresponsive provider to stall the DAG."""
+        if self._routing_unresponsive:
+            fallback = self._trusted_preferred_route(step, context)
+            if fallback is not None:
+                return fallback
+            return RoutingResult(
+                selected_agent=None,
+                decision="ROUTING_ERROR",
+                reason_codes=["routing_unresponsive: trusted planned agent unavailable"],
+            )
+
+        route_task = asyncio.create_task(self._route(step, context))
+        done, _pending = await asyncio.wait(
+            {route_task},
+            timeout=self.routing_timeout_seconds,
+            return_when=asyncio.ALL_COMPLETED,
+        )
+        if route_task in done:
+            return route_task.result()
+
+        # Do not await cancellation here. Some HTTP adapters acknowledge task
+        # cancellation only after their own socket timeout, which previously
+        # left the whole workflow permanently stuck before the first step.
+        route_task.cancel()
+        route_task.add_done_callback(self._consume_background_route)
+        self._routing_unresponsive = True
+        fallback = self._trusted_preferred_route(step, context)
+        if fallback is not None:
+            return fallback
+        return RoutingResult(
+            selected_agent=None,
+            decision="ROUTING_ERROR",
+            reason_codes=[
+                f"routing_timeout: no trusted planned agent after {self.routing_timeout_seconds:g}s"
+            ],
+        )
 
     def _global_clarify(
         self,

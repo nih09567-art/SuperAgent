@@ -231,7 +231,7 @@ def test_runtime_persists_uncertain_side_effect_for_manual_reconciliation(
     assert queued[0]["claim_id"]
 
 
-def test_approved_request_is_consumed_once(tmp_path, monkeypatch):
+def test_approved_request_is_reused_only_within_consuming_context(tmp_path, monkeypatch):
     import src.security.enforcement as enforcement
 
     monkeypatch.setenv("APPROVAL_STORE_DIR", str(tmp_path / "approvals"))
@@ -287,9 +287,20 @@ def test_approved_request_is_consumed_once(tmp_path, monkeypatch):
     assert allowed["approval_id"] == approval.approval_id
     assert get_approval_store().get(approval.approval_id).status == "consumed"
 
+    repeated = enforcement._enforce(
+        subject, object_, scenario, action, context=context
+    )
+    assert repeated["decision"] == "ALLOW_APPROVED"
+    assert repeated["approval_id"] == approval.approval_id
+
+    fresh_context = ExecutionContext(
+        user_id="u1",
+        workflow_id="wf-1",
+        metadata={"task_id": "task-1", "step_id": "write-1"},
+    )
     with pytest.raises(ApprovalRequiredError):
         enforcement._enforce(
-            subject, object_, scenario, action, context=context
+            subject, object_, scenario, action, context=fresh_context
         )
 
 

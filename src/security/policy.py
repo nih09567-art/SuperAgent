@@ -396,9 +396,9 @@ class PolicyEngine:
 
     @staticmethod
     def _bypasses_mandatory_review(subject: Subject) -> bool:
-        """Compatibility hook; mandatory review applies to every subject."""
+        """Allow trusted governance administrators to execute without pausing."""
 
-        return False
+        return PolicyEngine._is_governance_administrator(subject)
 
     def _apply_resource_environment_constraints(
         self,

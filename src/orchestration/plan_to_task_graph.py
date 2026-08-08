@@ -47,6 +47,12 @@ _WRITE_MODES = {
 }
 _READ_MODES = {"read", "query", "lookup", "search"}
 
+# The Planner may label values already present in the original request with
+# this sentinel. It is context metadata, not an Artifact-producing TaskGraph
+# node. Runtime authorization resolves such entities from the server-generated
+# TaskProfile, so Planner-authored literal values must never become inputs.
+_USER_INSTRUCTION_SOURCE = "user_instruction"
+
 # Risk ranking of the four classified modes. Higher = more dangerous. Used to
 # enforce "Planner output is untrusted": an explicit step declaration may only
 # RAISE the risk level, never lower a send/write down to read. ``unknown`` is
@@ -671,6 +677,22 @@ def plan_to_task_graph(
                         f"{parameter_name!r} must declare source_step and "
                         "source_output"
                     )
+                if str(source_step).strip() == _USER_INSTRUCTION_SOURCE:
+                    if isinstance(sources, list):
+                        raise TaskGraphValidationError(
+                            f"step {step_id!r} input binding for "
+                            f"{parameter_name!r} cannot use user_instruction "
+                            "as an Artifact source"
+                        )
+                    if not source_output:
+                        raise TaskGraphValidationError(
+                            f"step {step_id!r} context binding for "
+                            f"{parameter_name!r} must declare source_output"
+                        )
+                    # This source contributes no DAG edge. The binding itself
+                    # is removed below so the Scheduler cannot trust a literal
+                    # value or description emitted by the Planner.
+                    continue
                 # Legacy uncontracted bindings may omit source_output when the
                 # producer has exactly one output; the Scheduler can resolve
                 # that unambiguously. Contracted/fan-in bindings must always
@@ -690,12 +712,29 @@ def plan_to_task_graph(
                         f"{source_step!r}"
                     )
                 available_outputs, producer_contract = producer_outputs(resolved)
-                if source_output and available_outputs and str(source_output) not in available_outputs:
-                    raise TaskGraphValidationError(
-                        f"step {step_id!r} input binding references output "
-                        f"{source_output!r}, but source step {resolved!r} "
-                        f"produces {sorted(available_outputs)!r}"
+                if (
+                    source_output
+                    and available_outputs
+                    and str(source_output) not in available_outputs
+                ):
+                    required_outputs = (
+                        [ref.name for ref in producer_contract.produces if ref.required]
+                        if producer_contract is not None
+                        else []
                     )
+                    if len(required_outputs) == 1:
+                        # Planner labels are descriptive text. When a trusted
+                        # producer has exactly one mandatory business output,
+                        # that Contract makes the intended binding unambiguous
+                        # even if optional outputs are also available.
+                        source_output = required_outputs[0]
+                        source_binding["source_output"] = source_output
+                    else:
+                        raise TaskGraphValidationError(
+                            f"step {step_id!r} input binding references output "
+                            f"{source_output!r}, but source step {resolved!r} "
+                            f"produces {sorted(available_outputs)!r}"
+                        )
                 declared_source_schema = source_binding.get("schema_ref")
                 if declared_source_schema and producer_contract is not None:
                     produced_ref = next(
@@ -723,6 +762,11 @@ def plan_to_task_graph(
         normalized_inputs: List[Dict[str, Any]] = []
         for binding in inputs:
             if not isinstance(binding, dict):
+                continue
+            if (
+                str(binding.get("source_step") or "").strip()
+                == _USER_INSTRUCTION_SOURCE
+            ):
                 continue
             normalized = dict(binding)
             source_artifacts = normalized.get("source_artifacts")
@@ -838,16 +882,16 @@ def plan_to_task_graph(
             prior_steps = {item.step_id: item for item in steps}
             for dependency_id in depends_on:
                 producer = prior_steps.get(dependency_id)
-                producer_outputs = list(
+                dependency_outputs = list(
                     getattr(producer, "expected_outputs", []) or []
                 )
-                if not producer_outputs:
+                if not dependency_outputs:
                     continue
                 inputs.append(
                     {
                         "parameter_name": f"upstream_{dependency_id}",
                         "source_step": dependency_id,
-                        "source_output": producer_outputs[0],
+                        "source_output": dependency_outputs[0],
                     }
                 )
 
@@ -862,7 +906,7 @@ def plan_to_task_graph(
             normalized_source = dict(source)
             source_step = str(normalized_source.get("source_step") or "")
             producer = prior_steps.get(source_step)
-            producer_outputs = list(
+            canonical_producer_outputs = list(
                 getattr(producer, "expected_outputs", []) or []
             )
             requested_output = str(
@@ -870,10 +914,10 @@ def plan_to_task_graph(
             )
             if (
                 producer is not None
-                and len(producer_outputs) == 1
-                and requested_output not in producer_outputs
+                and len(canonical_producer_outputs) == 1
+                and requested_output not in canonical_producer_outputs
             ):
-                normalized_source["source_output"] = producer_outputs[0]
+                normalized_source["source_output"] = canonical_producer_outputs[0]
             return normalized_source
 
         canonical_inputs: List[Dict[str, Any]] = []

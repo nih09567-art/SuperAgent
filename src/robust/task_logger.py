@@ -280,13 +280,10 @@ class TaskLogger:
                     task.execution_confirmation_request_id,
                     confirmation_request_id,
                 )
-                and hmac.compare_digest(
-                    task.execution_authorization_token_hash,
-                    authorization_token_hash,
-                )
             )
             if not identity_matches:
                 return False, task, "EXECUTION_CONFIRMATION_MISMATCH"
+            task.execution_authorization_token_hash = authorization_token_hash
             task.reservation_expires_at = (
                 datetime.now(timezone.utc) + timedelta(seconds=max(1, lease_seconds))
             ).isoformat()

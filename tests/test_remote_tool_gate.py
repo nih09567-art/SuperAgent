@@ -174,7 +174,6 @@ def test_email_authorization_uses_platform_trusted_recipient_resolution():
     ]
 
 
-@pytest.mark.xfail(raises=UnknownTrustedRecipientError, strict=True)
 def test_trusted_administrator_email_uses_concrete_tool():
     resolved = required_remote_tool_authorizations(
         agent_name="RemoteEmailDispatchAgent",
@@ -185,6 +184,9 @@ def test_trusted_administrator_email_uses_concrete_tool():
     )
 
     assert [item.tool_name for item in resolved] == ["remote_email_tool"]
+    assert resolved[0].arguments["resolved_recipient_addresses"] == [
+        "wangjing@ccb.com"
+    ]
 
 
 def test_trusted_administrator_communication_uses_concrete_tools():
@@ -251,6 +253,68 @@ def test_email_dispatch_accepts_trusted_name_to_email_resolution(monkeypatch):
         reset_authorized_remote_tools(token)
 
 
+def test_email_dispatch_canonicalizes_trusted_semantic_recipient(monkeypatch):
+    import httpx
+
+    forwarded = []
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"result": {"status": "success", "message_id": "mail-1"}}
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, *_args, **kwargs):
+            forwarded.append(kwargs["json"]["arguments"])
+            return FakeResponse()
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **_kwargs: FakeClient())
+    token = bind_authorized_remote_tools(
+        {
+            "authorized_remote_tools": [
+                {
+                    "tool_name": "remote_email_tool",
+                    "arguments": {
+                        "recipient": "\u738b\u7ecf\u7406",
+                        "resolved_recipient_addresses": ["wangjing@ccb.com"],
+                    },
+                }
+            ]
+        }
+    )
+    try:
+        result = asyncio.run(
+            BaseRemoteAgent.call_tool(
+                object(),
+                "remote_email_tool",
+                {
+                    "to": "\u738b\u7ecf\u7406",
+                    "subject": "proof",
+                    "body": "content",
+                },
+            )
+        )
+    finally:
+        reset_authorized_remote_tools(token)
+
+    assert result["message_id"] == "mail-1"
+    assert forwarded == [
+        {
+            "to": "wangjing@ccb.com",
+            "subject": "proof",
+            "body": "content",
+        }
+    ]
+
+
 def test_email_dispatch_rejects_conflicting_authorized_and_forwarded_recipient(
     monkeypatch,
 ):
@@ -314,6 +378,12 @@ def test_email_dispatch_rejects_conflicting_authorized_and_forwarded_recipient(
 def test_trusted_recipient_accepts_exact_directory_email():
     assert resolve_trusted_recipient_addresses("limishu@ccb.com") == [
         "limishu@ccb.com"
+    ]
+
+
+def test_trusted_recipient_resolves_unique_name_title_alias():
+    assert resolve_trusted_recipient_addresses("王经理") == [
+        "wangjing@ccb.com"
     ]
 
 
@@ -431,6 +501,88 @@ def test_remote_agent_accepts_normalized_bound_salary_arguments(monkeypatch):
             )
         )
         assert result["status"] == "success"
+    finally:
+        reset_authorized_remote_tools(token)
+
+
+def test_leave_query_uses_platform_authorized_employee_identity(monkeypatch):
+    import httpx
+
+    forwarded = []
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"result": {"status": "success", "records": []}}
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, *_args, **kwargs):
+            forwarded.append(kwargs["json"]["arguments"])
+            return FakeResponse()
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **_kwargs: FakeClient())
+    token = bind_authorized_remote_tools(
+        {
+            "authorized_remote_tools": [
+                {
+                    "tool_name": "query_leave_record",
+                    "arguments": {
+                        "employee_name": "李娜",
+                        "intent": "leave_record_query",
+                    },
+                }
+            ]
+        }
+    )
+    try:
+        result = asyncio.run(
+            BaseRemoteAgent.call_tool(
+                object(),
+                "query_leave_record",
+                {
+                    "employee_id": "李娜",
+                    "employee_name": "李娜",
+                },
+            )
+        )
+    finally:
+        reset_authorized_remote_tools(token)
+
+    assert result["status"] == "success"
+    assert forwarded == [{"employee_name": "李娜"}]
+
+
+def test_leave_query_rejects_untrusted_employee_identity():
+    token = bind_authorized_remote_tools(
+        {
+            "authorized_remote_tools": [
+                {
+                    "tool_name": "query_leave_record",
+                    "arguments": {
+                        "employee_name": "李娜",
+                        "intent": "leave_record_query",
+                    },
+                }
+            ]
+        }
+    )
+    try:
+        with pytest.raises(PermissionError, match="arguments do not match"):
+            asyncio.run(
+                BaseRemoteAgent.call_tool(
+                    object(),
+                    "query_leave_record",
+                    {"employee_name": "王强"},
+                )
+            )
     finally:
         reset_authorized_remote_tools(token)
 

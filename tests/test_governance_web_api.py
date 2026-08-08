@@ -1,6 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
 from fastapi.testclient import TestClient
-import json
 import pytest
 import threading
 from types import SimpleNamespace
@@ -8,6 +7,7 @@ from unittest.mock import patch
 
 import src.service.web_app as web_app
 import src.orchestration.reconciliation as reconciliation_module
+import src.robust.task_logger as task_logger_module
 
 from src.orchestration.completion import (
     PersistentReceiptStore,
@@ -32,6 +32,31 @@ def _configured_governance_identity(monkeypatch):
 
 def _client() -> TestClient:
     return TestClient(create_app())
+
+
+def test_health_and_task_resource_get_routes_are_available():
+    routes = {
+        (route.path, method)
+        for route in create_app().routes
+        for method in getattr(route, "methods", set())
+    }
+
+    assert ("/health", "GET") in routes
+    assert ("/api/tasks/{task_id}", "GET") in routes
+
+
+def test_task_resource_get_returns_public_task_log(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        task_logger_module, "_get_task_logs_dir", lambda: tmp_path / "task_logs"
+    )
+    task = TaskLogger("exec-status", "admin:workflow", "status query")
+    task.log_workflow_start("status query")
+
+    response = _client().get("/api/tasks/exec-status")
+
+    assert response.status_code == 200
+    assert response.json()["task_id"] == "exec-status"
+    assert "execution_authorization_token_hash" not in response.json()
 
 
 def _approval():
@@ -917,25 +942,19 @@ def test_deleting_legacy_conversation_removes_orphan_security_records_only(
 def _production_authorization_fields(
     client, *, user_id: str, workflow_id: str
 ):
-    credential = f"execution-key-{user_id}"
-    with patch.object(
-        web_app,
-        "EXECUTION_USER_API_KEYS_JSON",
-        json.dumps({user_id: credential}),
-    ):
-        response = client.post(
-            "/api/workflows/execution-authorizations",
-            headers={
-                "Authorization": f"Bearer {credential}",
-                "Idempotency-Key": "confirmation-governance-request",
-            },
-            json={
-                "user_id": user_id,
-                "workflow_id": workflow_id,
-                "plan_hash": "a" * 64,
-                "user_query": "test",
-            },
-        )
+    response = client.post(
+        "/api/workflows/execution-authorizations",
+        headers={
+            "X-Authenticated-User": user_id,
+            "Idempotency-Key": "confirmation-governance-request",
+        },
+        json={
+            "user_id": user_id,
+            "workflow_id": workflow_id,
+            "plan_hash": "a" * 64,
+            "user_query": "test",
+        },
+    )
     if response.status_code != 200:
         return response, {}
     data = response.json()
@@ -1185,6 +1204,10 @@ def test_security_precheck_matches_static_policy_constraints(monkeypatch):
         "/api/security/tool-check",
         params={"user_id": "hr_manager", "tool_name": "remote_salary_info_tool"},
     )
+    admin_salary = client.get(
+        "/api/security/tool-check",
+        params={"user_id": "admin", "tool_name": "remote_salary_info_tool"},
+    )
     salary_denied = client.get(
         "/api/security/tool-check",
         params={"user_id": "engineer", "tool_name": "remote_salary_info_tool"},
@@ -1199,6 +1222,8 @@ def test_security_precheck_matches_static_policy_constraints(monkeypatch):
     assert salary_review.json()["decision"] == "REVIEW_REQUIRED"
     assert salary_review.json()["allowed"] is False
     assert salary_review.json()["eligible"] is True
+    assert admin_salary.json()["decision"] == "ALLOW"
+    assert admin_salary.json()["allowed"] is True
 
     assert salary_denied.json()["decision"] == "DENY"
     assert salary_denied.json()["grants_match"] is False
@@ -1218,7 +1243,7 @@ def test_demo_static_assets_disable_stale_cache_and_include_resume_fixes():
     script = client.get("/static/app.js")
 
     assert index.status_code == 200
-    assert "v=20260803-decision-history-1" in index.text
+    assert "v=20260808-reconciliation-resume-1" in index.text
     assert script.status_code == 200
     assert script.headers["cache-control"] == "no-store"
     assert "const uniqueOutputs = []" in script.text
@@ -1227,7 +1252,8 @@ def test_demo_static_assets_disable_stale_cache_and_include_resume_fixes():
     assert "if (originalConversation) loadConversation(originalConversation);" in script.text
     assert 'clearOutputPhase("executing");' in script.text
     assert 'resumeTerminalStatus === "SUCCEEDED"' in script.text
-    assert "captureAssistantConversationContext({ replaceLatest: true });" in script.text
+    assert "captureAssistantConversationContext({" in script.text
+    assert "replaceLatest: true" in script.text
     assert "replaceLatestAssistantConversationMessage" in script.text
 
 

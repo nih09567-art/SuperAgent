@@ -3679,6 +3679,23 @@ button.sec-collapse-button {
   font-family: "Microsoft YaHei Mono", "Consolas", "Monaco", monospace;
 }
 
+.sec-queue-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.permission-summary-card .summary-header {
+  margin-bottom: 0;
+}
+
+.permission-summary-card #permissionSummaryContent[hidden],
+#securityApprovalsContent[hidden],
+#securityReconciliationsContent[hidden] {
+  display: none;
+}
+
 .sec-approvals {
   display: flex;
   flex-direction: column;
@@ -3983,6 +4000,156 @@ button.danger:hover {
 
 .chat-config-slot .form-card {
   width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.run-settings {
+  border: 1px solid rgba(20, 24, 40, 0.1);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.9);
+  overflow: hidden;
+}
+
+.run-settings-summary {
+  display: flex;
+  align-items: center;
+  min-height: 52px;
+  gap: 12px;
+  padding: 0 14px;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.run-settings-summary::-webkit-details-marker {
+  display: none;
+}
+
+.run-settings-summary:focus-visible {
+  outline: 2px solid rgba(27, 143, 107, 0.65);
+  outline-offset: -2px;
+}
+
+.run-settings-title {
+  flex: 0 0 auto;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.run-settings-title::before {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 8px;
+  border-radius: 50%;
+  background: #1b8f6b;
+  vertical-align: 1px;
+}
+
+.run-settings-summary-values {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 9px;
+  color: var(--muted);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.run-settings-summary-values > span:not(.run-settings-divider) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.run-settings-divider {
+  flex: 0 0 auto;
+  color: rgba(20, 24, 40, 0.3);
+}
+
+.run-settings-action {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  color: #176b54;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.run-settings-chevron {
+  width: 8px;
+  height: 8px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg) translateY(-2px);
+  transition: transform 160ms ease;
+}
+
+.run-settings[open] .run-settings-chevron {
+  transform: rotate(225deg) translate(-1px, -1px);
+}
+
+.run-settings-drawer {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.7fr) minmax(260px, 1.3fr);
+  gap: 0 16px;
+  padding: 16px 18px 8px;
+  border-top: 1px solid rgba(20, 24, 40, 0.08);
+  background: rgba(248, 249, 252, 0.72);
+}
+
+.run-settings-drawer .form-row {
+  min-width: 0;
+}
+
+.run-settings-toggles,
+.run-settings-advanced {
+  grid-column: 1 / -1;
+}
+
+.run-settings-advanced {
+  padding-top: 12px;
+  border-top: 1px solid rgba(20, 24, 40, 0.08);
+}
+
+.run-settings-advanced > label {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.run-settings-advanced-label {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+@media (max-width: 720px) {
+  .run-settings-summary {
+    flex-wrap: wrap;
+    gap: 4px 10px;
+    padding-top: 9px;
+    padding-bottom: 9px;
+  }
+
+  .run-settings-summary-values {
+    order: 3;
+    width: 100%;
+  }
+
+  .run-settings-drawer {
+    grid-template-columns: 1fr;
+  }
+
+  .run-settings-toggles,
+  .run-settings-advanced {
+    grid-column: auto;
+  }
 }
 
 .chat-page-layout {
@@ -4073,6 +4240,7 @@ button.danger:hover {
 
 .conversation-history-item {
   display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   width: 100%;
   gap: 5px;
   padding: 10px;
@@ -4081,6 +4249,41 @@ button.danger:hover {
   color: var(--text);
   background: transparent;
   text-align: left;
+}
+
+.conversation-history-item .conversation-history-content,
+.conversation-history-item time {
+  grid-column: 1;
+}
+
+.conversation-history-delete {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  align-self: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  color: var(--muted);
+  background: transparent;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.55;
+  transition: opacity 140ms ease, color 140ms ease, background 140ms ease;
+}
+
+.conversation-history-item:hover .conversation-history-delete,
+.conversation-history-item:focus-within .conversation-history-delete {
+  opacity: 1;
+}
+
+.conversation-history-delete:hover,
+.conversation-history-delete:focus-visible {
+  color: var(--danger);
+  background: rgba(217, 83, 79, 0.1);
+  outline: none;
 }
 
 .conversation-history-item:hover,
@@ -4343,14 +4546,14 @@ button.danger:hover {
   background: rgba(217, 83, 79, 0.12);
 }
 
-.chat-final-result-content {
+.chat-execution-steps-content {
   display: grid;
   gap: 10px;
   min-width: 0;
 }
 
-.answer-output .step-card-body.hidden {
-  display: block;
+.chat-execution-steps-content .step-card {
+  margin: 0;
 }
 
 .answer-output .step-result-table-wrapper,

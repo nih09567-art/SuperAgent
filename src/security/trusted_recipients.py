@@ -31,6 +31,25 @@ def _recipient_values(value: Any) -> list[str]:
     return [part.strip() for part in str(value or "").replace(";", ",").split(",") if part.strip()]
 
 
+def _matches_name_title_alias(entry: dict[str, Any], recipient: str) -> bool:
+    """Match a unique directory name prefix plus business title."""
+
+    name = _normalized(entry.get("name"))
+    positions = {
+        _normalized(entry.get("position")),
+        _normalized(entry.get("alternate_position")),
+    }
+    for title in ("负责人", "经理", "主管", "秘书", "行长"):
+        normalized_title = _normalized(title)
+        if not recipient.endswith(normalized_title):
+            continue
+        name_prefix = recipient[: -len(normalized_title)]
+        return bool(name_prefix) and name.startswith(name_prefix) and any(
+            normalized_title in position for position in positions if position
+        )
+    return False
+
+
 def _trusted_directory() -> list[dict[str, Any]]:
     root = get_project_root() / "assets"
     entries: list[dict[str, Any]] = []
@@ -86,6 +105,13 @@ def resolve_trusted_recipient_addresses(recipients: Any) -> list[str]:
                     _normalized(entry.get("position")),
                     _normalized(entry.get("alternate_position")),
                 }
+            }
+        if not matches:
+            matches = {
+                str(entry.get("email") or "").strip()
+                for entry in directory
+                if str(entry.get("email") or "").strip()
+                and _matches_name_title_alias(entry, recipient)
             }
         if len(matches) > 1:
             raise AmbiguousTrustedRecipientError(

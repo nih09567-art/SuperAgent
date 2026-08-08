@@ -12,6 +12,7 @@ import os
 import logging
 import traceback
 from openai import AsyncOpenAI
+from anthropic import AsyncAnthropic
 from dotenv import load_dotenv
 
 # Import agent factory
@@ -90,9 +91,20 @@ class LLMParameterExtractor:
 
     def __init__(self, config: RemoteAgentConfig):
         self.config = config
-        self.llm_client = AsyncOpenAI(
+        self.uses_messages_api = (
+            config.llm_base_url.rstrip("/").lower()
+            == "https://opencode.ai/zen/go/v1"
+            and config.llm_model.lower().startswith(("qwen", "minimax"))
+        )
+        client_class = AsyncAnthropic if self.uses_messages_api else AsyncOpenAI
+        client_base_url = config.llm_base_url
+        if self.uses_messages_api and client_base_url.rstrip("/").lower().endswith(
+            "/v1"
+        ):
+            client_base_url = client_base_url.rstrip("/")[:-3]
+        self.llm_client = client_class(
             api_key=config.llm_api_key,
-            base_url=config.llm_base_url,
+            base_url=client_base_url,
         )
 
     async def extract(
@@ -371,24 +383,35 @@ CRITICAL Requirements:
         try:
             logger.info(f"Calling LLM with model: {self.config.llm_model}")
 
+            system_prompt = (
+                "You are a parameter extraction assistant. Extract parameters "
+                "from conversation history and output valid JSON."
+            )
+            if self.uses_messages_api:
+                response = await self.llm_client.messages.create(
+                    model=self.config.llm_model,
+                    system=system_prompt,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=self.config.llm_temperature,
+                    max_tokens=self.config.llm_max_tokens,
+                    thinking={"type": "disabled"},
+                )
+                return "".join(
+                    block.text
+                    for block in response.content
+                    if getattr(block, "type", None) == "text"
+                )
+
             response = await self.llm_client.chat.completions.create(
                 model=self.config.llm_model,
                 messages=[
-                    {
-                        "role": "system",
-                        "content": "You are a parameter extraction assistant. Extract parameters from conversation history and output valid JSON."
-                    },
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": prompt},
                 ],
                 temperature=self.config.llm_temperature,
                 max_tokens=self.config.llm_max_tokens,
             )
-
-            llm_response = response.choices[0].message.content
-            return llm_response
+            return response.choices[0].message.content
 
         except Exception as e:
             logger.error(f"LLM call failed: {e}")

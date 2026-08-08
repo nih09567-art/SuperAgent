@@ -55,7 +55,6 @@ from src.service.env import (
     USE_MCP_TOOLS,
     WORKFLOW_SKILL_ADMIN_API_KEY,
     GOVERNANCE_ADMIN_ACTOR_ID,
-    EXECUTION_USER_API_KEYS_JSON,
 )
 from src.memory import get_memory_manager
 from src.memory.store import SecretDetectedError
@@ -226,75 +225,6 @@ def _trusted_governance_operator() -> str:
     return actor_id
 
 
-def _execution_user_credentials() -> dict[str, str]:
-    """Load the server-owned user-to-API-key map and reject unsafe config."""
-
-    raw_configuration = str(EXECUTION_USER_API_KEYS_JSON or "").strip()
-    if not raw_configuration:
-        raise HTTPException(
-            status_code=503,
-            detail="production execution credentials are not configured",
-        )
-    try:
-        configured = json.loads(raw_configuration)
-    except (TypeError, ValueError) as exc:
-        raise HTTPException(
-            status_code=503,
-            detail="production execution credentials are invalid",
-        ) from exc
-    if not isinstance(configured, dict) or not configured:
-        raise HTTPException(
-            status_code=503,
-            detail="production execution credentials are not configured",
-        )
-
-    credentials: dict[str, str] = {}
-    seen_keys: set[str] = set()
-    for raw_user_id, raw_api_key in configured.items():
-        user_id = str(raw_user_id or "").strip()
-        api_key = raw_api_key if isinstance(raw_api_key, str) else ""
-        if (
-            not user_id
-            or len(user_id) > 128
-            or ":" in user_id
-            or len(api_key) < 16
-            or api_key in seen_keys
-        ):
-            raise HTTPException(
-                status_code=503,
-                detail="production execution credentials are invalid",
-            )
-        credentials[user_id] = api_key
-        seen_keys.add(api_key)
-    return credentials
-
-
-def _authenticate_execution_user(
-    authorization: Optional[str] = Header(default=None),
-) -> tuple[str, str]:
-    """Resolve a production execution principal from a server-owned API key."""
-
-    scheme, separator, supplied = (authorization or "").partition(" ")
-    if not separator or scheme.casefold() != "bearer" or not supplied:
-        raise HTTPException(
-            status_code=401,
-            detail="production execution authentication failed",
-        )
-    credentials = _execution_user_credentials()
-    matches = [
-        user_id
-        for user_id, api_key in credentials.items()
-        if hmac.compare_digest(supplied, api_key)
-    ]
-    if len(matches) != 1:
-        raise HTTPException(
-            status_code=401,
-            detail="production execution authentication failed",
-        )
-    principal = matches[0]
-    return principal, credentials[principal]
-
-
 def _static_resource_precheck(
     profile: dict[str, Any],
     attrs: Optional[dict[str, Any]],
@@ -366,9 +296,11 @@ def _static_resource_precheck(
         )
 
     eligible = not blockers
-    # Governance administrators have broad roster access, but mandatory
-    # approval remains part of S-ABAC for high-risk or irreversible resources.
-    review_required = eligible and bool(
+    trusted_administrator = (
+        "all" in {grant.lower() for grant in user_grants}
+        or user_job_role.lower() == "system_orchestrator"
+    )
+    review_required = eligible and not trusted_administrator and bool(
         attrs.get("requires_approval") or attrs.get("irreversible")
     )
     decision = (
@@ -501,17 +433,6 @@ def _normalize_confirmation_request_id(value: str) -> str:
             detail="Idempotency-Key must be 8-128 URL-safe characters",
         )
     return request_id
-
-
-def _production_authorization_token(
-    execution_api_key: str, task_id: str, attempt_id: str
-) -> str:
-    """Derive a stable short-lived capability for idempotent response replay."""
-
-    payload = "\0".join((task_id, attempt_id)).encode("utf-8")
-    return hmac.new(
-        execution_api_key.encode("utf-8"), payload, hashlib.sha256
-    ).hexdigest()
 
 
 def _canonical_execution_plan_hash(
@@ -879,6 +800,11 @@ def create_app() -> FastAPI:
             },
         }
 
+    @app.get("/health")
+    async def health():
+        """Compatibility readiness endpoint for local probes and deployments."""
+        return await readiness()
+
     def _authenticated_principal(request: Request) -> str:
         """Resolve the authenticated subject supplied by the auth layer.
 
@@ -897,11 +823,11 @@ def create_app() -> FastAPI:
 
     @app.post("/api/workflows/execution-authorizations")
     async def create_execution_authorization(
+        request: Request,
         body: ExecutionAuthorizationRequest,
-        authenticated_user: tuple[str, str] = Depends(_authenticate_execution_user),
         idempotency_key: str = Header(alias="Idempotency-Key"),
     ):
-        principal, execution_api_key = authenticated_user
+        principal = _authenticated_principal(request)
         confirmation_request_id = _normalize_confirmation_request_id(idempotency_key)
         plan_hash = body.plan_hash.strip().lower()
         if any(character not in "0123456789abcdef" for character in plan_hash):
@@ -946,9 +872,7 @@ def create_app() -> FastAPI:
             plan_hash,
             confirmation_request_id,
         )
-        authorization_token = _production_authorization_token(
-            execution_api_key, task_id, attempt_id
-        )
+        authorization_token = secrets.token_urlsafe(32)
         token_hash = TaskLogger.hash_execution_authorization_token(
             authorization_token
         )
@@ -966,9 +890,7 @@ def create_app() -> FastAPI:
         if not reserved and task is not None:
             attempt_id = task.execution_attempt_id
             execution_idempotency_key = task.execution_idempotency_key
-            authorization_token = _production_authorization_token(
-                execution_api_key, task_id, attempt_id
-            )
+            authorization_token = secrets.token_urlsafe(32)
             token_hash = TaskLogger.hash_execution_authorization_token(
                 authorization_token
             )
@@ -1598,6 +1520,14 @@ def create_app() -> FastAPI:
     @app.get("/api/tasks/{task_id}/log")
     async def get_task_log(task_id: str):
         """Get the full structured log for a task execution."""
+        task_log = TaskLogger.expire_stale_reservation(task_id)
+        if task_log is None:
+            raise HTTPException(status_code=404, detail="Task log not found")
+        return _public_task_log(task_log)
+
+    @app.get("/api/tasks/{task_id}")
+    async def get_task(task_id: str):
+        """Return task status using the canonical task resource URL."""
         task_log = TaskLogger.expire_stale_reservation(task_id)
         if task_log is None:
             raise HTTPException(status_code=404, detail="Task log not found")

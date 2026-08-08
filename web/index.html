@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>CoorAgent Web Studio</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260806-frontend-sync-1" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260808-run-settings-1" />
     <script src="/static/mermaid.min.js"></script>
   </head>
   <body>
@@ -57,44 +57,60 @@
             </div>
             <div class="panel-body run-single-column">
               <div class="form-card">
-                <div class="summary-header">
-                  <h3>任务配置</h3>
-                </div>
-                <div class="form-row">
-                  <label for="userId">User ID</label>
-                  <input id="userId" type="text" value="test" />
-                </div>
-                <div class="form-row">
-                  <label for="demoUserRole">模拟用户角色 (S-ABAC Demo)</label>
-                  <select id="demoUserRole">
-                    <option value="admin">👑 Admin (System Admin)</option>
-                    <option value="hr_manager">👔 HR Manager (Zhang Wei)</option>
-                    <option value="engineer">💻 Engineer (Li Ming)</option>
-                    <option value="researcher_user">🔍 Researcher (Wang Fang)</option>
-                    <option value="communication_officer">📧 Comm Officer (Zhao Min)</option>
-                    <option value="guest">👤 Guest (Limited Access)</option>
-                  </select>
-                </div>
-                <div class="form-row inline">
-                </div>
-                <div class="form-row inline">
-                  <div class="checkbox">
-                    <input type="checkbox" id="deepThinking" checked />
-                    <label for="deepThinking">Deep Thinking</label>
+                <details class="run-settings">
+                  <summary class="run-settings-summary">
+                    <span class="run-settings-title">运行设置</span>
+                    <span class="run-settings-summary-values" aria-live="polite">
+                      <span class="run-settings-role-value">Admin</span>
+                      <span class="run-settings-divider" aria-hidden="true">·</span>
+                      <span class="run-settings-thinking-value">Deep Thinking 开启</span>
+                      <span class="run-settings-divider" aria-hidden="true">·</span>
+                      <span class="run-settings-workflow-value">新工作流</span>
+                    </span>
+                    <span class="run-settings-action">
+                      <span class="run-settings-action-label">设置</span>
+                      <span class="run-settings-chevron" aria-hidden="true"></span>
+                    </span>
+                  </summary>
+                  <div class="run-settings-drawer">
+                    <div class="form-row">
+                      <label for="userId">User ID</label>
+                      <input id="userId" type="text" value="test" />
+                    </div>
+                    <div class="form-row">
+                      <label for="demoUserRole">模拟用户角色 (S-ABAC Demo)</label>
+                      <select id="demoUserRole">
+                        <option value="admin">👑 Admin (System Admin)</option>
+                        <option value="hr_manager">👔 HR Manager (Zhang Wei)</option>
+                        <option value="engineer">💻 Engineer (Li Ming)</option>
+                        <option value="researcher_user">🔍 Researcher (Wang Fang)</option>
+                        <option value="communication_officer">📧 Comm Officer (Zhao Min)</option>
+                        <option value="guest">👤 Guest (Limited Access)</option>
+                      </select>
+                    </div>
+                    <div class="form-row inline run-settings-toggles">
+                      <div class="checkbox">
+                        <input type="checkbox" id="deepThinking" checked />
+                        <label for="deepThinking">Deep Thinking</label>
+                      </div>
+                      <div class="checkbox">
+                        <input type="checkbox" id="searchBefore" />
+                        <label for="searchBefore">Search Before Planning</label>
+                      </div>
+                      <div class="checkbox">
+                        <input type="checkbox" id="debugMode" />
+                        <label for="debugMode">Debug</label>
+                      </div>
+                    </div>
+                    <div class="form-row run-settings-advanced">
+                      <label for="workflowId">
+                        <span>Workflow ID</span>
+                        <span class="run-settings-advanced-label">高级参数，可选</span>
+                      </label>
+                      <input id="workflowId" type="text" placeholder="user:polish_id" />
+                    </div>
                   </div>
-                  <div class="checkbox">
-                    <input type="checkbox" id="searchBefore" />
-                    <label for="searchBefore">Search Before Planning</label>
-                  </div>
-                  <div class="checkbox">
-                    <input type="checkbox" id="debugMode" />
-                    <label for="debugMode">Debug</label>
-                  </div>
-                </div>
-                <div class="form-row">
-                  <label for="workflowId">Workflow ID (optional)</label>
-                  <input id="workflowId" type="text" placeholder="user:polish_id" />
-                </div>
+                </details>
                 <div class="chat-workspace" aria-label="Task conversation">
                   <div id="chatConversation" class="chat-conversation" aria-live="polite"></div>
                   <div class="chat-composer">
@@ -141,11 +157,18 @@
                 ></div>
               </div>
 
-              <div class="summary-card" id="permissionSummaryCard" style="display:none">
+              <div class="summary-card permission-summary-card" id="permissionSummaryCard" style="display:none">
                 <div class="summary-header">
                   <h3>🔐 权限摘要</h3>
+                  <button id="togglePermissionSummaryBtn" class="ghost sec-collapse-button" type="button"
+                    aria-expanded="false" aria-controls="permissionSummaryContent">
+                    <span class="sec-collapse-label">展开</span>
+                    <span class="sec-collapse-icon" aria-hidden="true">⌄</span>
+                  </button>
                 </div>
-                <div id="permissionSummary" class="security-perm-summary"></div>
+                <div id="permissionSummaryContent" hidden>
+                  <div id="permissionSummary" class="security-perm-summary"></div>
+                </div>
               </div>
 
               <div class="summary-card main-agent-decision-card" id="mainAgentDecisionCard" style="display:none">
@@ -528,22 +551,40 @@
                   <div class="detail-card">
                     <div class="summary-header">
                       <h3>人工审批队列</h3>
-                      <button id="refreshApprovalsBtn" class="ghost" type="button">刷新</button>
+                      <div class="sec-queue-actions">
+                        <button id="refreshApprovalsBtn" class="ghost" type="button">刷新</button>
+                        <button id="toggleApprovalsBtn" class="ghost sec-collapse-button" type="button"
+                          aria-expanded="false" aria-controls="securityApprovalsContent">
+                          <span class="sec-collapse-label">展开</span>
+                          <span class="sec-collapse-icon" aria-hidden="true">⌄</span>
+                        </button>
+                      </div>
                     </div>
-                    <div id="securityApprovals" class="sec-approvals">
-                      <div class="sec-empty">暂无待审批任务</div>
+                    <div id="securityApprovalsContent" hidden>
+                      <div id="securityApprovals" class="sec-approvals">
+                        <div class="sec-empty">暂无待审批任务</div>
+                      </div>
                     </div>
                   </div>
                   <div class="detail-card">
                     <div class="summary-header">
                       <h3>人工核对队列（外部操作状态不确定）</h3>
-                      <button id="refreshReconciliationsBtn" class="ghost" type="button">刷新</button>
+                      <div class="sec-queue-actions">
+                        <button id="refreshReconciliationsBtn" class="ghost" type="button">刷新</button>
+                        <button id="toggleReconciliationsBtn" class="ghost sec-collapse-button" type="button"
+                          aria-expanded="false" aria-controls="securityReconciliationsContent">
+                          <span class="sec-collapse-label">展开</span>
+                          <span class="sec-collapse-icon" aria-hidden="true">⌄</span>
+                        </button>
+                      </div>
                     </div>
-                    <p class="sec-reconciliation-help">
-                      仅在发邮件、生成文档、创建会议等外部操作已经发起，但系统无法确认成功或失败时触发。普通查询失败不会进入这里；权限和高风险审批请查看上方“人工审批队列”。
-                    </p>
-                    <div id="securityReconciliations" class="sec-approvals">
-                      <div class="sec-empty">暂无待核对任务</div>
+                    <div id="securityReconciliationsContent" hidden>
+                      <p class="sec-reconciliation-help">
+                        仅在发邮件、生成文档、创建会议等外部操作已经发起，但系统无法确认成功或失败时触发。普通查询失败不会进入这里；权限和高风险审批请查看上方“人工审批队列”。
+                      </p>
+                      <div id="securityReconciliations" class="sec-approvals">
+                        <div class="sec-empty">暂无待核对任务</div>
+                      </div>
                     </div>
                   </div>
                   <div class="detail-card">
@@ -579,7 +620,7 @@
       </main>
     </div>
 
-    <script src="/static/app.js?v=20260806-frontend-sync-1"></script>
-    <script src="/static/security.js?v=20260804-security-collapsible-1"></script>
+    <script src="/static/app.js?v=20260808-conversation-queue-collapse-1"></script>
+    <script src="/static/security.js?v=20260808-conversation-queue-collapse-1"></script>
   </body>
 </html>
