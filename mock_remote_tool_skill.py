@@ -134,6 +134,9 @@ def _load_risks() -> Dict[str, Any]:
 
 
 def _email_path() -> Path:
+    configured = str(os.getenv("MOCK_EMAIL_LOG_PATH") or "").strip()
+    if configured:
+        return Path(configured).resolve()
     return Path(__file__).resolve().parent / "assets" / "email_log.json"
 
 

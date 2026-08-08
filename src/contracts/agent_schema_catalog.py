@@ -33,8 +33,7 @@ def _is_iso_date_or_timestamp(value: str) -> bool:
 def _policy_scope_from_sources(sources: list[dict[str, Any]]) -> str | None:
     source_scopes = [source.get("policy_scope") for source in sources]
     if not all(
-        isinstance(scope, str) and scope in _POLICY_SCOPES
-        for scope in source_scopes
+        isinstance(scope, str) and scope in _POLICY_SCOPES for scope in source_scopes
     ):
         return None
     scopes = set(source_scopes)
@@ -104,9 +103,7 @@ def _validate_policy_info_provenance(value: Any, path: str) -> list[str]:
             f"not_found is false, got {count}"
         )
     if len(sources) != count:
-        errors.append(
-            f"{path}.sources: expected {count} entries, got {len(sources)}"
-        )
+        errors.append(f"{path}.sources: expected {count} entries, got {len(sources)}")
     if len(matched_items) != count:
         errors.append(
             f"{path}.matched_items: expected {count} entries, got {len(matched_items)}"
@@ -126,9 +123,7 @@ def _validate_policy_info_provenance(value: Any, path: str) -> list[str]:
             if len(set(matched_items)) != len(matched_items):
                 errors.append(f"{path}.matched_items: item ids must be unique")
             if set(source_ids) != set(matched_items):
-                errors.append(
-                    f"{path}: source ids must match matched_items exactly"
-                )
+                errors.append(f"{path}: source ids must match matched_items exactly")
 
         source_names = [source.get("source") for source in sources]
         if all(isinstance(source_name, str) for source_name in source_names) and any(
@@ -180,6 +175,38 @@ AGENT_SCHEMA_CATALOG: dict[str, dict[str, Any]] = {
         "properties": {
             "records": {"type": "array"},
             "matched_count": {"type": "integer"},
+        },
+    },
+    "employee.leave_records@v1": {
+        "required": ["employee_id", "records", "matched_count", "queried_at"],
+        "additional_properties": False,
+        "properties": {
+            "employee_id": {"type": "string"},
+            "records": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": [
+                        "record_id",
+                        "leave_type",
+                        "start_date",
+                        "end_date",
+                        "days",
+                        "approval_status",
+                    ],
+                    "additional_properties": False,
+                    "properties": {
+                        "record_id": {"type": "string"},
+                        "leave_type": {"type": "string"},
+                        "start_date": {"type": "string"},
+                        "end_date": {"type": "string"},
+                        "days": {"type": "number"},
+                        "approval_status": {"type": "string"},
+                    },
+                },
+            },
+            "matched_count": {"type": "integer"},
+            "queried_at": {"type": "string"},
         },
     },
     "policy.info@v1": {
@@ -329,6 +356,62 @@ AGENT_SCHEMA_CATALOG: dict[str, dict[str, Any]] = {
             "title": {"type": "string"},
         },
     },
+    "email.dispatch.request@v1": {
+        "required": [
+            "recipients",
+            "subject",
+            "body",
+            "source_report_artifact_id",
+            "approval_id",
+            "idempotency_key",
+        ],
+        "additional_properties": False,
+        "properties": {
+            "recipients": {
+                "type": "array",
+                "items": {"type": "string"},
+            },
+            "subject": {"type": "string"},
+            "body": {"type": "string"},
+            "source_report_artifact_id": {"type": "string"},
+            "approval_id": {"type": "string"},
+            "idempotency_key": {"type": "string"},
+        },
+    },
+    "email.dispatch.receipt@v1": {
+        "required": [
+            "dispatch_mode",
+            "provider_message_id",
+            "status",
+            "sent_at",
+            "approval_id",
+            "idempotency_key",
+        ],
+        "additional_properties": False,
+        "properties": {
+            "dispatch_mode": {
+                "type": "string",
+                "enum": ["simulated", "real"],
+            },
+            "provider_message_id": {"type": "string"},
+            "status": {
+                "type": "string",
+                "enum": ["sent", "simulated"],
+            },
+            "sent_at": {"type": "string"},
+            "approval_id": {"type": "string"},
+            "idempotency_key": {"type": "string"},
+            "safe_error": {
+                "type": "object",
+                "additional_properties": False,
+                "properties": {
+                    "code": {"type": "string"},
+                    "message": {"type": "string"},
+                    "retryable": {"type": "boolean"},
+                },
+            },
+        },
+    },
 }
 
 
@@ -360,8 +443,7 @@ def _validate_policy_info_v2(payload: dict[str, Any]) -> list[str]:
         )
     if not isinstance(sources, list):
         errors.append(
-            "payload.sources: expected array, "
-            f"got {type(sources).__name__}"
+            "payload.sources: expected array, " f"got {type(sources).__name__}"
         )
     if not isinstance(matched_items, list):
         errors.append(
@@ -370,8 +452,7 @@ def _validate_policy_info_v2(payload: dict[str, Any]) -> list[str]:
         )
     if type(not_found) is not bool:
         errors.append(
-            "payload.not_found: expected boolean, "
-            f"got {type(not_found).__name__}"
+            "payload.not_found: expected boolean, " f"got {type(not_found).__name__}"
         )
     if not isinstance(policy_scope, str):
         errors.append(
@@ -531,15 +612,42 @@ def _validate_policy_info_v2(payload: dict[str, Any]) -> list[str]:
     if len(set(matched_items)) != len(matched_items):
         errors.append("payload.matched_items: ids must be unique")
     if set(source_ids) != set(matched_items):
-        errors.append(
-            "payload.matched_items: ids must match source ids"
-        )
+        errors.append("payload.matched_items: ids must match source ids")
 
+    return errors
+
+
+def _validate_report_sources_v1(payload: dict[str, Any]) -> list[str]:
+    """Validate generic report fan-in without assuming a business scenario."""
+
+    errors: list[str] = []
+    sources = payload.get("sources")
+    if not isinstance(sources, list) or not sources:
+        return ["payload.sources: must contain at least one source"]
+
+    seen_logical_names: set[str] = set()
+    for index, source in enumerate(sources):
+        if not isinstance(source, dict):
+            continue
+        logical_name = str(source.get("logical_name") or "").strip()
+        schema_ref = str(source.get("schema_ref") or "").strip()
+        if not logical_name:
+            errors.append(f"payload.sources[{index}].logical_name: must not be empty")
+        elif logical_name in seen_logical_names:
+            errors.append(
+                f"payload.sources[{index}].logical_name: duplicate source "
+                f"{logical_name!r}"
+            )
+        else:
+            seen_logical_names.add(logical_name)
+        if not schema_ref:
+            errors.append(f"payload.sources[{index}].schema_ref: must not be empty")
     return errors
 
 
 AGENT_SCHEMA_VALIDATORS = {
     "policy.info@v2": _validate_policy_info_v2,
+    "report.sources@v1": _validate_report_sources_v1,
 }
 register_default_semantic_validators(AGENT_SCHEMA_VALIDATORS)
 

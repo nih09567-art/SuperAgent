@@ -583,6 +583,108 @@ def test_meeting_manager_provider_id_is_available_from_agent_envelope():
     assert _external_operation_id(exec_result, None) == "meeting-0042"
 
 
+def test_email_provider_id_is_available_from_typed_receipt_envelope():
+    from src.orchestration.scheduler import _external_operation_id
+
+    exec_result = ExecuteResult(
+        status=ExecutionStatus.SUCCESS,
+        result={
+            "contract_version": "1.0",
+            "status": "success",
+            "outputs": {
+                "email.dispatch.receipt": {
+                    "provider_message_id": "mail-typed-42",
+                }
+            },
+            "metadata": {
+                "producer_agent": "RemoteEmailDispatchAgent",
+                "schema_version": "1.0",
+            },
+        },
+    )
+
+    assert _external_operation_id(exec_result, None) == "mail-typed-42"
+
+
+def test_unrelated_nested_ids_do_not_confirm_external_side_effect():
+    from src.orchestration.scheduler import _external_operation_id
+
+    exec_result = ExecuteResult(
+        status=ExecutionStatus.SUCCESS,
+        result={
+            "outputs": {
+                "email.dispatch.receipt": {
+                    "recipient": {"id": "recipient-42"},
+                    "attachment": {"id": "attachment-42"},
+                }
+            }
+        },
+    )
+
+    assert _external_operation_id(exec_result, None) is None
+
+
+def test_typed_email_receipt_is_persisted_and_reused_without_duplicate_send():
+    from src.orchestration.completion import ReceiptStore, validate_receipt
+
+    calls = {"n": 0}
+    authorizations = {"n": 0}
+
+    async def authorize_step(**_kwargs):
+        authorizations["n"] += 1
+        return {"allowed": True, "decision": "ALLOW_APPROVED"}
+
+    async def exec_step(*, step, selected_agent, inputs, context):
+        calls["n"] += 1
+        return ExecuteResult(
+            status=ExecutionStatus.SUCCESS,
+            result={
+                "contract_version": "1.0",
+                "status": "success",
+                "outputs": {
+                    "email.dispatch.receipt": {
+                        "provider_message_id": "mail-once-42",
+                    }
+                },
+                "metadata": {
+                    "producer_agent": "RemoteEmailDispatchAgent",
+                    "schema_version": "1.0",
+                },
+            },
+        )
+
+    receipts = ReceiptStore()
+    step = _step(
+        "email",
+        mode="send",
+        preferred_resource_id="RemoteEmailDispatchAgent",
+        expected_outputs=["email.dispatch.receipt"],
+    )
+    scheduler = TaskScheduler(
+        execute_step=exec_step,
+        authorize_step=authorize_step,
+        routing_provider=StubRoutingProvider(),
+        receipt_store=receipts,
+    )
+    context = {"task_id": "typed-email-receipt-task"}
+
+    first = asyncio.run(scheduler.run(_graph(step), context=context))["email"]
+    second = asyncio.run(scheduler.run(_graph(step), context=context))["email"]
+    receipt = receipts.get(first.metrics["idempotency_key"])
+
+    assert first.is_success
+    assert first.metrics["external_op_id"] == "mail-once-42"
+    assert first.metrics["receipt_status"] == "SUCCEEDED"
+    assert second.is_success
+    assert second.metrics["idempotent_reuse"] is True
+    assert second.metrics["external_op_id"] == "mail-once-42"
+    assert calls["n"] == 1
+    assert authorizations["n"] == 1
+    assert receipt["status"] == "SUCCEEDED"
+    assert receipt["external_op_id"] == "mail-once-42"
+    assert validate_receipt(receipt, key=first.metrics["idempotency_key"])
+
+
 def test_dispatch_permission_denial_is_not_retried_or_misclassified():
     from src.security.enforcement import PermissionDeniedError
 

@@ -252,6 +252,7 @@ run-l -u test -m 'Create a navigation agent that uses map-related tools to plan 
 - [Task Execution Tracking and Recovery](./docs/task_execution_tracking_zh(taskLog_CheckpointResume).md)
 - [Remote Invocation](./docs/remote_invocation_zh.md)
 - [Business Support Plan](./docs/business_support.md)
+- [Contract-driven Dynamic Agent DAG Demo (Chinese)](./docs/dynamic_agent_dag_demo_zh.md)
 
 # Contributing
 

@@ -49,6 +49,64 @@ def test_catalog_registers_and_validates_business_schemas() -> None:
     assert registry.has("report.sources@v1")
     assert registry.has("report.markdown@v1")
     assert registry.has("document.content@v1")
+    assert registry.has("employee.leave_records@v1")
+    assert registry.has("email.dispatch.request@v1")
+    assert registry.has("email.dispatch.receipt@v1")
+
+
+def test_leave_records_schema_rejects_unrelated_sensitive_fields() -> None:
+    registry = register_agent_schemas(SchemaRegistry())
+    payload = {
+        "employee_id": "E1001",
+        "records": [
+            {
+                "record_id": "L001",
+                "leave_type": "年假",
+                "start_date": "2026-07-01",
+                "end_date": "2026-07-02",
+                "days": 2,
+                "approval_status": "已审批",
+                "salary": 10000,
+            }
+        ],
+        "matched_count": 1,
+        "queried_at": "2026-08-06T10:00:00+08:00",
+    }
+
+    valid, errors = registry.validate(payload, "employee.leave_records@v1")
+
+    assert not valid
+    assert any("unexpected field: 'salary'" in error for error in errors)
+
+
+def test_email_dispatch_request_and_receipt_schemas_validate() -> None:
+    registry = register_agent_schemas(SchemaRegistry())
+    request = {
+        "recipients": ["hr@example.test"],
+        "subject": "年假报告",
+        "body": "请查收。",
+        "source_report_artifact_id": "artifact-report-1",
+        "approval_id": "approval-1",
+        "idempotency_key": "email-run-1",
+    }
+    receipt = {
+        "dispatch_mode": "simulated",
+        "provider_message_id": "demo-message-1",
+        "status": "simulated",
+        "sent_at": "2026-08-06T10:01:00+08:00",
+        "approval_id": "approval-1",
+        "idempotency_key": "email-run-1",
+    }
+
+    request_valid, request_errors = registry.validate(
+        request, "email.dispatch.request@v1"
+    )
+    receipt_valid, receipt_errors = registry.validate(
+        receipt, "email.dispatch.receipt@v1"
+    )
+
+    assert request_valid, request_errors
+    assert receipt_valid, receipt_errors
 
 
 def test_document_content_accepts_a_validated_markdown_source() -> None:
@@ -228,9 +286,7 @@ def test_policy_scope_rejects_value_inconsistent_with_sources() -> None:
     )
 
     assert not valid
-    assert any(
-        "expected 'company' derived from sources" in error for error in errors
-    )
+    assert any("expected 'company' derived from sources" in error for error in errors)
 
 
 def test_policy_scope_type_error_does_not_crash_semantic_validation() -> None:
@@ -618,6 +674,27 @@ def test_report_source_items_require_logical_name_schema_and_payload() -> None:
     assert not valid
     assert any("schema_ref" in error for error in errors)
     assert any("payload" in error for error in errors)
+
+
+def test_report_sources_reject_duplicate_logical_sources() -> None:
+    registry = register_agent_schemas(SchemaRegistry())
+    source = {
+        "logical_name": "employee.info",
+        "schema_ref": "employee.info@v1",
+        "payload": {"records": []},
+    }
+
+    valid, errors = registry.validate(
+        {
+            "sources": [source, dict(source)],
+            "instruction": "汇总",
+            "title": "员工汇总",
+        },
+        "report.sources@v1",
+    )
+
+    assert not valid
+    assert any("duplicate source" in error for error in errors)
 
 
 def test_report_sources_accept_schema_valid_markdown_payload() -> None:

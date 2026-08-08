@@ -28,6 +28,10 @@ from config.s_abac_demo_users import get_user_available_agents
 from config.global_variables import orchestration_scheduler_enabled
 from src.llm.llm import get_llm_by_type
 from src.manager.resource import get_resource_registry
+from src.orchestration.contract_planning import (
+    contract_closure,
+    trusted_planning_catalog,
+)
 
 # Hook system imports
 from src.robust.hooks import (
@@ -968,8 +972,6 @@ async def run_agent_workflow(
         raw_request=raw_request or routing_query,
     )
     routing_decision = routing_decision_model.model_dump()
-    routing_decision_for_prompt = dict(routing_decision)
-    routing_decision_for_prompt.pop("excluded_agents", None)
     task_profile = task_profile_model.to_legacy_scenario()
     resolved_memory_context = dict(memory_context or {})
     if effective_memory_enabled and memory_session_id:
@@ -1026,11 +1028,48 @@ async def run_agent_workflow(
             logger.warning(
                 "Scenario-tag memory recall skipped: %s", type(exc).__name__
             )
-    routed_member_ids = [
-        item.agent_id for item in routing_decision_model.candidate_agents
-    ]
-    if routing_decision_model.decision == "DISPATCH":
+
+    closure = contract_closure(
+        task_profile,
+        agent_cards,
+        authorized_agent_ids=set(team_members),
+    )
+    planning_catalog: list[dict[str, Any]] = []
+    if closure.complete:
+        routed_member_ids = list(closure.selected_agent_ids)
+        planning_catalog = trusted_planning_catalog(
+            agent_cards, routed_member_ids
+        )
+        routing_decision.update(
+            {
+                "selected_agent": routed_member_ids[0] if routed_member_ids else None,
+                "candidate_agents": [
+                    {
+                        "agent_id": agent_id,
+                        "score": 1.0,
+                        "reason_codes": ["CONTRACT_OUTPUT_CLOSURE"],
+                        "score_breakdown": {"contract_coverage": 1.0},
+                    }
+                    for agent_id in routed_member_ids
+                ],
+                "decision": "DISPATCH",
+                "confidence": 1.0,
+                "reason_codes": ["CONTRACT_OUTPUT_CLOSURE"],
+            }
+        )
+    else:
+        routed_member_ids = [
+            item.agent_id for item in routing_decision_model.candidate_agents
+        ]
+        planning_catalog = trusted_planning_catalog(
+            agent_cards, routed_member_ids
+        )
+
+    if routing_decision.get("decision") == "DISPATCH":
         team_members = routed_member_ids
+        planning_by_id = {
+            item["agent_name"]: item for item in planning_catalog
+        }
         routed_cards = {
             card.agent_id: card for card in agent_cards if card.agent_id in set(routed_member_ids)
         }
@@ -1040,7 +1079,10 @@ async def run_agent_workflow(
                 f"  - Department: {routed_cards[agent_id].department}\n"
                 f"  - Capabilities: {', '.join(routed_cards[agent_id].capabilities)}\n"
                 f"  - Intents: {', '.join(routed_cards[agent_id].intents)}\n"
-                f"  - Actions: {', '.join(routed_cards[agent_id].supported_actions)}"
+                f"  - Actions: {', '.join(planning_by_id.get(agent_id, {}).get('operation_modes') or routed_cards[agent_id].supported_actions)}\n"
+                f"  - Requires: {', '.join(ref.name for ref in routed_cards[agent_id].requires) or 'None'}\n"
+                f"  - Produces: {', '.join(ref.name for ref in routed_cards[agent_id].produces) or 'None'}\n"
+                f"  - Planning tools: {', '.join(routed_cards[agent_id].planning_tool_scopes) or 'None'}"
             )
             for agent_id in team_members
             if agent_id in routed_cards
@@ -1048,6 +1090,8 @@ async def run_agent_workflow(
     elif workmode != "production":
         team_members = []
         team_members_description = ""
+    routing_decision_for_prompt = dict(routing_decision)
+    routing_decision_for_prompt.pop("excluded_agents", None)
     tools_description = await _build_tools_description()
     resource_catalog = await _build_resource_catalog()
 
@@ -1073,6 +1117,11 @@ async def run_agent_workflow(
             "TEAM_MEMBERS_DESCRIPTION": team_members_description,
             "TOOLS": tools_description,
             "RESOURCE_CATALOG": resource_catalog,
+            "PLANNING_AGENT_CARDS_TEXT": json.dumps(
+                planning_catalog,
+                ensure_ascii=False,
+                indent=2,
+            ),
             "USER_QUERY": routing_query,
             "execution_user_query": routing_query,
             "original_user_query": routing_query,
@@ -1110,6 +1159,12 @@ async def run_agent_workflow(
             "agent_cards": serialized_agent_cards,
             "agent_contract_fingerprints": contract_fingerprints,
             "agent_capability_bindings": capability_bindings,
+            "contract_closure": {
+                "target_outputs": list(closure.target_outputs),
+                "selected_agent_ids": list(closure.selected_agent_ids),
+                "missing_outputs": list(closure.missing_outputs),
+                "complete": closure.complete,
+            },
             "memory_session_id": memory_session_id or "",
             "memory_enabled": effective_memory_enabled,
             "memory_context": resolved_memory_context,
@@ -1159,6 +1214,8 @@ async def _process_workflow(
             "agent_cards",
             "agent_contract_fingerprints",
             "agent_capability_bindings",
+            "PLANNING_AGENT_CARDS_TEXT",
+            "contract_closure",
         )
         if initial_state.get(key) is not None
     }
@@ -1188,9 +1245,11 @@ async def _process_workflow(
             "EXPECTED_CAPABILITIES_TEXT",
             "routing_decision",
             "ROUTING_DECISION_TEXT",
+            "PLANNING_AGENT_CARDS_TEXT",
             "agent_cards",
             "agent_contract_fingerprints",
             "agent_capability_bindings",
+            "contract_closure",
             "skill_reuse_enabled",
             "reused_skill_id",
             "reused_skill_owner_id",

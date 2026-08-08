@@ -5,12 +5,16 @@ import json
 import os
 import tempfile
 import threading
+import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from src.utils.path_utils import get_project_root
+
+
+_APPROVAL_PROCESS_LOCK = threading.RLock()
 
 
 @dataclass
@@ -38,9 +42,9 @@ def _stable_approval_scenario(scenario: Dict[str, Any]) -> Dict[str, Any]:
     """Return stable policy facts for an approval fingerprint.
 
     Scenario-fit prose may be model-assisted and vary on checkpoint resume.
-    Only the fit verdict participates in policy evaluation. Generated wording,
-    confidence and suggested domains are advisory and may vary when the same
-    checkpoint is resumed, so none of them may invalidate a human approval.
+    Bind the fit verdict, never model-generated wording, confidence, or
+    suggested domains. The trusted task scenario, resource object, and action
+    remain part of the signature and carry the enforceable domain boundary.
     """
 
     stable = json.loads(json.dumps(scenario, ensure_ascii=False, default=str))
@@ -84,9 +88,14 @@ class ApprovalStore:
             "action": action or {},
         }
         raw = json.dumps(
-            payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"), default=str
+            payload,
+            sort_keys=True,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            default=str,
         )
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
     def create(
         self,
         *,
@@ -103,13 +112,16 @@ class ApprovalStore:
         step_id: str = "",
     ) -> ApprovalRequest:
         signature = self.signature(subject, object, action, scenario)
-        with self._lock:
+        with _APPROVAL_PROCESS_LOCK, self._lock:
             existing = self.find_active(task_id=task_id, signature=signature)
             if existing is not None:
                 return existing
 
             now = datetime.now().isoformat()
-            approval_id = f"approval_{int(datetime.now().timestamp() * 1000)}_{signature[:10]}"
+            approval_id = (
+                f"approval_{int(datetime.now().timestamp() * 1000)}_"
+                f"{signature[:10]}_{uuid.uuid4().hex[:10]}"
+            )
             request = ApprovalRequest(
                 approval_id=approval_id,
                 status="pending",
@@ -163,25 +175,41 @@ class ApprovalStore:
         data = json.loads(path.read_text(encoding="utf-8"))
         return ApprovalRequest(**data)
 
-    def approve(self, approval_id: str, approver: str = "user", comment: str = "") -> ApprovalRequest:
-        with self._lock:
+    def approve(
+        self, approval_id: str, approver: str = "user", comment: str = ""
+    ) -> ApprovalRequest:
+        with _APPROVAL_PROCESS_LOCK, self._lock:
             request = self._require(approval_id)
             if request.status not in {"pending", "approved"}:
-                raise ValueError(f"approval is not approvable in status={request.status}")
+                raise ValueError(
+                    f"approval is not approvable in status={request.status}"
+                )
             request.status = "approved"
             request.updated_at = datetime.now().isoformat()
-            request.decision = {"approver": approver, "comment": comment, "decided_at": request.updated_at}
+            request.decision = {
+                "approver": approver,
+                "comment": comment,
+                "decided_at": request.updated_at,
+            }
             self._save(request)
             return request
 
-    def reject(self, approval_id: str, approver: str = "user", comment: str = "") -> ApprovalRequest:
-        with self._lock:
+    def reject(
+        self, approval_id: str, approver: str = "user", comment: str = ""
+    ) -> ApprovalRequest:
+        with _APPROVAL_PROCESS_LOCK, self._lock:
             request = self._require(approval_id)
             if request.status not in {"pending", "rejected"}:
-                raise ValueError(f"approval is not rejectable in status={request.status}")
+                raise ValueError(
+                    f"approval is not rejectable in status={request.status}"
+                )
             request.status = "rejected"
             request.updated_at = datetime.now().isoformat()
-            request.decision = {"approver": approver, "comment": comment, "decided_at": request.updated_at}
+            request.decision = {
+                "approver": approver,
+                "comment": comment,
+                "decided_at": request.updated_at,
+            }
             self._save(request)
             return request
 
@@ -196,7 +224,7 @@ class ApprovalStore:
 
         if not any((task_id, workflow_id, user_id)):
             raise ValueError("task_id, workflow_id or user_id is required")
-        with self._lock:
+        with _APPROVAL_PROCESS_LOCK, self._lock:
             removed = 0
             for item in self.list():
                 if task_id and item.get("task_id") != task_id:
@@ -216,8 +244,10 @@ class ApprovalStore:
                     continue
             return removed
 
-    def consume_if_approved(self, *, task_id: str, signature: str) -> Optional[ApprovalRequest]:
-        with self._lock:
+    def consume_if_approved(
+        self, *, task_id: str, signature: str
+    ) -> Optional[ApprovalRequest]:
+        with _APPROVAL_PROCESS_LOCK, self._lock:
             approved = [
                 ApprovalRequest(**item)
                 for item in self.list(status="approved", task_id=task_id)
@@ -225,7 +255,9 @@ class ApprovalStore:
             ]
             if not approved:
                 return None
-            request = sorted(approved, key=lambda item: item.updated_at, reverse=True)[0]
+            request = sorted(approved, key=lambda item: item.updated_at, reverse=True)[
+                0
+            ]
             request.status = "consumed"
             request.updated_at = datetime.now().isoformat()
             self._save(request)
@@ -248,7 +280,8 @@ class ApprovalStore:
         matches = [
             ApprovalRequest(**item)
             for item in self.list(task_id=task_id)
-            if item.get("signature") == signature and (statuses is None or item.get("status") in statuses)
+            if item.get("signature") == signature
+            and (statuses is None or item.get("status") in statuses)
         ]
         if not matches:
             return None

@@ -177,10 +177,32 @@ def evaluate_completion(
 # --------------------------------------------------------------------------- #
 # Idempotency + receipts
 # --------------------------------------------------------------------------- #
+_VOLATILE_IDENTITY_FIELDS = frozenset({"approval_id", "idempotency_key"})
+
+
+def _identity_value(value: Any) -> Any:
+    """Remove platform-assigned fields before deriving a side-effect key."""
+
+    if isinstance(value, dict):
+        return {
+            key: _identity_value(item)
+            for key, item in value.items()
+            if str(key) not in _VOLATILE_IDENTITY_FIELDS
+        }
+    if isinstance(value, (list, tuple)):
+        return [_identity_value(item) for item in value]
+    return value
+
+
 def normalize_input(inputs: Any) -> str:
     """Canonical, order-independent string for hashing step inputs."""
     try:
-        return json.dumps(inputs, sort_keys=True, ensure_ascii=False, default=str)
+        return json.dumps(
+            _identity_value(inputs),
+            sort_keys=True,
+            ensure_ascii=False,
+            default=str,
+        )
     except Exception:  # pragma: no cover - defensive
         return str(inputs)
 

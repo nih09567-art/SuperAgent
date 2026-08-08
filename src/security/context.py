@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from datetime import datetime
 from typing import Any, Dict, Optional
 
@@ -68,6 +69,22 @@ def _normalize_list(value: Any) -> list[str]:
     if isinstance(value, str):
         return [value]
     return [str(value)]
+
+
+def _security_time(metadata: Dict[str, Any]) -> str:
+    explicit = str(metadata.get("time") or "").strip()
+    if explicit in {"working_hours", "off_hours"}:
+        return explicit
+
+    # Real-HTTP acceptance may run outside office hours.  Permit a narrowly
+    # scoped, process-level test override only when the explicit E2E opt-in is
+    # also enabled.  Normal services continue to use the host's wall clock.
+    if os.getenv("RUN_ANNUAL_LEAVE_HTTP_E2E") == "1":
+        override = os.getenv("S_ABAC_E2E_TIME_OVERRIDE", "").strip()
+        if override in {"working_hours", "off_hours"}:
+            return override
+
+    return "working_hours" if 9 <= datetime.now().hour < 18 else "off_hours"
 
 
 class SecurityContextBuilder:
@@ -216,7 +233,7 @@ class SecurityContextBuilder:
                 "scenario_fit_result": metadata.get("scenario_fit_result", {}),
             },
             environment={
-                "time": metadata.get("time") or ("working_hours" if 9 <= datetime.now().hour < 18 else "off_hours"),
+                "time": _security_time(metadata),
                 "network_zone": metadata.get("network_zone", "internal"),
                 "authentication_strength": metadata.get("authentication_strength", "MFA"),
             },

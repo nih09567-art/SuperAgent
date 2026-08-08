@@ -27,6 +27,13 @@
       "department": "技术部",
       "email": "zhaoliu@example.com",
       "phone": "13600136001"
+    },
+    {
+      "name": "人事部门",
+      "position": "演示收件组",
+      "department": "人力资源部",
+      "email": "hr@example.test",
+      "phone": ""
     }
   ]
 }

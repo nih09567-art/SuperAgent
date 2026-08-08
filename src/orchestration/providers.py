@@ -116,7 +116,7 @@ class MainAgentRoutingProvider:
         if step.preferred_resource_id:
             meta.setdefault("preferred_resource_id", step.preferred_resource_id)
 
-        profile, _cards, decision = await make_routing_decision(
+        profile, cards, decision = await make_routing_decision(
             user_query=user_query,
             task_id=task_id,
             workflow_id=workflow_id,
@@ -151,7 +151,19 @@ class MainAgentRoutingProvider:
                     getattr(c, "agent_id", None)
                     for c in getattr(decision, "candidate_agents", []) or []
                 }
-                if preferred in candidate_ids:
+                registered_ids = {
+                    getattr(card, "agent_id", None) for card in cards or []
+                }
+                excluded_ids = {
+                    getattr(item, "agent_id", None)
+                    for item in getattr(decision, "excluded_agents", []) or []
+                }
+                preferred_passed_gate = preferred in candidate_ids or (
+                    preferred in registered_ids
+                    and preferred in authorized_agent_ids
+                    and preferred not in excluded_ids
+                )
+                if preferred_passed_gate:
                     selected = preferred
                     reason_codes = ["HONOR_PREFERRED_RESOURCE", *reason_codes]
         return RoutingResult(

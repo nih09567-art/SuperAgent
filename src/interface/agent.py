@@ -102,6 +102,8 @@ class Agent(BaseModel):
     input_schema_refs: Dict[str, str] = Field(default_factory=dict)
     output_schema_refs: Dict[str, str] = Field(default_factory=dict)
     agent_contract: Optional[AgentContract] = None
+    planning_agent_contract: Optional[AgentContract] = None
+    planning_selected_tools: List[str] = Field(default_factory=list)
 
     model_config = ConfigDict(extra="allow")
 
@@ -130,6 +132,9 @@ class Agent(BaseModel):
             ]
             self.input_schema_refs = dict(self.agent_contract.input_schema_refs)
             self.output_schema_refs = dict(self.agent_contract.output_schema_refs)
+
+        if self.planning_agent_contract is None:
+            self.planning_agent_contract = self.agent_contract
 
         return self
 
@@ -200,6 +205,7 @@ class State(MessagesState):
     TEAM_MEMBERS: list[str]
     TEAM_MEMBERS_DESCRIPTION: str
     RESOURCE_CATALOG: str
+    PLANNING_AGENT_CARDS_TEXT: str
     user_id: str
     next: str
     full_plan: str
@@ -229,6 +235,7 @@ class State(MessagesState):
     agent_cards: list[dict]
     agent_contract_fingerprints: dict[str, str]
     agent_capability_bindings: dict[str, list[str]]
+    contract_closure: dict[str, Any]
     runtime_event_handler: Optional[Callable[[dict[str, Any]], Awaitable[None]]]
     memory_session_id: str
     memory_enabled: bool

@@ -10,10 +10,15 @@ class TaskProfile(BaseModel):
 
     task_id: str
     intent: str = "general_assistance"
+    intents: list[str] = Field(default_factory=list)
     task_type: str = "GENERAL"
     business_goal: str = ""
     action: str = "read"
+    operation_mode: str = "read"
     entities: dict[str, Any] = Field(default_factory=dict)
+    required_business_data: list[str] = Field(default_factory=list)
+    expected_deliverables: list[str] = Field(default_factory=list)
+    side_effects: list[str] = Field(default_factory=list)
     data_scope: list[str] = Field(default_factory=lambda: ["general"])
     scenario_tags: list[str] = Field(default_factory=lambda: ["general"])
     expected_capabilities: list[str] = Field(default_factory=lambda: ["General"])

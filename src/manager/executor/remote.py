@@ -401,6 +401,10 @@ class RemoteExecutor(AgentExecutor):
 
         selected_tools = getattr(agent, "selected_tools", None)
         if selected_tools:
+            authorized_tool_names = {
+                str(item.get("tool_name") or "")
+                for item in authorized_remote_tools
+            }
             request["tools"] = [
                 {
                     "name": getattr(t, "name", ""),
@@ -408,7 +412,7 @@ class RemoteExecutor(AgentExecutor):
                     "parameters": getattr(t, "parameters", {}),
                 }
                 for t in selected_tools
-                if getattr(t, "name", "")
+                if getattr(t, "name", "") in authorized_tool_names
             ]
 
         request["security_context"] = {

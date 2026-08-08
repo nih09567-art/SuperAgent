@@ -10,9 +10,10 @@ authorized/capable candidate, and must never bypass a REJECT/CLARIFY verdict.
 """
 
 import asyncio
+from types import SimpleNamespace
 
 import src.orchestrator as orchestrator_pkg
-from src.contracts import RoutingCandidate, RoutingDecision
+from src.contracts import ExcludedAgent, RoutingCandidate, RoutingDecision
 from src.interface.task_graph import TaskStep
 from src.orchestration.providers import MainAgentRoutingProvider
 
@@ -36,9 +37,9 @@ def _decision(*, decision, selected, candidates):
     )
 
 
-def _patch(monkeypatch, decision):
+def _patch(monkeypatch, decision, *, cards=()):
     async def _fake(**_kwargs):
-        return _Profile(), [], decision
+        return _Profile(), list(cards), decision
 
     monkeypatch.setattr(orchestrator_pkg, "make_routing_decision", _fake)
 
@@ -87,6 +88,88 @@ def test_keep_routing_pick_when_preferred_not_a_candidate(monkeypatch):
     )
     step = TaskStep(step_id="step_1", preferred_resource_id="RemoteHRAssistantAgent")
     result = _decide(step)
+    assert result.selected_agent == "RemoteKnowledgeAgent"
+    assert "HONOR_PREFERRED_RESOURCE" not in result.reason_codes
+
+
+def test_honor_registered_authorized_preferred_when_top_k_omits_it(monkeypatch):
+    # Composite workflows can have more eligible Agents than route_task's
+    # candidate top_k. Omission is not an exclusion and must not collapse a
+    # later plan step onto the global query's top-scoring Agent.
+    decision = _decision(
+        decision="DISPATCH",
+        selected="RemoteHRAssistantAgent",
+        candidates=[("RemoteHRAssistantAgent", 0.9)],
+    )
+    _patch(
+        monkeypatch,
+        decision,
+        cards=[
+            SimpleNamespace(agent_id="RemoteHRAssistantAgent"),
+            SimpleNamespace(agent_id="RemoteReportAgent"),
+        ],
+    )
+    provider = MainAgentRoutingProvider()
+    result = asyncio.run(
+        provider.decide(
+            TaskStep(
+                step_id="report",
+                preferred_resource_id="RemoteReportAgent",
+            ),
+            user_query="查询员工、政策、记录并生成报告",
+            task_id="t1",
+            workflow_id="wf1",
+            agents=(),
+            authorized_agent_ids={
+                "RemoteHRAssistantAgent",
+                "RemoteReportAgent",
+            },
+        )
+    )
+
+    assert result.selected_agent == "RemoteReportAgent"
+    assert "HONOR_PREFERRED_RESOURCE" in result.reason_codes
+
+
+def test_registered_but_excluded_preferred_is_never_honored(monkeypatch):
+    decision = _decision(
+        decision="DISPATCH",
+        selected="RemoteKnowledgeAgent",
+        candidates=[("RemoteKnowledgeAgent", 0.9)],
+    ).model_copy(
+        update={
+            "excluded_agents": [
+                ExcludedAgent(
+                    agent_id="RemoteReportAgent",
+                    reason="capability mismatch",
+                    reason_code="CAPABILITY_MISMATCH",
+                )
+            ]
+        }
+    )
+    _patch(
+        monkeypatch,
+        decision,
+        cards=[SimpleNamespace(agent_id="RemoteReportAgent")],
+    )
+    provider = MainAgentRoutingProvider()
+    result = asyncio.run(
+        provider.decide(
+            TaskStep(
+                step_id="report",
+                preferred_resource_id="RemoteReportAgent",
+            ),
+            user_query="查询员工、政策、记录并生成报告",
+            task_id="t1",
+            workflow_id="wf1",
+            agents=(),
+            authorized_agent_ids={
+                "RemoteKnowledgeAgent",
+                "RemoteReportAgent",
+            },
+        )
+    )
+
     assert result.selected_agent == "RemoteKnowledgeAgent"
     assert "HONOR_PREFERRED_RESOURCE" not in result.reason_codes
 

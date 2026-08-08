@@ -9,13 +9,8 @@ from remote_agents.hr_assistant_agent import RemoteHRAssistantAgent
 from remote_agents.knowledge_agent import RemoteKnowledgeAgent
 from remote_agents.report_agent import RemoteReportAgent
 from src.contracts.agent_schema_catalog import register_agent_schemas
-from src.contracts.scenario_contract import ANNUAL_LEAVE_REPORT_V1
 from src.interface.task_graph import TaskGraphValidationError
-from src.orchestration.plan_to_task_graph import (
-    canonicalize_annual_leave_plan,
-    plan_to_task_graph,
-    trusted_scenario_contract_for_plan,
-)
+from src.orchestration.plan_to_task_graph import plan_to_task_graph
 from src.orchestration.schema_registry import SchemaRegistry
 from tests.integration.annual_leave_e2e_harness import _timeline_event
 
@@ -68,16 +63,11 @@ def _annual_leave_plan() -> list[dict]:
 
 
 def test_annual_leave_plan_has_exact_three_step_contract_fan_in():
-    scenario_contract_id = trusted_scenario_contract_for_plan(
-        _annual_leave_plan(),
-        user_query=ANNUAL_QUERY,
-    )
     graph = plan_to_task_graph(
         _annual_leave_plan(),
         task_id="annual-leave-plan",
         subject="demo_hr_manager",
         agent_contracts=_contracts(),
-        trusted_scenario_contract_id=scenario_contract_id,
     )
 
     assert [step.step_id for step in graph.steps] == [
@@ -96,16 +86,11 @@ def test_annual_leave_plan_has_exact_three_step_contract_fan_in():
     assert by_id["generate_report"].expected_schema_refs == {
         "report.markdown": "report.markdown@v1"
     }
-    assert (
-        by_id["generate_report"].scenario_contract_id
-        == ANNUAL_LEAVE_REPORT_V1
-    )
+    assert by_id["generate_report"].scenario_contract_id is None
     assert len(by_id["generate_report"].input_bindings) == 1
     assert {
         (item["source_step"], item["source_output"])
-        for item in by_id["generate_report"].input_bindings[0][
-            "source_artifacts"
-        ]
+        for item in by_id["generate_report"].input_bindings[0]["source_artifacts"]
     } == {
         ("hr_query", "employee.info"),
         ("policy_query", "policy.info"),
@@ -116,16 +101,16 @@ def test_annual_leave_plan_has_exact_three_step_contract_fan_in():
     )
 
 
-def test_real_planner_positional_ids_are_canonicalized_without_inventing_edges():
+def test_real_planner_positional_ids_are_preserved_as_generic_graph_ids():
     positional = [
         {
             "step_id": "step_1",
-            "agent_name": "RemoteHRAssistantAgent",
+            "agent_name": "RemoteKnowledgeAgent",
             "depends_on": [],
         },
         {
             "step_id": "step_2",
-            "agent_name": "RemoteKnowledgeAgent",
+            "agent_name": "RemoteHRAssistantAgent",
             "depends_on": [],
         },
         {
@@ -137,11 +122,11 @@ def test_real_planner_positional_ids_are_canonicalized_without_inventing_edges()
                     "parameter_name": "report.sources",
                     "source_artifacts": [
                         {
-                            "source_step": "RemoteHRAssistantAgent",
+                            "source_step": "step_2",
                             "source_output": "employee.info",
                         },
                         {
-                            "source_step": "RemoteKnowledgeAgent",
+                            "source_step": "step_1",
                             "source_output": "policy.info",
                         },
                     ],
@@ -150,21 +135,22 @@ def test_real_planner_positional_ids_are_canonicalized_without_inventing_edges()
         },
     ]
 
-    normalized = canonicalize_annual_leave_plan(
+    graph = plan_to_task_graph(
         positional,
-        user_query=ANNUAL_QUERY,
+        task_id="planner-positional-ids",
+        agent_contracts=_contracts(),
     )
 
-    assert [step["step_id"] for step in normalized] == [
-        "hr_query",
-        "policy_query",
-        "generate_report",
+    assert [step.step_id for step in graph.steps] == [
+        "step_1",
+        "step_2",
+        "step_3",
     ]
-    assert normalized[2]["depends_on"] == ["hr_query", "policy_query"]
+    assert graph.step_map()["step_3"].depends_on == ["step_1", "step_2"]
     assert [
         source["source_step"]
-        for source in normalized[2]["inputs"][0]["source_artifacts"]
-    ] == ["hr_query", "policy_query"]
+        for source in graph.step_map()["step_3"].input_bindings[0]["source_artifacts"]
+    ] == ["step_2", "step_1"]
     assert positional[0]["step_id"] == "step_1"
 
 
@@ -177,15 +163,6 @@ ANNUAL_QUERY = (
 @pytest.mark.parametrize(
     "mutation",
     [
-        lambda plan: plan[2]["inputs"][0]["source_artifacts"].pop(),
-        lambda plan: plan[2]["inputs"][0]["source_artifacts"].__setitem__(
-            1,
-            {
-                "source_step": "hr_query",
-                "source_output": "employee.info",
-                "schema_ref": "employee.info@v1",
-            },
-        ),
         lambda plan: plan[2]["inputs"][0]["source_artifacts"][0].update(
             source_step="missing_step"
         ),
@@ -203,7 +180,6 @@ def test_annual_leave_invalid_fan_in_fails_during_task_graph_conversion(mutation
             plan,
             task_id="annual-leave-invalid",
             agent_contracts=_contracts(),
-            trusted_scenario_contract_id=ANNUAL_LEAVE_REPORT_V1,
         )
 
 
@@ -219,7 +195,7 @@ def test_generic_employee_report_accepts_one_employee_source():
             "agent_name": "RemoteReportAgent",
             "depends_on": ["employee_query"],
             # A Planner-provided marker is not a trusted scenario contract.
-            "scenario_contract_id": ANNUAL_LEAVE_REPORT_V1,
+            "scenario_contract_id": "planner_supplied_value_is_untrusted",
             "inputs": [
                 {
                     "parameter_name": "report.sources",
@@ -273,8 +249,7 @@ def _messages(text: str) -> list[dict]:
     return [
         {
             "role": "user",
-            "content": "EXECUTION_CONTEXT\n"
-            + json.dumps(brief, ensure_ascii=False),
+            "content": "EXECUTION_CONTEXT\n" + json.dumps(brief, ensure_ascii=False),
         }
     ]
 
@@ -404,9 +379,7 @@ def test_report_agent_requires_success_string_markdown():
 
     assert result["status"] == "success"
     assert result["outputs"]["report.markdown"]["markdown"] == "# 年假汇总"
-    assert result["outputs"]["report.markdown"]["external_op_id"].startswith(
-        "report-"
-    )
+    assert result["outputs"]["report.markdown"]["external_op_id"].startswith("report-")
 
 
 def test_report_agent_normalizes_factual_markdown_spacing():
@@ -529,7 +502,10 @@ def test_e2e_timeline_accepts_non_read_scheduler_attempt_boundaries():
     assert start["executed_agent"] == "RemoteReportAgent"
     assert end is not None
     assert end["status"] == "SUCCEEDED"
-    assert _timeline_event(
-        {"event": "start_of_agent", "data": {"agent_name": "planner"}},
-        12,
-    ) is None
+    assert (
+        _timeline_event(
+            {"event": "start_of_agent", "data": {"agent_name": "planner"}},
+            12,
+        )
+        is None
+    )
