@@ -137,7 +137,7 @@ def _email_path() -> Path:
     configured = str(os.getenv("MOCK_EMAIL_LOG_PATH") or "").strip()
     if configured:
         return Path(configured).resolve()
-    return Path(__file__).resolve().parent / "assets" / "email_log.json"
+    return Path(__file__).resolve().parent / "output" / "mock-email-log.json"
 
 
 def _load_emails() -> Dict[str, Any]:
@@ -146,9 +146,18 @@ def _load_emails() -> Dict[str, Any]:
         return _EMAIL_CACHE
     path = _email_path()
     if not path.exists():
-        raise FileNotFoundError(f"Email log not found: {path}")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('{"emails": []}\n', encoding="utf-8")
     _EMAIL_CACHE = _read_json(path)
     return _EMAIL_CACHE
+
+
+def _save_emails(data: Dict[str, Any]) -> None:
+    global _EMAIL_CACHE
+    path = _email_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    _EMAIL_CACHE = data
 
 
 def _schedule_path() -> Path:
@@ -1307,8 +1316,7 @@ async def tool(req: ToolRequest, authorization: Optional[str] = Header(default=N
 
             emails.append(payload)
             data["emails"] = emails
-            _EMAIL_CACHE = data
-            _email_path().write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            _save_emails(data)
             persisted = True
             print(f"[TOOL] Email saved successfully")
         except Exception as exc:

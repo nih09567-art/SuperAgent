@@ -1,0 +1,12 @@
+{
+  "emails": [
+    {
+      "id": "email-example-0001",
+      "from": "noreply@internal.local",
+      "to": "demo@example.test",
+      "subject": "示例通知",
+      "body": "这是脱敏的 Mock 邮件示例。",
+      "attachments": []
+    }
+  ]
+}

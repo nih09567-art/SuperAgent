@@ -486,7 +486,7 @@ GET {base_url}/resources
 | `calendar_events.json` | 日程数据 |
 | `todo_sample.json` | 待办数据 |
 | `contacts.json` | 通讯录 |
-| `email_log.json` | 邮件发送记录 |
+| `email_log.example.json` | 脱敏邮件记录示例（实际运行日志写入 `output/mock-email-log.json`） |
 | `leave_applications.json` | 请假申请 |
 | `travel_applications.json` | 出差申请 |
 | `unicorn_db.json` / `unicorn_db_sample.json` | 企业/独角兽数据库 |
@@ -711,7 +711,7 @@ pytest
 4. 远程业务能力目前主要是 mock/demo 服务，通过本地端口 `8010`、`8011`、`8012` 模拟。
 5. workflow cache 同时负责状态、执行队列和 Mermaid 可视化，职责较重。
 6. 代码中有一些中文字符串显示为乱码，说明历史文件可能经历过编码转换问题。
-7. `assets/email_log.json` 和 `src/workflow/cache.py` 当前在工作区已有未提交修改，分析时只读取，未改动。
+7. Mock 邮件运行日志默认写入被 Git 忽略的 `output/mock-email-log.json`，也可通过 `MOCK_EMAIL_LOG_PATH` 重定向。
 
 ## 18. 扩展方式
 

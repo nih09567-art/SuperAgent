@@ -25,10 +25,16 @@ store
 .pytest_cache/
 .pytest_tmp_*/
 .pytest-tmp-daily-*/
+/.pytest-*/
 .ruff_cache/
 /.artifacts/
+/artifacts/
 artifacts/demo-runs/
 artifacts/annual-leave-service-logs/
+
+# Mutable mock runtime data
+/assets/email_log.json
+/output/mock-email-log.json
 
 # Tool-generated logs
 src/tools/excel/excel-mcp.log
