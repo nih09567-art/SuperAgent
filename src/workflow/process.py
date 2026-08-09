@@ -105,6 +105,52 @@ def enable_debug_logging():
 logger = logging.getLogger(__name__)
 
 
+def _auto_recovery_hooks_enabled(
+    initial_state: Mapping[str, Any], execution_phase: str
+) -> bool:
+    """Enable rollback hooks only for an actual production execution."""
+
+    raw_mode = initial_state.get("workflow_mode")
+    workflow_mode = str(getattr(raw_mode, "value", raw_mode) or "")
+    return bool(
+        AUTO_RECOVERY_ENABLED
+        and workflow_mode == WorkMode.PRODUCTION.value
+        and execution_phase == "execution"
+    )
+
+
+def _bounded_hook_recovery(
+    initial_state: Mapping[str, Any], hook_result: Any, *, source: str
+) -> tuple[dict[str, Any], int] | None:
+    """Validate a legacy hook recovery request and allow at most one retry."""
+
+    modified_state = getattr(hook_result, "modified_state", None)
+    raw_resume_step = getattr(hook_result, "resume_step", None)
+    if raw_resume_step is None or not isinstance(modified_state, Mapping):
+        return None
+    if initial_state.get("__auto_recovery_attempted"):
+        logger.warning(
+            "%s hook requested another recovery after the bounded attempt; skipping",
+            source,
+        )
+        return None
+    try:
+        resume_step = int(raw_resume_step)
+    except (TypeError, ValueError):
+        logger.warning("%s hook returned an invalid resume step: %r", source, raw_resume_step)
+        return None
+    if resume_step < 1:
+        logger.warning(
+            "%s hook returned resume step %s; valid workflow steps start at 1",
+            source,
+            resume_step,
+        )
+        return None
+    retry_state = dict(modified_state)
+    retry_state["__auto_recovery_attempted"] = True
+    return retry_state, resume_step
+
+
 # LLM reflection is post-terminal bookkeeping. Track tasks so tests and
 # controlled shutdowns can drain them, while production requests do not wait
 # for a reasoning model before emitting the workflow terminal event.
@@ -1595,9 +1641,11 @@ async def _process_workflow(
             )
         )
 
-    # Initialize hook system (controlled by AUTO_RECOVERY_ENABLED)
+    # Recovery hooks operate on execution output and checkpoints. Planning-only
+    # workflows intentionally have neither, so treating a Plan as missing Agent
+    # output creates false recovery loops.
     hook_engine = None
-    if AUTO_RECOVERY_ENABLED:
+    if _auto_recovery_hooks_enabled(initial_state, execution_phase):
         initialize_hook_system()
         hook_engine = HookEngine()
 
@@ -2059,15 +2107,22 @@ async def _process_workflow(
                 if hook_result.modified_state:
                     state = State(**hook_result.modified_state)
                 # Handle recovery from hook result
-                if hook_result.resume_step is not None and hook_result.modified_state:
+                recovery = _bounded_hook_recovery(
+                    initial_state, hook_result, source="node_end"
+                )
+                if recovery is not None:
+                    recovery_state, recovery_step = recovery
                     # Recovery triggered, resume workflow
                     logger.info(
-                        f"Hook triggered recovery, resuming from step {hook_result.resume_step}")
+                        "Hook triggered recovery, resuming from step %s",
+                        recovery_step,
+                    )
                     async for event_data in _process_workflow(
                         workflow,
-                        hook_result.modified_state,
-                        resume_step=hook_result.resume_step,
+                        recovery_state,
+                        resume_step=recovery_step,
                         task_id=task_id,
+                        execution_phase=execution_phase,
                     ):
                         yield event_data
                     return
@@ -2128,14 +2183,21 @@ async def _process_workflow(
             hook_result = await hook_engine.process(hook_ctx)
 
             # Handle recovery from workflow_end hook
-            if hook_result.resume_step is not None and hook_result.modified_state:
+            recovery = _bounded_hook_recovery(
+                initial_state, hook_result, source="workflow_end"
+            )
+            if recovery is not None:
+                recovery_state, recovery_step = recovery
                 logger.info(
-                    f"Workflow end hook triggered recovery, resuming from step {hook_result.resume_step}")
+                    "Workflow end hook triggered recovery, resuming from step %s",
+                    recovery_step,
+                )
                 async for event_data in _process_workflow(
                     workflow,
-                    hook_result.modified_state,
-                    resume_step=hook_result.resume_step,
+                    recovery_state,
+                    resume_step=recovery_step,
                     task_id=task_id,
+                    execution_phase=execution_phase,
                 ):
                     yield event_data
                 return
@@ -2242,14 +2304,21 @@ async def _process_workflow(
             hook_result = await hook_engine.process(hook_ctx)
 
             # Handle recovery from error hook
-            if hook_result.resume_step is not None and hook_result.modified_state:
+            recovery = _bounded_hook_recovery(
+                initial_state, hook_result, source="error"
+            )
+            if recovery is not None:
+                recovery_state, recovery_step = recovery
                 logger.info(
-                    f"Error hook triggered recovery, resuming from step {hook_result.resume_step}")
+                    "Error hook triggered recovery, resuming from step %s",
+                    recovery_step,
+                )
                 async for event_data in _process_workflow(
                     workflow,
-                    hook_result.modified_state,
-                    resume_step=hook_result.resume_step,
+                    recovery_state,
+                    resume_step=recovery_step,
                     task_id=task_id,
+                    execution_phase=execution_phase,
                 ):
                     yield event_data
                 return

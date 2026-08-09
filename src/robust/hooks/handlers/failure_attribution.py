@@ -120,19 +120,23 @@ class FailureAttributionHandler(BaseHandler):
             ctx.task_id,
         )
         
+        # ``rollback_step`` names the checkpoint that was retained. The workflow
+        # resume API expects the next step to execute, not the checkpoint itself.
+        resume_step = rollback_target.rollback_step + 1
         logger.info(
-            f"Recovery prepared: rollback to step {rollback_target.rollback_step}, "
-            f"target node: {injection_result.target_node}"
+            f"Recovery prepared: rollback to checkpoint {rollback_target.rollback_step}, "
+            f"resume at step {resume_step}, target node: {injection_result.target_node}"
         )
         
         return HookResult(
             should_continue=True,
             modified_state=injection_result.patched_state,
-            resume_step=rollback_target.rollback_step,
+            resume_step=resume_step,
             message=f"Recovery prepared: {injection_result.injection_text[:100]}...",
             metadata={
                 "attribution": attribution.__dict__,
                 "rollback_step": rollback_target.rollback_step,
+                "resume_step": resume_step,
                 "target_node": injection_result.target_node,
             }
         )
