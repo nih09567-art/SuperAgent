@@ -149,10 +149,10 @@ INTENT_CATALOG: dict[str, dict[str, Any]] = {
     },
     "knowledge_lookup": {
         "label": "查询知识库或制度",
-        "description": "查询内部制度、规定、流程或政策",
+        "description": "查询内部制度、规定、流程、政策或员工课程",
         "task_type": "KNOWLEDGE",
-        "keywords": ("制度", "知识库", "规定", "政策", "权限", "流程", "knowledge", "policy"),
-        "examples": ("查询请假制度", "了解审批权限"),
+        "keywords": ("制度", "知识库", "规定", "政策", "权限", "流程", "课程", "培训", "报名课程", "学习记录", "knowledge", "policy", "course", "training"),
+        "examples": ("查询请假制度", "了解审批权限", "查询大模型培训课程"),
         "counter_examples": ("生成请假申请书",),
         "capabilities": ("Knowledge",),
         "tags": ("knowledge_lookup",),

@@ -2,7 +2,7 @@
 param()
 
 $projectRoot = $PSScriptRoot
-$ports = @(8000, 8001, 8010, 8011, 8012)
+$ports = @(8000, 8001, 8010, 8011, 8012, 8013)
 $listeners = @(
     Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
         Where-Object { $_.LocalPort -in $ports }
@@ -19,6 +19,7 @@ $knownServiceScripts = @(
     "mock_remote_registry.py",
     "mock_remote_tool_skill.py",
     "mock_remote_agent.py",
+    "mock_office_mcp_server.py",
     "src\tools\excel",
     "tools\excel",
     "__main__.py"

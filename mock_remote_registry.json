@@ -467,9 +467,9 @@
       "server_id": "remote-demo",
       "health_url": "http://127.0.0.1:8010/health",
       "metadata": {
-        "description": "Remote knowledge base agent for querying HR policies, labor laws, and general knowledge. This agent can answer questions about annual leave, pension, social security, and other HR-related topics. It autonomously extracts query information from the conversation context.",
+        "description": "Remote knowledge base agent for querying HR policies, labor laws, internal courses, and general knowledge. It autonomously extracts query information from the conversation context.",
         "llm_type": "basic",
-        "prompt": "You are a professional knowledge base query assistant. Use the knowledge_search_tool to search the knowledge base and provide detailed, accurate answers to user questions.",
+        "prompt": "You are a professional knowledge and course query assistant. Use the provided knowledge_search_tool to search policies or internal courses and provide detailed, accurate answers.",
         "contract_version": "1.0",
         "requires": [],
         "produces": ["policy.info"],
@@ -480,7 +480,7 @@
         "selected_tools": [
           {
             "name": "knowledge_search_tool",
-            "description": "Search the knowledge base for HR policies, labor laws, and general knowledge",
+            "description": "Search the knowledge base for HR policies, labor laws, internal courses, and general knowledge",
             "parameters": {
               "type": "object",
               "properties": {

@@ -1,0 +1,45 @@
+{
+  "courses": [
+    {
+      "course_id": "COURSE-001",
+      "title": "银行数字化转型基础",
+      "category": "数字化",
+      "provider": "金融科技学院",
+      "description": "介绍银行数字化转型、数字员工和智能运营的基础概念。",
+      "sessions": [
+        {"session_id": "SESSION-001", "date": "2026-08-18", "time": "09:00", "location": "线上", "capacity": 100, "available": 37}
+      ]
+    },
+    {
+      "course_id": "COURSE-002",
+      "title": "大模型与智能体应用实践",
+      "category": "人工智能",
+      "provider": "金融科技学院",
+      "description": "面向业务人员介绍大模型、Agent、MCP及银行场景实践。",
+      "sessions": [
+        {"session_id": "SESSION-002", "date": "2026-08-20", "time": "14:00", "location": "培训中心A201", "capacity": 50, "available": 12},
+        {"session_id": "SESSION-003", "date": "2026-09-03", "time": "09:00", "location": "线上", "capacity": 120, "available": 86}
+      ]
+    },
+    {
+      "course_id": "COURSE-003",
+      "title": "员工差旅合规与费用管理",
+      "category": "合规",
+      "provider": "财务管理部",
+      "description": "讲解差旅申请、费用标准、票据要求和审批流程。",
+      "sessions": [
+        {"session_id": "SESSION-004", "date": "2026-08-25", "time": "10:00", "location": "线上", "capacity": 80, "available": 55}
+      ]
+    }
+  ],
+  "enrollments": [
+    {
+      "employee_id": "86000103",
+      "employee_name": "王强",
+      "course_id": "COURSE-001",
+      "session_id": "SESSION-001",
+      "status": "已报名",
+      "progress": 0
+    }
+  ]
+}

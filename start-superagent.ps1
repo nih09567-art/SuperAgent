@@ -17,10 +17,14 @@ $services = @(
 )
 
 if (-not $SkipMcp) {
-    $ports = @(8000) + $ports
+    $env:REMOTE_TOOL_TRANSPORT = "hybrid"
+    $ports = @(8000, 8013) + $ports
     $services = @(
-        @{ Name = "excel-mcp"; Script = "__main__.py"; WorkDir = (Join-Path $projectRoot "src\tools\excel"); Port = 8000; Log = "excel-mcp" }
+        @{ Name = "excel-mcp"; Script = "__main__.py"; WorkDir = (Join-Path $projectRoot "src\tools\excel"); Port = 8000; Log = "excel-mcp" },
+        @{ Name = "office-mcp"; Script = "mock_office_mcp_server.py"; WorkDir = $projectRoot; Port = 8013; Log = "office-mcp" }
     ) + $services
+} else {
+    $env:REMOTE_TOOL_TRANSPORT = "http"
 }
 
 $startedProcesses = @()

@@ -394,6 +394,34 @@ class BaseRemoteAgent(ABC):
             tool_name, matching_expected, arguments
         )
 
+        transport = str(os.getenv("REMOTE_TOOL_TRANSPORT", "http")).strip().lower()
+        if transport not in {"http", "hybrid", "mcp"}:
+            raise ValueError(
+                "REMOTE_TOOL_TRANSPORT must be one of: http, hybrid, mcp"
+            )
+        if transport in {"hybrid", "mcp"}:
+            from remote_agents.mcp_tool_client import (
+                call_office_mcp_tool,
+                resolve_office_mcp_call,
+            )
+
+            mcp_call = resolve_office_mcp_call(tool_name, outbound_arguments)
+            if mcp_call is not None:
+                mcp_tool_name, mcp_arguments = mcp_call
+                result = await call_office_mcp_tool(
+                    mcp_tool_name, mcp_arguments, timeout=timeout
+                )
+                logger.info(
+                    "Tool %s executed through MCP tool %s",
+                    tool_name,
+                    mcp_tool_name,
+                )
+                return result
+            if transport == "mcp":
+                raise RuntimeError(
+                    f"Remote tool '{tool_name}' has no office MCP mapping"
+                )
+
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, read=timeout)) as client:
                 resp = await client.post(

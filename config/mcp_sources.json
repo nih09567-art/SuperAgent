@@ -1,5 +1,8 @@
 ﻿{
   "mcpServers": {
+    "office-mcp": {
+      "url": "http://127.0.0.1:8013/sse"
+    },
     "excel-mcp-remote": {
       "url": "http://127.0.0.1:8000/sse"
     }
