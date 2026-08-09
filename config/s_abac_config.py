@@ -359,7 +359,7 @@ RESOURCE_SECURITY_ATTRIBUTES = {
         "allowed_roles": ["UniversalAssistant", "ReportAgent"],
         "allowed_job_roles": ["report_specialist", "business_analyst", "system_orchestrator"],
         "allowed_operation_modes": ["delegate", "generate"],
-        "scenario_tags": ["reporting", "analysis_summary"],
+        "scenario_tags": ["reporting", "analysis_summary", "document_generation"],
         "expected_capabilities": ["Document"],
     },
     "RemoteMeetingManagerAgent": {

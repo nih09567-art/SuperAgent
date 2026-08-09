@@ -420,6 +420,59 @@ def test_trusted_report_subtask_matches_reporter_in_cross_domain_workflow():
     )
 
 
+def test_remote_report_agent_accepts_report_and_document_subtasks():
+    state = {
+        "workflow_id": "wf-annual-leave-report",
+        "user_id": "admin",
+        "task_profile": {
+            "task_type": "COMPOSITE",
+            "business_goal": "生成年假 Markdown 汇总",
+            "risk_profile": "MEDIUM",
+            "subtasks": [
+                {
+                    "id": "subtask_3",
+                    "intent": "report_generation",
+                    "task_type": "DOCUMENT",
+                    "goal": "生成年假汇总报告",
+                    "data_scope": ["document.generated"],
+                    "expected_capabilities": ["Document"],
+                    "scenario_tags": ["reporting", "analysis_summary"],
+                },
+                {
+                    "id": "subtask_4",
+                    "intent": "document_generation",
+                    "task_type": "DOCUMENT",
+                    "goal": "生成 Markdown 文档",
+                    "data_scope": ["document.generated"],
+                    "expected_capabilities": ["Document"],
+                    "scenario_tags": ["document_generation"],
+                },
+            ],
+        },
+    }
+    step = TaskStep(
+        step_id="generate_report",
+        agent_name="RemoteReportAgent",
+        preferred_resource_id="RemoteReportAgent",
+        operation_mode="generate",
+        subtask_ids=["subtask_3", "subtask_4"],
+    )
+
+    context = _build_execution_context(state, step, "RemoteReportAgent")
+    profile = context.metadata["task_profile"]
+
+    assert profile["scenario_tags"] == [
+        "reporting",
+        "analysis_summary",
+        "document_generation",
+    ]
+    assert profile["trusted_resource_fit"]["fit"] == "match"
+    assert (
+        context.metadata["scenario_fit_cache"]["agent:RemoteReportAgent"]["fit"]
+        == "match"
+    )
+
+
 def test_admin_can_dispatch_office_agent_for_trusted_hr_leave_subtask(monkeypatch):
     state = {
         "workflow_id": "wf-leave-records",

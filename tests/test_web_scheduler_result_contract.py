@@ -18,6 +18,32 @@ def test_web_recognizes_scheduler_agents_and_result_events():
     assert "renderFinalResult(payload.data || {})" in source
 
 
+def test_web_replaces_streamed_planner_draft_with_validated_final_plan():
+    source = _source()
+    planner_message_branch = source[
+        source.index('if (eventName === "messages")') : source.index(
+            'if (eventName === "planner_delta")'
+        )
+    ]
+    planner_delta_branch = source[
+        source.index('if (eventName === "planner_delta")') : source.index(
+            'if (eventName === "start_of_workflow")'
+        )
+    ]
+
+    assert "const replaceOutput =" in source
+    assert (
+        'replaceOutput(agentName, plannerFinalMessageBuffer, "planning")'
+        in planner_message_branch
+    )
+    assert (
+        'replaceOutput(agentName, plannerBuffer, "planning")'
+        in planner_delta_branch
+    )
+    assert 'appendOutput(agentName, content, "planning")' not in planner_message_branch
+    assert "appendOutput(agentName, content)" not in planner_delta_branch
+
+
 def test_web_displays_context_compaction_event_details():
     source = _source()
 

@@ -1,5 +1,6 @@
 from src.workflow.coor_task import (
     _infer_step_intents,
+    _normalize_compatible_plan,
     _scheduler_profile_validation_state,
     _validate_plan_against_task_profile,
 )
@@ -296,3 +297,134 @@ def test_scheduler_rejects_steps_without_trusted_subtask_bindings(monkeypatch):
         "每个执行步骤必须包含可验证的 subtask_ids" in error
         for error in errors
     )
+
+
+def test_compatible_plan_normalizes_only_unambiguous_legacy_structure(monkeypatch):
+    monkeypatch.setattr(
+        "src.service.env.CONTRACT_PLANNING_COMPAT_ENABLED",
+        True,
+        raising=False,
+    )
+    state = {
+        "task_profile": {
+            "subtasks": [
+                {
+                    "id": "subtask_1",
+                    "intent": "employee_information_query",
+                    "depends_on": [],
+                },
+                {
+                    "id": "subtask_2",
+                    "intent": "report_generation",
+                    "depends_on": ["subtask_1"],
+                },
+            ]
+        }
+    }
+    steps = [
+        {
+            "agent_name": "RemoteHRAssistantAgent",
+            "intent": "employee_information_query",
+        },
+        {
+            "agent_name": "RemoteReportAgent",
+            "intent": "report_generation",
+            "inputs": [
+                {
+                    "parameter_name": "report.source",
+                    "source_step": "RemoteHRAssistantAgent",
+                    "source_output": "employee.info",
+                }
+            ],
+        },
+    ]
+
+    normalized, repairs = _normalize_compatible_plan(steps, state)
+
+    assert steps[0].get("step_id") is None
+    assert normalized[0]["step_id"] == "step_1"
+    assert normalized[0]["intents"] == ["employee_information_query"]
+    assert normalized[0]["subtask_ids"] == ["subtask_1"]
+    assert normalized[1]["step_id"] == "step_2"
+    assert normalized[1]["subtask_ids"] == ["subtask_2"]
+    assert normalized[1]["depends_on"] == ["step_1"]
+    assert normalized[1]["inputs"][0]["source_step"] == "step_1"
+    assert repairs
+
+
+def test_compatible_plan_does_not_guess_ambiguous_subtask_binding(monkeypatch):
+    monkeypatch.setattr(
+        "src.service.env.CONTRACT_PLANNING_COMPAT_ENABLED",
+        True,
+        raising=False,
+    )
+    state = {
+        "task_profile": {
+            "subtasks": [
+                {"id": "subtask_1", "intent": "knowledge_lookup"},
+                {"id": "subtask_2", "intent": "knowledge_lookup"},
+            ]
+        }
+    }
+
+    normalized, _repairs = _normalize_compatible_plan(
+        [{"agent_name": "RemoteKnowledgeAgent", "intent": "knowledge_lookup"}],
+        state,
+    )
+
+    assert "subtask_ids" not in normalized[0]
+
+
+def test_compatible_plan_binds_multiple_uniquely_inferred_subtasks(monkeypatch):
+    monkeypatch.setattr(
+        "src.service.env.CONTRACT_PLANNING_COMPAT_ENABLED",
+        True,
+        raising=False,
+    )
+    state = {
+        "task_profile": {
+            "subtasks": [
+                {
+                    "id": "subtask_1",
+                    "intent": "employee_information_query",
+                    "depends_on": [],
+                },
+                {
+                    "id": "subtask_2",
+                    "intent": "salary_query",
+                    "depends_on": ["subtask_1"],
+                },
+            ]
+        }
+    }
+
+    normalized, _repairs = _normalize_compatible_plan(
+        [
+            {
+                "agent_name": "RemoteHRAssistantAgent",
+                "title": "查询员工基础信息和薪资收入信息",
+            }
+        ],
+        state,
+    )
+
+    assert normalized[0]["intents"] == [
+        "employee_information_query",
+        "salary_query",
+    ]
+    assert normalized[0]["subtask_ids"] == ["subtask_1", "subtask_2"]
+    assert _validate_plan_against_task_profile(normalized, state) == []
+
+
+def test_compatible_plan_is_noop_when_disabled(monkeypatch):
+    monkeypatch.setattr(
+        "src.service.env.CONTRACT_PLANNING_COMPAT_ENABLED",
+        False,
+        raising=False,
+    )
+    steps = [{"agent_name": "RemoteHRAssistantAgent", "intent": "salary_query"}]
+
+    normalized, repairs = _normalize_compatible_plan(steps, {"task_profile": {}})
+
+    assert normalized is steps
+    assert repairs == []

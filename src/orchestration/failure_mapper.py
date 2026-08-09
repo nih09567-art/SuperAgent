@@ -353,7 +353,9 @@ def public_policy_reason(payload: Mapping[str, Any] | None) -> str:
         return "该操作仅允许在工作时间执行，当前时间不符合要求。"
     if "external network" in lowered:
         return "该操作仅允许从内部网络执行，当前网络区域不符合要求。"
-    if "scenario" in lowered and any(word in lowered for word in ("mismatch", "do not align")):
+    if "scenario" in lowered and any(
+        word in lowered for word in ("mismatch", "do not align", "do not match")
+    ):
         return "当前任务场景与目标资源声明的适用场景不匹配。"
     if "not in user" in lowered and "available agents" in lowered:
         return "所选 Agent 不在当前用户可调用的 Agent 列表中。"

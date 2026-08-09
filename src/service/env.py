@@ -131,6 +131,11 @@ S_ABAC_ENABLED = _parse_bool("S_ABAC_ENABLED", False)
 #                                    while production execution FAILS CLOSED for
 #                                    a missing/invalid graph or rejected
 #                                    snapshot.
+# CONTRACT_PLANNING_COMPAT_ENABLED -> Normalize only unambiguous legacy Planner
+#                                    fields and dependency aliases before the
+#                                    existing governed validation. The code
+#                                    default stays OFF; prototype environments
+#                                    opt in explicitly.
 # SCHEDULER_REDISPATCH_ENABLED    -> after a retryable read-only step exhausts
 #                                    its same-Agent budget, allow one trusted,
 #                                    equivalent Agent redispatch. Default OFF.
@@ -139,6 +144,9 @@ S_ABAC_ENABLED = _parse_bool("S_ABAC_ENABLED", False)
 ARTIFACT_CAPTURE_ENABLED = _parse_bool("ARTIFACT_CAPTURE_ENABLED", False)
 ORCHESTRATION_SCHEDULER_ENABLED = _parse_bool(
     "ORCHESTRATION_SCHEDULER_ENABLED", False)
+CONTRACT_PLANNING_COMPAT_ENABLED = _parse_bool(
+    "CONTRACT_PLANNING_COMPAT_ENABLED", False
+)
 SCHEDULER_REDISPATCH_ENABLED = _parse_bool(
     "SCHEDULER_REDISPATCH_ENABLED", False)
 SCHEDULER_RETRY_DELAY_SECONDS = max(

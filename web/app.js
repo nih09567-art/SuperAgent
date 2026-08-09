@@ -4286,6 +4286,16 @@ const appendOutput = (agentName, content, phase = currentRunContext === "executi
   appendOutputImmediate(agentName, content, phase);
 };
 
+const replaceOutput = (agentName, content, phase = currentRunContext === "executing" ? "executing" : "planning") => {
+  const outputContainer = getOutputContainer(phase);
+  const target = ensureOutputBlock(agentName || "system", phase);
+  if (!target || !outputContainer) return;
+  target.textContent = content;
+  if (autoScrollEnabled) {
+    outputContainer.scrollTop = outputContainer.scrollHeight;
+  }
+};
+
 const refreshPlannerTimeout = () => {
   if (!plannerOnlyMode || !plannerOnlyTimeoutId) return;
   clearTimeout(plannerOnlyTimeoutId);
@@ -4428,7 +4438,9 @@ const handleEvent = (eventName, payload) => {
     if (typeof agentName === "string" && agentName.toLowerCase().includes("planner")) {
       refreshPlannerTimeout();
       plannerFinalMessageBuffer += content;
-      if (content) appendOutput(agentName, content, "planning");
+      if (plannerFinalMessageBuffer && !plannerOnlyMode) {
+        replaceOutput(agentName, plannerFinalMessageBuffer, "planning");
+      }
       return;
     }
     if (!plannerOnlyMode) {
@@ -4452,8 +4464,8 @@ const handleEvent = (eventName, payload) => {
     } else if (content) {
       plannerBuffer += content;
     }
-    if (content && !plannerOnlyMode) {
-      appendOutput(agentName, content);
+    if (plannerBuffer && !plannerOnlyMode) {
+      replaceOutput(agentName, plannerBuffer, "planning");
     }
     applyPlannerStepsFromBuffer(plannerBuffer, { finalize: false });
     return;

@@ -938,6 +938,187 @@ def _step_declared_intents(step: dict) -> list[str]:
     return _string_list(step.get("intent"))
 
 
+def _normalize_compatible_plan(
+    steps: list,
+    state: State,
+) -> tuple[list, list[str]]:
+    """Normalize only unambiguous legacy Planner structure.
+
+    The compatibility pass never invents an Agent, business step, Artifact,
+    Schema, recipient, approval, or receipt. Its output must still pass the
+    existing profile, data-flow, TaskGraph, and runtime security validation.
+    """
+
+    from src.service.env import CONTRACT_PLANNING_COMPAT_ENABLED
+
+    if not CONTRACT_PLANNING_COMPAT_ENABLED or not isinstance(steps, list):
+        return steps, []
+    if any(not isinstance(step, dict) for step in steps):
+        return steps, []
+
+    normalized = deepcopy(steps)
+    repairs: list[str] = []
+    used_step_ids = {
+        str(step.get("step_id") or "").strip()
+        for step in normalized
+        if str(step.get("step_id") or "").strip()
+    }
+
+    for index, step in enumerate(normalized, start=1):
+        if not str(step.get("step_id") or "").strip():
+            candidate_index = index
+            candidate = f"step_{candidate_index}"
+            while candidate in used_step_ids:
+                candidate_index += 1
+                candidate = f"step_{candidate_index}"
+            step["step_id"] = candidate
+            used_step_ids.add(candidate)
+            repairs.append(f"assigned step_id {candidate}")
+
+        if not _string_list(step.get("intents")):
+            legacy_intents = _string_list(step.get("intent"))
+            if legacy_intents:
+                step["intents"] = legacy_intents
+                repairs.append(f"normalized intents for {step['step_id']}")
+
+        if not _string_list(step.get("subtask_ids")):
+            legacy_subtask_ids = _string_list(step.get("subtask_id"))
+            if legacy_subtask_ids:
+                step["subtask_ids"] = legacy_subtask_ids
+                repairs.append(f"normalized subtask_ids for {step['step_id']}")
+
+    step_ids = {str(step["step_id"]) for step in normalized}
+    agent_steps: dict[str, list[str]] = {}
+    for step in normalized:
+        agent_name = str(step.get("agent_name") or "").strip()
+        if agent_name:
+            agent_steps.setdefault(agent_name, []).append(str(step["step_id"]))
+    unique_agent_step = {
+        agent_name: step_ids_for_agent[0]
+        for agent_name, step_ids_for_agent in agent_steps.items()
+        if len(step_ids_for_agent) == 1
+    }
+
+    def normalize_source(source: dict, *, owner_step_id: str) -> None:
+        source_step = str(source.get("source_step") or "").strip()
+        resolved = unique_agent_step.get(source_step)
+        if source_step and source_step not in step_ids and resolved:
+            source["source_step"] = resolved
+            repairs.append(
+                f"normalized source_step {source_step} -> {resolved} for {owner_step_id}"
+            )
+
+    for step in normalized:
+        step_id = str(step["step_id"])
+        dependencies = _string_list(step.get("depends_on"))
+        normalized_dependencies = [
+            unique_agent_step.get(dependency, dependency)
+            if dependency not in step_ids
+            else dependency
+            for dependency in dependencies
+        ]
+        normalized_dependencies = list(dict.fromkeys(normalized_dependencies))
+        if normalized_dependencies != dependencies:
+            step["depends_on"] = normalized_dependencies
+            repairs.append(f"normalized depends_on for {step_id}")
+
+        for binding in step.get("inputs") or []:
+            if not isinstance(binding, dict):
+                continue
+            sources = binding.get("source_artifacts")
+            if isinstance(sources, list):
+                for source in sources:
+                    if isinstance(source, dict):
+                        normalize_source(source, owner_step_id=step_id)
+            else:
+                normalize_source(binding, owner_step_id=step_id)
+
+    profile_subtasks = [
+        item
+        for item in ((state.get("task_profile") or {}).get("subtasks") or [])
+        if isinstance(item, dict) and str(item.get("id") or "").strip()
+    ]
+    subtasks_by_intent: dict[str, list[dict]] = {}
+    for subtask in profile_subtasks:
+        intent = str(subtask.get("intent") or "").strip()
+        if intent:
+            subtasks_by_intent.setdefault(intent, []).append(subtask)
+
+    claimed_subtasks = {
+        subtask_id
+        for step in normalized
+        for subtask_id in _step_subtask_ids(step)
+    }
+    for step in normalized:
+        if _step_subtask_ids(step):
+            continue
+        declared_intents = _step_declared_intents(step)
+        if not declared_intents:
+            declared_intents = sorted(_infer_step_intents(step))
+            if declared_intents:
+                step["intents"] = declared_intents
+                repairs.append(f"inferred intents for {step['step_id']}")
+        candidates: list[str] = []
+        for intent in declared_intents:
+            matches = subtasks_by_intent.get(intent, [])
+            if len(matches) != 1:
+                candidates = []
+                break
+            subtask_id = str(matches[0]["id"])
+            if subtask_id in claimed_subtasks or subtask_id in candidates:
+                candidates = []
+                break
+            candidates.append(subtask_id)
+        if candidates and len(candidates) == len(declared_intents):
+            step["subtask_ids"] = candidates
+            claimed_subtasks.update(candidates)
+            repairs.append(f"bound subtask_ids for {step['step_id']}")
+
+    step_by_subtask_id = {
+        subtask_id: str(step["step_id"])
+        for step in normalized
+        for subtask_id in _step_subtask_ids(step)
+    }
+    step_index = {
+        str(step["step_id"]): index for index, step in enumerate(normalized)
+    }
+    subtask_by_id = {
+        str(subtask["id"]): subtask for subtask in profile_subtasks
+    }
+    for step in normalized:
+        if _string_list(step.get("depends_on")):
+            continue
+        owner_step_id = str(step["step_id"])
+        dependency_steps: list[str] = []
+        complete_mapping = True
+        for subtask_id in _step_subtask_ids(step):
+            subtask = subtask_by_id.get(subtask_id)
+            if subtask is None:
+                complete_mapping = False
+                break
+            for dependency_id in _string_list(subtask.get("depends_on")):
+                dependency_step = step_by_subtask_id.get(dependency_id)
+                if dependency_step is None:
+                    complete_mapping = False
+                    break
+                if dependency_step == owner_step_id:
+                    continue
+                if step_index.get(dependency_step, len(normalized)) >= step_index.get(
+                    owner_step_id, -1
+                ):
+                    complete_mapping = False
+                    break
+                if dependency_step not in dependency_steps:
+                    dependency_steps.append(dependency_step)
+            if not complete_mapping:
+                break
+        if complete_mapping and dependency_steps:
+            step["depends_on"] = dependency_steps
+            repairs.append(f"derived depends_on for {owner_step_id}")
+
+    return normalized, repairs
+
+
 def _scheduler_profile_validation_state(state: State) -> State:
     """Carry Scheduler strictness without changing the validation call contract."""
 
@@ -2545,6 +2726,14 @@ async def planner_node(state: State) -> Command[Literal["publisher", "__end__"]]
         # 同时校验 Agent 数据流与 TaskProfile 意图/依赖一致性。
         # 校验失败时要求 Planner 重新生成，绝不按数量复制画像步骤。
         if steps is not None and state["workflow_mode"] == "launch":
+            steps, compat_repairs = _normalize_compatible_plan(steps, state)
+            if compat_repairs:
+                raw_content = json.dumps({"steps": steps}, ensure_ascii=False)
+                logger.info(
+                    "Planner compatibility normalized %d unambiguous fields: %s",
+                    len(compat_repairs),
+                    compat_repairs,
+                )
             validation_start = time.time()
             is_valid, validation_errors = await _validate_plan_data_flow(
                 steps, state.get("user_id", "")
@@ -2635,6 +2824,16 @@ async def planner_node(state: State) -> Command[Literal["publisher", "__end__"]]
                         if fix_content:
                             fixed_steps = _extract_plan_steps(fix_content)
                             if fixed_steps is not None:
+                                fixed_steps, fixed_compat_repairs = (
+                                    _normalize_compatible_plan(fixed_steps, state)
+                                )
+                                if fixed_compat_repairs:
+                                    logger.info(
+                                        "Planner fix compatibility normalized %d "
+                                        "unambiguous fields: %s",
+                                        len(fixed_compat_repairs),
+                                        fixed_compat_repairs,
+                                    )
                                 # Validate the fixed plan
                                 is_fixed_valid, fixed_errors = (
                                     await _validate_plan_data_flow(

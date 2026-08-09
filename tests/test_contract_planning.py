@@ -194,6 +194,34 @@ def test_contract_closure_selects_dynamic_three_and_five_agents() -> None:
     ) == []
 
 
+def test_contract_closure_prefers_existing_router_order_for_equivalent_providers(
+) -> None:
+    cards = _cards()
+    preferred_contract = CONTRACTS["RemoteHRAssistantAgent"]
+    cards.append(
+        AgentCard(
+            agent_id="PreferredHRAgent",
+            name="PreferredHRAgent",
+            capabilities=["test"],
+            supported_actions=["read"],
+            planning_eligible=True,
+            planning_agent_contract=preferred_contract,
+        )
+    )
+
+    result = contract_closure(
+        {
+            "required_business_data": ["employee.info"],
+            "expected_deliverables": ["report.markdown"],
+        },
+        cards,
+        preferred_agent_ids=["PreferredHRAgent", "RemoteHRAssistantAgent"],
+    )
+
+    assert result.complete
+    assert result.selected_agent_ids == ("PreferredHRAgent", "RemoteReportAgent")
+
+
 def test_trusted_catalog_marks_email_side_effect_and_office_query_scope() -> None:
     catalog = {
         item["agent_name"]: item

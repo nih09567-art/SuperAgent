@@ -225,6 +225,10 @@ def test_unknown_remote_failure_still_does_not_leak_raw_text():
             "Operation requires human approval",
             "该资源或操作风险要求人工审批后才能执行。",
         ),
+        (
+            "subtask_4 scenario tags do not match trusted resource",
+            "当前任务场景与目标资源声明的适用场景不匹配。",
+        ),
     ],
 )
 def test_policy_denial_reason_is_specific_chinese(reason, expected):

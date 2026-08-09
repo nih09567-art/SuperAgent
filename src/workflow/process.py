@@ -1033,6 +1033,9 @@ async def run_agent_workflow(
         task_profile,
         agent_cards,
         authorized_agent_ids=set(team_members),
+        preferred_agent_ids=(
+            item.agent_id for item in routing_decision_model.candidate_agents
+        ),
     )
     planning_catalog: list[dict[str, Any]] = []
     if closure.complete:

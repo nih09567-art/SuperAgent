@@ -54,8 +54,14 @@ def contract_closure(
     agent_cards: Iterable[Any],
     *,
     authorized_agent_ids: set[str] | None = None,
+    preferred_agent_ids: Iterable[str] | None = None,
 ) -> ContractClosure:
-    """Resolve goal outputs to Agent producers and recursively close requires."""
+    """Resolve goal outputs to Agent producers and recursively close requires.
+
+    When several authorized Contracts produce the same logical output, retain
+    the existing router's preference order. A stable Agent-id ordering remains
+    the fallback for providers that were not ranked by the router.
+    """
 
     targets = list(
         dict.fromkeys(
@@ -84,8 +90,19 @@ def contract_closure(
         for output in contract.produces:
             providers.setdefault(output.name, []).append(agent_id)
 
+    preferred_order = list(
+        dict.fromkeys(
+            str(agent_id) for agent_id in (preferred_agent_ids or ()) if str(agent_id)
+        )
+    )
+    preferred_rank = {
+        agent_id: index for index, agent_id in enumerate(preferred_order)
+    }
+    unranked = len(preferred_rank)
     for candidates in providers.values():
-        candidates.sort()
+        candidates.sort(
+            key=lambda agent_id: (preferred_rank.get(agent_id, unranked), agent_id)
+        )
 
     selected: list[str] = []
     missing: list[str] = []
