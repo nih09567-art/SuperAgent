@@ -824,6 +824,7 @@ function initSecurityTab() {
         true
     );
     bindSecurityCollapseButton("toggleToolAccessBtn", "toolAccessGrid", true);
+    bindSecurityCollapseButton("toggleUserAgentsBtn", "userAgentsList", false);
     bindSecurityCollapseButton("toggleApprovalsBtn", "securityApprovalsContent", true);
     bindSecurityCollapseButton("toggleReconciliationsBtn", "securityReconciliationsContent", true);
     bindSecurityCollapseButton(

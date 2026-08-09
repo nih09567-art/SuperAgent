@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>CoorAgent Web Studio</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260808-run-settings-1" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260809-task-history-1" />
     <script src="/static/mermaid.min.js"></script>
   </head>
   <body>
@@ -41,11 +41,11 @@
       <main class="layout">
         <aside class="sidebar">
           <button class="tab active" data-tab="chat">Chat</button>
-          <button class="tab" data-tab="run">Workflow</button>
+          <button class="tab" data-tab="run">任务执行</button>
           <button class="tab" data-tab="agents">Agents</button>
           <button class="tab" data-tab="tools">Tools</button>
-          <button class="tab" data-tab="workflows">Workflows</button>
-          <button class="tab" data-tab="tasks">Task History</button>
+          <button class="tab" data-tab="workflows">工作流库</button>
+          <button class="tab" data-tab="tasks">任务历史</button>
           <button class="tab" data-tab="security">🛡️ Security</button>
         </aside>
 
@@ -402,62 +402,154 @@
           </section>
 
           <section class="panel" id="panel-workflows">
-            <div class="panel-header">
-              <h2>Workflows</h2>
-              <p>工作流列表与可视化。</p>
+            <div class="panel-header workflow-page-header">
+              <div>
+                <h2>工作流库</h2>
+                <p>查找已生成的工作流，查看执行结构并继续处理任务。</p>
+              </div>
+              <button id="workflowViewModeToggle" class="ghost workflow-view-mode-toggle" type="button">
+                经典视图
+              </button>
             </div>
-            <div class="panel-body workflow-grid">
-              <div class="workflow-list">
-                <div class="panel-actions">
-                  <div class="workflow-toolbar">
-                    <div class="workflow-toolbar-left">
-                      <button id="refreshWorkflows" class="primary">Refresh</button>
-                      <button id="workflowsPrevPage" class="ghost" disabled>Prev</button>
-                      <button id="workflowsNextPage" class="ghost" disabled>Next</button>
-                      <span id="workflowsPageInfo" class="workflow-page-info"></span>
+            <div id="workflowStudio" class="panel-body workflow-studio">
+              <aside class="workflow-library" aria-label="工作流列表">
+                <div class="workflow-library-toolbar">
+                  <label class="workflow-search" for="workflowsSearch">
+                    <span class="workflow-search-icon" aria-hidden="true">⌕</span>
+                    <input
+                      id="workflowsSearch"
+                      type="search"
+                      placeholder="搜索任务内容或 Workflow ID"
+                      autocomplete="off"
+                    />
+                  </label>
+                  <button
+                    id="refreshWorkflows"
+                    class="ghost workflow-icon-button"
+                    type="button"
+                    title="刷新工作流"
+                    aria-label="刷新工作流"
+                  ><span aria-hidden="true">↻</span></button>
+                </div>
+                <div class="workflow-library-meta">
+                  <span id="workflowCountSummary">正在加载...</span>
+                  <label for="workflowsPageSize">
+                    每页
+                    <select id="workflowsPageSize">
+                      <option value="5" selected>5</option>
+                      <option value="10">10</option>
+                      <option value="20">20</option>
+                    </select>
+                  </label>
+                </div>
+                <div id="workflowsList" class="workflow-library-list list" aria-live="polite"></div>
+                <div class="workflow-pagination" aria-label="工作流分页">
+                  <button id="workflowsPrevPage" class="ghost" type="button" disabled>上一页</button>
+                  <span id="workflowsPageInfo" class="workflow-page-info"></span>
+                  <button id="workflowsNextPage" class="ghost" type="button" disabled>下一页</button>
+                </div>
+              </aside>
+
+              <section class="workflow-detail-workspace" aria-live="polite">
+                <div id="workflowDetailEmpty" class="workflow-detail-empty">
+                  <div class="workflow-detail-empty-mark" aria-hidden="true">◇</div>
+                  <h3>选择一个工作流</h3>
+                  <p>从左侧列表选择工作流后，可查看概览、流程结构和完整数据。</p>
+                </div>
+
+                <div id="workflowSelectedContent" class="workflow-selected-content" hidden>
+                  <header class="workflow-detail-header">
+                    <div class="workflow-detail-heading">
+                      <span class="workflow-detail-eyebrow">已保存的工作流</span>
+                      <h3 id="workflowDetailTitle">工作流详情</h3>
+                      <div id="workflowDetailMeta" class="workflow-detail-meta"></div>
                     </div>
-                    <div class="workflow-toolbar-right">
-                      <label for="workflowsPageSize" class="workflow-page-size-label">Page size</label>
-                      <select id="workflowsPageSize">
-                        <option value="5" selected>5</option>
-                        <option value="10">10</option>
-                        <option value="20">20</option>
-                      </select>
+                    <div class="workflow-detail-actions">
+                      <button id="copyWorkflowId" class="ghost" type="button">复制 ID</button>
+                      <button id="useWorkflowInChat" class="primary" type="button">继续对话</button>
                     </div>
+                  </header>
+
+                  <div class="workflow-detail-tabs" role="tablist" aria-label="工作流详情视图">
+                    <button id="workflowOverviewTab" class="workflow-detail-tab active" type="button" role="tab"
+                      aria-controls="workflowOverview" aria-selected="true"
+                      data-workflow-view="overview">概览</button>
+                    <button id="workflowDiagramTab" class="workflow-detail-tab" type="button" role="tab"
+                      aria-controls="workflowDiagramPanel" aria-selected="false"
+                      data-workflow-view="diagram">流程图</button>
+                    <button id="workflowDeveloperTab" class="workflow-detail-tab" type="button" role="tab"
+                      aria-controls="workflowDeveloperPanel" aria-selected="false"
+                      data-workflow-view="developer">开发者信息</button>
+                  </div>
+
+                  <div class="workflow-detail-panes">
+                    <section id="workflowOverview" class="workflow-detail-pane workflow-overview"
+                      aria-labelledby="workflowOverviewTab" data-workflow-pane="overview"
+                      role="tabpanel"></section>
+
+                    <section id="workflowDiagramPanel" class="workflow-detail-pane workflow-diagram-pane"
+                      aria-labelledby="workflowDiagramTab" data-workflow-pane="diagram"
+                      role="tabpanel" hidden>
+                      <div class="workflow-pane-header">
+                        <div>
+                          <h4>执行结构</h4>
+                          <p>选择流程图可在独立页面中查看和导出。</p>
+                        </div>
+                        <button id="openWorkflowDiagram" class="ghost" type="button" disabled>独立查看</button>
+                      </div>
+                      <div id="mermaidContainer" class="mermaid-box">暂无可视化</div>
+                    </section>
+
+                    <section id="workflowDeveloperPanel" class="workflow-detail-pane workflow-developer-pane"
+                      aria-labelledby="workflowDeveloperTab" data-workflow-pane="developer"
+                      role="tabpanel" hidden>
+                      <div class="workflow-pane-header">
+                        <div>
+                          <h4>完整工作流数据</h4>
+                          <p>用于调试和核对字段，不影响工作流运行。</p>
+                        </div>
+                        <button id="copyWorkflowJson" class="ghost" type="button">复制 JSON</button>
+                      </div>
+                      <pre id="workflowDetail" class="code-block">请选择一个工作流</pre>
+                    </section>
                   </div>
                 </div>
-                <div id="workflowsList" class="list" aria-live="polite"></div>
-              </div>
-              <div class="workflow-detail">
-                <div class="detail-card">
-                  <h3>Workflow Detail</h3>
-                  <pre id="workflowDetail" class="code-block">请选择一个 workflow</pre>
-                </div>
-                <div class="detail-card">
-                  <h3>Mermaid</h3>
-                  <div id="mermaidContainer" class="mermaid-box">暂无可视化</div>
-                </div>
-              </div>
+              </section>
             </div>
           </section>
 
           <section class="panel" id="panel-tasks">
             <div class="panel-header">
-              <h2>Task History</h2>
-              <p>任务执行历史，支持日志查看、Checkpoint 浏览与断点恢复。</p>
+              <h2>任务历史</h2>
+              <p>查看任务执行记录、检查点、治理时间线与恢复信息。</p>
             </div>
             <div class="panel-body tasks-layout">
               <div class="tasks-left">
                 <div class="panel-actions">
-                  <button id="refreshTasks" class="primary">Refresh</button>
+                  <button id="refreshTasks" class="primary">刷新</button>
                 </div>
                 <div id="tasksList" class="list" aria-live="polite"></div>
               </div>
               <div class="tasks-right">
+                <div id="taskDetailEmpty" class="task-detail-empty">
+                  <div class="task-detail-empty-content">
+                    <div class="task-detail-empty-icon" aria-hidden="true">
+                      <svg viewBox="0 0 48 48" role="presentation">
+                        <rect x="8" y="9" width="32" height="30" rx="8"></rect>
+                        <path d="M16 18h16M16 24h16M16 30h10"></path>
+                        <circle cx="35" cy="34" r="7"></circle>
+                        <path d="m40 39 4 4"></path>
+                      </svg>
+                    </div>
+                    <h3>选择一条任务记录</h3>
+                    <p>从左侧选择任务，即可查看检查点、治理时间线和执行日志。</p>
+                    <span>也可以从已保存的检查点恢复执行</span>
+                  </div>
+                </div>
                 <!-- Checkpoint panel -->
                 <div class="detail-card" id="checkpointPanel" style="display:none">
                   <div class="tasks-detail-header">
-                    <h3>Checkpoints</h3>
+                    <h3>检查点</h3>
                     <span id="checkpointTaskId" class="task-id-badge"></span>
                   </div>
                   <div id="checkpointsList" class="checkpoints-list"></div>
@@ -465,7 +557,7 @@
                 <!-- Governance timeline -->
                 <div class="detail-card" id="governancePanel" style="display:none">
                   <div class="tasks-detail-header">
-                    <h3>Governance Timeline</h3>
+                    <h3>治理时间线</h3>
                     <span id="governanceTaskId" class="task-id-badge"></span>
                   </div>
                   <div id="governanceTimeline" class="governance-timeline"></div>
@@ -473,9 +565,9 @@
                 <!-- Log panel -->
                 <div class="detail-card" id="logPanel" style="display:none">
                   <div class="tasks-detail-header">
-                    <h3>Task Log</h3>
+                    <h3>任务日志</h3>
                     <div class="log-actions">
-                      <button id="copyLogBtn" class="ghost">Copy</button>
+                      <button id="copyLogBtn" class="ghost">复制</button>
                     </div>
                   </div>
                   <div class="log-meta" id="logMeta"></div>
@@ -483,35 +575,36 @@
                 </div>
                 <!-- Resume panel -->
                 <div class="detail-card" id="resumePanel" style="display:none">
-                  <h3>Resume Execution</h3>
+                  <h3>恢复执行</h3>
                   <div class="form-row">
-                    <label for="resumeTaskId">Task ID</label>
+                    <label for="resumeTaskId">任务 ID</label>
                     <input id="resumeTaskId" type="text" readonly />
                   </div>
                   <div class="form-row">
-                    <label for="resumeWorkflowId">Workflow ID</label>
+                    <label for="resumeWorkflowId">工作流 ID</label>
                     <input id="resumeWorkflowId" type="text" readonly />
                   </div>
                   <div class="form-row">
-                    <label for="resumeStep">Resume from Step</label>
+                    <label for="resumeStep">从步骤</label>
                     <input id="resumeStep" type="number" min="0" value="0" />
                   </div>
                   <div class="form-row">
-                    <label for="resumeUserId">User ID</label>
+                    <label for="resumeUserId">用户 ID</label>
                     <input id="resumeUserId" type="text" value="test" />
                   </div>
                   <div class="form-actions">
-                    <button id="resumeBtn" class="primary">Resume</button>
-                    <button id="resumeStopBtn" class="ghost" disabled>Stop</button>
+                    <button id="resumeBtn" class="primary">恢复</button>
+                    <button id="resumeStopBtn" class="ghost" disabled>停止</button>
                   </div>
                   <div class="output-card" style="margin-top:12px">
                     <div class="output-header">
-                      <h3>Resume Output</h3>
-                      <button id="clearResumeOutput" class="ghost">Clear</button>
+                      <h3>恢复输出</h3>
+                      <button id="clearResumeOutput" class="ghost">清空</button>
                     </div>
                     <div id="resumeOutput" class="output-body"></div>
                   </div>
                 </div>
+              </div>
             </div>
           </section>
 
@@ -537,8 +630,15 @@
                     </div>
                   </div>
                   <div class="detail-card">
-                    <h3>可用 Agent</h3>
-                    <div id="userAgentsList" class="security-agents"></div>
+                    <div class="sec-section-header">
+                      <h3>可用 Agent</h3>
+                      <button id="toggleUserAgentsBtn" class="ghost sec-collapse-button" type="button"
+                        aria-expanded="true" aria-controls="userAgentsList">
+                        <span class="sec-collapse-label">收起</span>
+                        <span class="sec-collapse-icon" aria-hidden="true">⌃</span>
+                      </button>
+                    </div>
+                    <div id="userAgentsList" class="sec-agents"></div>
                   </div>
                 </div>
                 <div class="security-right">
@@ -620,7 +720,7 @@
       </main>
     </div>
 
-    <script src="/static/app.js?v=20260808-collapsed-security-2"></script>
-    <script src="/static/security.js?v=20260808-collapsed-security-2"></script>
+    <script src="/static/app.js?v=20260809-task-history-1"></script>
+    <script src="/static/security.js?v=20260809-user-agents-collapse-1"></script>
   </body>
 </html>

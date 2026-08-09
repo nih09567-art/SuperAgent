@@ -130,24 +130,27 @@ class MCPHotReloadManager:
                 merged.update(inline)
             return merged
 
-        if self.config_path.exists():
-            data = _safe_load(self.config_path)
-            if isinstance(data.get("sources"), list):
-                return _merge_sources(data, self.config_path.parent)
-            servers = data.get("mcpServers")
-            if isinstance(servers, dict):
-                return servers
-
+        merged: Dict[str, Any] = {}
         sources_path = self.config_path.parent / "mcp_sources.json"
         if sources_path.exists():
             data = _safe_load(sources_path)
             if isinstance(data.get("sources"), list):
-                return _merge_sources(data, sources_path.parent)
-            servers = data.get("mcpServers")
-            if isinstance(servers, dict):
-                return servers
+                merged.update(_merge_sources(data, sources_path.parent))
+            else:
+                servers = data.get("mcpServers")
+                if isinstance(servers, dict):
+                    merged.update(servers)
 
-        return {}
+        if self.config_path.exists():
+            data = _safe_load(self.config_path)
+            if isinstance(data.get("sources"), list):
+                merged.update(_merge_sources(data, self.config_path.parent))
+            else:
+                servers = data.get("mcpServers")
+                if isinstance(servers, dict):
+                    merged.update(servers)
+
+        return merged
 
     def _build_client_config(self, servers: Dict[str, Any]) -> Dict[str, Any]:
         client_config: Dict[str, Any] = {}
@@ -274,25 +277,16 @@ class MCPHotReloadManager:
 
         files: List[Path] = []
         base_dir = self.config_path.parent
-        if self.config_path.exists():
-            files.append(self.config_path)
-            data = _safe_load(self.config_path)
+        sources_path = base_dir / "mcp_sources.json"
+        for root_path in (sources_path, self.config_path):
+            if not root_path.exists():
+                continue
+            files.append(root_path)
+            data = _safe_load(root_path)
             if isinstance(data.get("sources"), list):
                 files.extend(_extract_sources(data))
-            elif not isinstance(data.get("mcpServers"), dict):
-                sources_path = base_dir / "mcp_sources.json"
-                if sources_path.exists():
-                    files.append(sources_path)
-                    data = _safe_load(sources_path)
-                    if isinstance(data.get("sources"), list):
-                        files.extend(_extract_sources(data))
-        else:
-            sources_path = base_dir / "mcp_sources.json"
-            if sources_path.exists():
-                files.append(sources_path)
-                data = _safe_load(sources_path)
-                if isinstance(data.get("sources"), list):
-                    files.extend(_extract_sources(data))
+
+        files = list(dict.fromkeys(path.resolve() for path in files))
 
         fingerprint: List[Dict[str, Any]] = []
         max_mtime = 0.0

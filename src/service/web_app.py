@@ -629,6 +629,30 @@ def _workflow_last_used_score(workflow: dict) -> float:
         return float("-inf")
 
 
+def _workflow_matches_query(workflow: dict, query: Optional[str]) -> bool:
+    """Return whether a workflow contains a plain-text library query."""
+
+    needle = str(query or "").strip().casefold()
+    if not needle:
+        return True
+
+    searchable_values: list[Any] = [workflow.get("workflow_id")]
+    task_profile = workflow.get("task_profile")
+    if isinstance(task_profile, dict):
+        searchable_values.extend(
+            [task_profile.get("business_goal"), task_profile.get("resolved_request")]
+        )
+    for message in workflow.get("user_input_messages", []) or []:
+        if isinstance(message, dict):
+            searchable_values.append(message.get("content"))
+
+    return any(
+        needle in str(value).casefold()
+        for value in searchable_values
+        if value is not None
+    )
+
+
 class PlanningStepsRequest(BaseModel):
     workflow_id: str
     planning_steps: list[dict[str, Any]]
@@ -718,6 +742,16 @@ def _count_schema_params(schema: Optional[dict[str, Any]]) -> dict[str, int]:
     }
 
 
+def _count_loaded_mcp_tools(tools: list[Any]) -> int:
+    """Count tools that were actually registered from MCP servers."""
+
+    return sum(
+        1
+        for tool in tools
+        if bool(getattr(getattr(tool, "identifier", None), "is_mcp", False))
+    )
+
+
 def _build_health_fallback(endpoint: str) -> Optional[str]:
     try:
         url = httpx.URL(endpoint)
@@ -786,12 +820,22 @@ def create_app() -> FastAPI:
                 if USE_MCP_TOOLS and mcp_client_config
                 else {}
             )
+            mcp_tool_count = 0
+            if USE_MCP_TOOLS:
+                registry = await ToolRegistry.get_instance()
+                mcp_tool_count = _count_loaded_mcp_tools(
+                    await registry.list_global_tools()
+                )
             mcp_status = {
                 "enabled": USE_MCP_TOOLS,
                 "configured": bool(mcp_servers),
                 "server_count": len(mcp_servers),
+                "tool_count": mcp_tool_count,
+                "loaded": mcp_tool_count > 0,
                 "status": (
-                    "configured"
+                    "loaded"
+                    if mcp_tool_count > 0
+                    else "configured"
                     if mcp_servers
                     else "not_configured"
                     if USE_MCP_TOOLS
@@ -803,6 +847,8 @@ def create_app() -> FastAPI:
                 "enabled": False,
                 "configured": False,
                 "server_count": 0,
+                "tool_count": 0,
+                "loaded": False,
                 "status": "error",
                 "error": str(exc),
             }
@@ -1440,7 +1486,7 @@ def create_app() -> FastAPI:
         }
         return {"tools": payload, "scope": {"users": users, "workflows_scanned": workflows_scanned}}
 
-    @app.get("/api/tools/mcp")
+    @app.get("/api/mcp/servers")
     async def get_mcp_tools_config():
         config = mcp_client_config()
         fingerprint = mcp_config_fingerprint()
@@ -1464,6 +1510,7 @@ def create_app() -> FastAPI:
         response: Response,
         user_id: Optional[str] = None,
         match: Optional[str] = None,
+        query: Optional[str] = None,
         page: int = 1,
         page_size: int = 5,
     ):
@@ -1476,6 +1523,12 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail="page_size must be one of 5, 10, 20")
 
         workflows = await Server._list_workflow_json(user_id=user_id, match=match)
+        if query:
+            workflows = [
+                workflow
+                for workflow in workflows
+                if _workflow_matches_query(workflow, query)
+            ]
 
         workflows.sort(key=lambda wf: str(wf.get("workflow_id") or ""))
         workflows.sort(key=_workflow_last_used_score, reverse=True)
