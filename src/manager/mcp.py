@@ -120,20 +120,52 @@ def load_mcp_servers_from_sources(config_path: str = SOURCES_FILE_PATH) -> Dict[
 
 
 def mcp_client_config(config_path: str = CONFIG_FILE_PATH) -> Dict[str, Any]:
-    servers = load_mcp_servers_from_file(config_path)
-    if not servers:
-        servers = load_mcp_servers_from_sources(SOURCES_FILE_PATH)
+    # Tracked sources provide project defaults. The ignored local config may
+    # override individual servers without replacing the remaining defaults.
+    servers = load_mcp_servers_from_sources(SOURCES_FILE_PATH)
+    local_path = Path(config_path)
+    if local_path.exists():
+        servers.update(load_mcp_servers_from_file(config_path))
     return normalize_mcp_servers(servers)
 
 
 def mcp_config_fingerprint(config_path: str = CONFIG_FILE_PATH) -> Dict[str, Any]:
-    path = Path(config_path)
-    if not path.exists():
+    pending = [Path(SOURCES_FILE_PATH), Path(config_path)]
+    paths: list[Path] = []
+    seen: set[Path] = set()
+
+    while pending:
+        path = pending.pop(0)
+        resolved = path.resolve()
+        if resolved in seen or not path.exists():
+            continue
+        seen.add(resolved)
+        paths.append(path)
+        try:
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        for item in data.get("sources", []):
+            if not isinstance(item, dict) or not item.get("file"):
+                continue
+            source_path = Path(item["file"])
+            if not source_path.is_absolute():
+                source_path = path.parent / source_path
+            pending.append(source_path)
+
+    if not paths:
         return {"hash": "", "mtime": 0.0}
-    raw = path.read_bytes()
+
+    digest = hashlib.sha256()
+    max_mtime = 0.0
+    for path in sorted(paths, key=lambda item: str(item.resolve())):
+        raw = path.read_bytes()
+        digest.update(str(path.resolve()).encode("utf-8"))
+        digest.update(raw)
+        max_mtime = max(max_mtime, path.stat().st_mtime)
     return {
-        "hash": hashlib.sha256(raw).hexdigest(),
-        "mtime": path.stat().st_mtime,
+        "hash": digest.hexdigest(),
+        "mtime": max_mtime,
     }
 
 

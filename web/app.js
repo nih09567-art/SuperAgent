@@ -77,6 +77,21 @@ const mcpContent = document.getElementById("mcpContent");
 const workflowsList = document.getElementById("workflowsList");
 const workflowDetail = document.getElementById("workflowDetail");
 const mermaidContainer = document.getElementById("mermaidContainer");
+const workflowsSearchInput = document.getElementById("workflowsSearch");
+const workflowCountSummary = document.getElementById("workflowCountSummary");
+const workflowStudio = document.getElementById("workflowStudio");
+const workflowViewModeToggle = document.getElementById("workflowViewModeToggle");
+const workflowDetailEmpty = document.getElementById("workflowDetailEmpty");
+const workflowSelectedContent = document.getElementById("workflowSelectedContent");
+const workflowDetailTitle = document.getElementById("workflowDetailTitle");
+const workflowDetailMeta = document.getElementById("workflowDetailMeta");
+const workflowOverview = document.getElementById("workflowOverview");
+const workflowDetailTabs = document.querySelectorAll(".workflow-detail-tab");
+const workflowDetailPanes = document.querySelectorAll(".workflow-detail-pane");
+const copyWorkflowIdBtn = document.getElementById("copyWorkflowId");
+const copyWorkflowJsonBtn = document.getElementById("copyWorkflowJson");
+const useWorkflowInChatBtn = document.getElementById("useWorkflowInChat");
+const openWorkflowDiagramBtn = document.getElementById("openWorkflowDiagram");
 const workflowsPrevPageBtn = document.getElementById("workflowsPrevPage");
 const workflowsNextPageBtn = document.getElementById("workflowsNextPage");
 const workflowsPageInfo = document.getElementById("workflowsPageInfo");
@@ -463,6 +478,12 @@ let workflowsPage = 1;
 let workflowsPageSize = 5;
 let workflowsTotal = 0;
 let workflowsTotalPages = 0;
+let latestWorkflows = [];
+let selectedWorkflowDetail = null;
+let workflowSelectionSequence = 0;
+let workflowListRequestSequence = 0;
+let workflowsLoadedUserId = "";
+let activeWorkflowDetailView = "overview";
 const PLANNER_ONLY_TIMEOUT_MS = 180000;
 const CHAT_HISTORY_LIMIT = 10;
 const CHAT_HISTORY_KEY_PREFIX = "cooragent.conversations.v2";
@@ -471,6 +492,7 @@ const ACTIVE_CONVERSATION_LIMIT = 12;
 const CONVERSATION_TRANSCRIPT_LIMIT = 100;
 const CONVERSATION_MESSAGE_CHAR_LIMIT = 12000;
 const DECISION_HISTORY_LIMIT = 5;
+const WORKFLOW_VIEW_MODE_KEY = "cooragent.workflowViewMode.v1";
 
 mermaid.initialize({
   startOnLoad: false,
@@ -2184,9 +2206,13 @@ const updateWorkflowsPagination = () => {
 
   const hasPages = workflowsTotalPages > 0;
   const currentPage = hasPages ? Math.min(workflowsPage, workflowsTotalPages) : 0;
-  workflowsPageInfo.textContent = workflowsTotal
-    ? `Page ${currentPage} / ${workflowsTotalPages} | Total ${workflowsTotal}`
-    : "";
+  workflowsPageInfo.textContent = workflowsTotal ? `${currentPage} / ${workflowsTotalPages}` : "0 / 0";
+  if (workflowCountSummary) {
+    const query = workflowsSearchInput?.value.trim();
+    workflowCountSummary.textContent = query
+      ? `找到 ${workflowsTotal} 个结果`
+      : `共 ${workflowsTotal} 个工作流`;
+  }
 
   workflowsPrevPageBtn.disabled = !hasPages || workflowsPage <= 1;
   workflowsNextPageBtn.disabled = !hasPages || workflowsPage >= workflowsTotalPages;
@@ -2217,6 +2243,9 @@ const loadReadiness = async () => {
     const agentsReady = Boolean(components.agents?.ready);
     const searchReady = Boolean(components.search?.configured);
     const mcpConfigured = Boolean(components.mcp?.configured);
+    const mcpLoaded = Boolean(components.mcp?.loaded);
+    const mcpServerCount = Number(components.mcp?.server_count || 0);
+    const mcpToolCount = Number(components.mcp?.tool_count || 0);
     runtimeCanRun = modelsReady && agentsReady;
 
     readinessBanner.className = `readiness-banner ${data.ready ? "ready" : "degraded"}`;
@@ -2230,8 +2259,10 @@ const loadReadiness = async () => {
       ),
       readinessChip(searchReady ? "规划搜索可用" : "规划搜索未配置", searchReady),
       readinessChip(
-        mcpConfigured ? `MCP 已配置 ${components.mcp?.server_count || 0} 个` : "MCP 未配置",
-        mcpConfigured,
+        mcpConfigured
+          ? `MCP 服务 ${mcpServerCount} 个 · 已加载工具 ${mcpToolCount} 个`
+          : "MCP 未配置",
+        mcpLoaded,
       ),
     ].join("");
 
@@ -2239,6 +2270,8 @@ const loadReadiness = async () => {
       readinessHint.textContent = "缺少基础模型或推理模型配置：可以浏览页面，但暂不能运行任务。";
     } else if (!agentsReady) {
       readinessHint.textContent = components.agents?.error || "Agent 初始化失败，请查看服务端日志。";
+    } else if (mcpConfigured && !mcpLoaded) {
+      readinessHint.textContent = "MCP 服务已配置，但尚未加载到工具；请检查 Office MCP 和 Excel MCP 服务。";
     } else if (!searchReady) {
       readinessHint.textContent = "核心工作流可运行；未配置 Tavily，已自动关闭规划前搜索。";
     } else {
@@ -2755,6 +2788,7 @@ const switchTab = (tabId) => {
   tabs.forEach((tab) => tab.classList.toggle("active", tab.dataset.tab === tabId));
   panels.forEach((panel) => panel.classList.toggle("active", panel.id === `panel-${tabId}`));
   if (tabId === "chat") scheduleChatMirror();
+  if (tabId === "workflows") fetchWorkflows();
 };
 
 tabs.forEach((tab) => {
@@ -6007,19 +6041,21 @@ const renderMcpConfig = () => {
   mcpList.textContent = "";
   mcpSummary.textContent = "";
   if (!mcpConfig) {
-    mcpSummary.appendChild(createTag("MCP config unavailable", "warn"));
+    mcpSummary.appendChild(createTag("MCP 配置不可用", "warn"));
     return;
   }
   const servers = Array.isArray(mcpConfig.servers) ? mcpConfig.servers : [];
+  const mcpCount = latestTools.filter((tool) => tool.is_mcp).length;
   const hash = mcpConfig.fingerprint?.hash ? mcpConfig.fingerprint.hash.slice(0, 8) : "";
   const mtime = mcpConfig.fingerprint?.mtime ? new Date(mcpConfig.fingerprint.mtime * 1000).toLocaleString() : "";
 
-  mcpSummary.appendChild(createTag(`servers: ${servers.length}`, "accent"));
+  mcpSummary.appendChild(createTag(`MCP 服务：${servers.length}`, "accent"));
+  mcpSummary.appendChild(createTag(`已加载工具：${mcpCount}`, "accent"));
   if (hash) mcpSummary.appendChild(createTag(`hash: ${hash}`));
   if (mtime) mcpSummary.appendChild(createTag(`mtime: ${mtime}`));
 
   if (!servers.length) {
-    mcpList.appendChild(createStateCard("No MCP servers configured.", "empty"));
+    mcpList.appendChild(createStateCard("未配置 MCP 服务。", "empty"));
     return;
   }
 
@@ -6040,9 +6076,8 @@ const renderMcpConfig = () => {
     mcpList.appendChild(item);
   });
 
-  const mcpCount = latestTools.filter((tool) => tool.is_mcp).length;
   if (servers.length && mcpCount === 0) {
-    mcpList.appendChild(createStateCard("MCP servers configured, but no MCP tools loaded.", "error"));
+    mcpList.appendChild(createStateCard("MCP 服务已配置，但尚未加载工具。", "error"));
   }
 };
 
@@ -6382,7 +6417,7 @@ const fetchTools = async () => {
     const results = await Promise.allSettled([
       fetch("/api/tools"),
       fetch(statsUrl),
-      fetch("/api/tools/mcp"),
+      fetch("/api/mcp/servers"),
     ]);
 
     const toolsRes = results[0].status === "fulfilled" ? results[0].value : null;
@@ -6420,81 +6455,130 @@ const fetchTools = async () => {
 };
 
 const fetchWorkflows = async () => {
+  const requestSequence = ++workflowListRequestSequence;
   const userId = userIdInput.value.trim();
   if (!userId) {
-    setListState(workflowsList, "Please enter a user_id first.", "empty");
+    setListState(workflowsList, "请先选择用户。", "empty");
     workflowsTotal = 0;
     workflowsTotalPages = 0;
+    latestWorkflows = [];
+    workflowsLoadedUserId = "";
     updateWorkflowsPagination();
+    clearWorkflowSelection();
     return;
   }
 
-  setListState(workflowsList, "Loading...", "loading");
+  const selectedOwnerId = String(selectedWorkflowId || "").split(":", 1)[0];
+  if (
+    (workflowsLoadedUserId && workflowsLoadedUserId !== userId)
+    || (selectedOwnerId && selectedOwnerId !== userId)
+  ) {
+    clearWorkflowSelection();
+  }
+
+  setListState(workflowsList, "正在加载工作流...", "loading");
+  if (refreshWorkflowsBtn) refreshWorkflowsBtn.disabled = true;
   try {
     const params = new URLSearchParams();
     params.set("user_id", userId);
     params.set("page", String(workflowsPage));
     params.set("page_size", String(workflowsPageSize));
+    const searchQuery = workflowsSearchInput?.value.trim();
+    if (searchQuery) params.set("query", searchQuery);
     const res = await fetch(`/api/workflows?${params.toString()}`);
+    if (requestSequence !== workflowListRequestSequence) return;
     if (!res.ok) {
       throw new Error("request failed");
     }
     const workflows = await res.json();
+    if (requestSequence !== workflowListRequestSequence) return;
+    latestWorkflows = Array.isArray(workflows) ? workflows : [];
     workflowsTotal = Number.parseInt(res.headers.get("X-Total-Count") || "0", 10) || 0;
     workflowsTotalPages = Number.parseInt(res.headers.get("X-Total-Pages") || "0", 10) || 0;
+    workflowsLoadedUserId = userId;
+
+    if (workflowsTotalPages && workflowsPage > workflowsTotalPages) {
+      workflowsPage = workflowsTotalPages;
+      await fetchWorkflows();
+      return;
+    }
+
     updateWorkflowsPagination();
-    if (!workflows.length) {
-      setListState(workflowsList, "No workflows found.", "empty");
+    if (!latestWorkflows.length) {
+      setListState(
+        workflowsList,
+        searchQuery ? "没有匹配的工作流。" : "当前用户还没有工作流。",
+        "empty",
+      );
+      clearWorkflowSelection();
       return;
     }
 
     workflowsList.textContent = "";
-    workflows.forEach((wf) => {
-      const title = formatWorkflowTitle(wf);
-      const item = document.createElement("div");
+    latestWorkflows.forEach((wf) => {
+      const taskName = getWorkflowTaskName(wf) || "未命名工作流";
+      const item = document.createElement("button");
+      item.type = "button";
       item.className = "workflow-item";
       item.dataset.workflowId = wf.workflow_id;
-      item.setAttribute("role", "button");
-      item.tabIndex = 0;
+
+      const itemHeader = document.createElement("span");
+      itemHeader.className = "workflow-item-header";
 
       const titleEl = document.createElement("div");
       titleEl.className = "workflow-item-id";
-      titleEl.textContent = title;
+      titleEl.textContent = taskName;
+
+      const versionEl = document.createElement("span");
+      versionEl.className = "workflow-version-badge";
+      versionEl.textContent = `v${wf.version || 1}`;
+      itemHeader.append(titleEl, versionEl);
 
       const metaEl = document.createElement("div");
       metaEl.className = "workflow-item-meta";
 
       const idSpan = document.createElement("span");
-      idSpan.textContent = `ID: ${wf.workflow_id}`;
+      const compactId = String(wf.workflow_id || "").split(":").pop() || "";
+      idSpan.textContent = `ID · ${compactId.slice(0, 10)}${compactId.length > 10 ? "…" : ""}`;
+      idSpan.title = wf.workflow_id || "";
 
-      const versionSpan = document.createElement("span");
-      versionSpan.textContent = `lap: ${wf.lap} | version: ${wf.version}`;
+      const timeSpan = document.createElement("time");
+      const timestamp = getWorkflowTimestamp(wf);
+      timeSpan.textContent = timestamp ? formatRelativeWorkflowTime(timestamp) : "时间未知";
+      if (timestamp) timeSpan.dateTime = new Date(timestamp).toISOString();
 
-      metaEl.appendChild(idSpan);
-      metaEl.appendChild(versionSpan);
+      metaEl.append(idSpan, timeSpan);
 
-      item.appendChild(titleEl);
-      item.appendChild(metaEl);
+      item.append(itemHeader, metaEl);
 
       item.addEventListener("click", () => selectWorkflow(wf.workflow_id));
-      item.addEventListener("keydown", (event) => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          selectWorkflow(wf.workflow_id);
-        }
-      });
 
       if (wf.workflow_id === selectedWorkflowId) {
         item.classList.add("active");
+        item.setAttribute("aria-current", "true");
       }
 
       workflowsList.appendChild(item);
     });
+
+    const selectedOnPage = latestWorkflows.some((wf) => wf.workflow_id === selectedWorkflowId);
+    const workflowToSelect = selectedOnPage
+      ? selectedWorkflowId
+      : latestWorkflows[0]?.workflow_id;
+    if (workflowToSelect && (!selectedOnPage || !selectedWorkflowDetail)) {
+      await selectWorkflow(workflowToSelect);
+    }
   } catch (err) {
-    setListState(workflowsList, "Failed to load workflows.", "error");
+    if (requestSequence !== workflowListRequestSequence) return;
+    setListState(workflowsList, "工作流加载失败，请稍后重试。", "error");
+    latestWorkflows = [];
     workflowsTotal = 0;
     workflowsTotalPages = 0;
     updateWorkflowsPagination();
+  } finally {
+    if (requestSequence === workflowListRequestSequence && refreshWorkflowsBtn) {
+      refreshWorkflowsBtn.disabled = false;
+    }
   }
 };
 
@@ -6560,6 +6644,268 @@ const getWorkflowTimestamp = (workflow) => {
     }
   });
   return latest;
+};
+
+const formatRelativeWorkflowTime = (timestamp) => {
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return "时间未知";
+  const difference = Date.now() - date.getTime();
+  if (difference >= 0 && difference < 60 * 1000) return "刚刚更新";
+  if (difference >= 0 && difference < 60 * 60 * 1000) {
+    return `${Math.max(1, Math.floor(difference / (60 * 1000)))} 分钟前`;
+  }
+  if (difference >= 0 && difference < 24 * 60 * 60 * 1000) {
+    return `${Math.max(1, Math.floor(difference / (60 * 60 * 1000)))} 小时前`;
+  }
+  const now = new Date();
+  const sameYear = date.getFullYear() === now.getFullYear();
+  return new Intl.DateTimeFormat("zh-CN", {
+    year: sameYear ? undefined : "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date);
+};
+
+const formatWorkflowDateTime = (value) => {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "未知";
+  return new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(date);
+};
+
+const getWorkflowRunStatus = (task) => {
+  const status = String(task?.status || "unknown").toLowerCase();
+  const statusMap = {
+    success: ["成功", "success"],
+    succeeded: ["成功", "success"],
+    completed: ["成功", "success"],
+    running: ["运行中", "running"],
+    pending: ["等待中", "pending"],
+    reserved: ["等待确认", "pending"],
+    partial: ["部分完成", "warning"],
+    failed: ["失败", "error"],
+    error: ["失败", "error"],
+    stopped: ["已停止", "muted"],
+    cancelled: ["已取消", "muted"],
+  };
+  const [label, tone] = statusMap[status] || [task ? "状态未知" : "暂无运行", "muted"];
+  return { label, tone };
+};
+
+const clearWorkflowSelection = () => {
+  workflowSelectionSequence += 1;
+  selectedWorkflowId = null;
+  selectedWorkflowDetail = null;
+  document.querySelectorAll(".workflow-item").forEach((item) => {
+    item.classList.remove("active");
+    item.removeAttribute("aria-current");
+  });
+  if (workflowDetailEmpty) workflowDetailEmpty.hidden = false;
+  if (workflowSelectedContent) workflowSelectedContent.hidden = true;
+  if (workflowOverview) workflowOverview.replaceChildren();
+  if (workflowDetail) workflowDetail.textContent = "请选择一个工作流";
+  if (mermaidContainer) {
+    mermaidContainer.textContent = "暂无可视化";
+    mermaidContainer.classList.remove("workflow-architecture-host", "workflow-diagram-interactive");
+  }
+  if (openWorkflowDiagramBtn) openWorkflowDiagramBtn.disabled = true;
+};
+
+const setWorkflowDetailView = (view) => {
+  const allowedViews = new Set(["overview", "diagram", "developer"]);
+  activeWorkflowDetailView = allowedViews.has(view) ? view : "overview";
+  const isClassic = workflowStudio?.classList.contains("is-classic");
+  workflowDetailTabs.forEach((tab) => {
+    const isActive = tab.dataset.workflowView === activeWorkflowDetailView;
+    tab.classList.toggle("active", isActive);
+    tab.setAttribute("aria-selected", String(isActive));
+    tab.tabIndex = isActive ? 0 : -1;
+  });
+  workflowDetailPanes.forEach((pane) => {
+    pane.hidden = isClassic
+      ? pane.dataset.workflowPane === "overview"
+      : pane.dataset.workflowPane !== activeWorkflowDetailView;
+  });
+};
+
+const setWorkflowViewMode = (mode, persist = true) => {
+  const isClassic = mode === "classic";
+  workflowStudio?.classList.toggle("is-classic", isClassic);
+  if (workflowViewModeToggle) {
+    workflowViewModeToggle.textContent = isClassic ? "返回新版" : "经典视图";
+    workflowViewModeToggle.setAttribute("aria-pressed", String(isClassic));
+    workflowViewModeToggle.title = isClassic ? "返回新版工作流界面" : "切换到改版前的工作流布局";
+  }
+  setWorkflowDetailView(activeWorkflowDetailView);
+  if (persist) {
+    try {
+      localStorage.setItem(WORKFLOW_VIEW_MODE_KEY, isClassic ? "classic" : "studio");
+    } catch (error) {
+      console.warn("Failed to save workflow view mode:", error);
+    }
+  }
+};
+
+const createWorkflowBadge = (text, tone = "muted") => {
+  const badge = document.createElement("span");
+  badge.className = `workflow-meta-badge ${tone}`;
+  badge.textContent = text;
+  return badge;
+};
+
+const createWorkflowMetric = (label, value) => {
+  const metric = document.createElement("div");
+  metric.className = "workflow-overview-metric";
+  const valueElement = document.createElement("strong");
+  valueElement.textContent = String(value);
+  const labelElement = document.createElement("span");
+  labelElement.textContent = label;
+  metric.append(valueElement, labelElement);
+  return metric;
+};
+
+const createWorkflowResourceGroup = (title, values, emptyText) => {
+  const group = document.createElement("div");
+  group.className = "workflow-resource-group";
+  const heading = document.createElement("h5");
+  heading.textContent = title;
+  const list = document.createElement("div");
+  list.className = "workflow-resource-list";
+  if (values.length) {
+    values.forEach((value) => {
+      const chip = document.createElement("span");
+      chip.textContent = value;
+      list.appendChild(chip);
+    });
+  } else {
+    const empty = document.createElement("span");
+    empty.className = "workflow-resource-empty";
+    empty.textContent = emptyText;
+    list.appendChild(empty);
+  }
+  group.append(heading, list);
+  return group;
+};
+
+const renderWorkflowDetailHeader = (detail, tasks) => {
+  if (!workflowDetailTitle || !workflowDetailMeta) return;
+  const title = getWorkflowTaskName(detail) || detail?.task_profile?.business_goal || detail?.workflow_id;
+  workflowDetailTitle.textContent = title || "未命名工作流";
+  workflowDetailMeta.replaceChildren();
+  const latestRun = Array.isArray(tasks) ? tasks[0] : null;
+  const runStatus = getWorkflowRunStatus(latestRun);
+  workflowDetailMeta.append(
+    createWorkflowBadge(runStatus.label, runStatus.tone),
+    createWorkflowBadge(`版本 v${detail?.version || 1}`),
+    createWorkflowBadge(`更新于 ${formatWorkflowDateTime(detail?.updated_at || detail?.created_at)}`),
+  );
+};
+
+const renderWorkflowOverview = (detail, tasks = []) => {
+  if (!workflowOverview) return;
+  workflowOverview.replaceChildren();
+  const nodes = getWorkflowNodes(detail);
+  const executionNodes = nodes.filter((node) => (
+    getWorkflowNodeType(node) === "execution_agent"
+  ));
+  const agents = Array.from(new Set(executionNodes.map((node) => node.name).filter(Boolean)));
+  const tools = Array.from(new Set(executionNodes.flatMap((node) => {
+    const entries = Array.isArray(node?.config?.tools) ? node.config.tools : [];
+    return entries.map((tool) => tool?.name || tool?.config?.name || "").filter(Boolean);
+  })));
+  const messages = Array.isArray(detail?.user_input_messages) ? detail.user_input_messages : [];
+  const userMessages = messages.filter((message) => message?.role === "user" && message?.content);
+  const latestRun = Array.isArray(tasks) ? tasks[0] : null;
+  const runStatus = getWorkflowRunStatus(latestRun);
+
+  const metrics = document.createElement("div");
+  metrics.className = "workflow-overview-metrics";
+  metrics.append(
+    createWorkflowMetric("执行 Agent", agents.length),
+    createWorkflowMetric("可用工具", tools.length),
+    createWorkflowMetric("对话轮次", userMessages.length),
+    createWorkflowMetric("规划轮次", detail?.lap || 1),
+  );
+
+  const goalSection = document.createElement("section");
+  goalSection.className = "workflow-overview-section workflow-goal-section";
+  const goalHeading = document.createElement("h4");
+  goalHeading.textContent = "任务目标";
+  const goal = document.createElement("p");
+  goal.textContent = detail?.task_profile?.business_goal
+    || getWorkflowTaskName(detail)
+    || "该工作流暂未记录任务目标。";
+  goalSection.append(goalHeading, goal);
+
+  const facts = document.createElement("dl");
+  facts.className = "workflow-facts";
+  const factEntries = [
+    ["Workflow ID", detail?.workflow_id || "-"],
+    ["运行模式", detail?.mode || "launch"],
+    ["最近运行", latestRun
+      ? `${runStatus.label} · ${formatWorkflowDateTime(latestRun.created_at)}`
+      : "暂无运行记录"],
+    ["规划设置", [
+      detail?.deep_thinking_mode ? "Deep Thinking" : "标准规划",
+      detail?.search_before_planning ? "规划前搜索" : null,
+    ].filter(Boolean).join(" · ")],
+  ];
+  factEntries.forEach(([label, value]) => {
+    const wrapper = document.createElement("div");
+    const term = document.createElement("dt");
+    term.textContent = label;
+    const description = document.createElement("dd");
+    description.textContent = value;
+    description.title = value;
+    wrapper.append(term, description);
+    facts.appendChild(wrapper);
+  });
+
+  const resources = document.createElement("section");
+  resources.className = "workflow-overview-section workflow-resources";
+  const resourcesHeading = document.createElement("h4");
+  resourcesHeading.textContent = "执行资源";
+  const resourceColumns = document.createElement("div");
+  resourceColumns.className = "workflow-resource-columns";
+  resourceColumns.append(
+    createWorkflowResourceGroup("Agents", agents, "未配置执行 Agent"),
+    createWorkflowResourceGroup("Tools", tools, "未配置工具"),
+  );
+  resources.append(resourcesHeading, resourceColumns);
+
+  const contextSection = document.createElement("section");
+  contextSection.className = "workflow-overview-section workflow-context-section";
+  const contextHeading = document.createElement("h4");
+  contextHeading.textContent = "最近任务上下文";
+  const contextList = document.createElement("div");
+  contextList.className = "workflow-context-list";
+  const recentMessages = userMessages.slice(-3).reverse();
+  if (recentMessages.length) {
+    recentMessages.forEach((message) => {
+      const item = document.createElement("div");
+      item.className = "workflow-context-item";
+      const content = document.createElement("p");
+      content.textContent = String(message.content).trim();
+      const time = document.createElement("time");
+      time.textContent = message.timestamp ? formatWorkflowDateTime(message.timestamp) : "未记录时间";
+      item.append(content, time);
+      contextList.appendChild(item);
+    });
+  } else {
+    const empty = document.createElement("p");
+    empty.className = "workflow-overview-empty";
+    empty.textContent = "暂无任务上下文。";
+    contextList.appendChild(empty);
+  }
+  contextSection.append(contextHeading, contextList);
+
+  workflowOverview.append(metrics, goalSection, facts, resources, contextSection);
 };
 
 const getWorkflowGraphEntryName = (entry) => String(
@@ -6700,7 +7046,12 @@ const createWorkflowExecutionNode = (node, graphEntry, index) => {
   ));
   block.appendChild(createWorkflowTextElement("div", "workflow-architecture-agent-type", "执行代理"));
 
-  const description = getWorkflowNodeDescription(node);
+  const description = String(
+    node?.workflowStep?.title
+    || node?.workflowStep?.description
+    || getWorkflowNodeDescription(node)
+    || ""
+  ).trim();
   if (description) {
     block.appendChild(createWorkflowTextElement(
       "p",
@@ -6731,6 +7082,36 @@ const getWorkflowNodes = (detail) => Object.entries(detail?.nodes || {})
     ...node,
     name: String(node.name || node.config?.name || key).trim(),
   }));
+
+const getWorkflowPlanningSteps = (detail) => (
+  Array.isArray(detail?.planning_steps)
+    ? detail.planning_steps.filter((step) => step?.agent_name)
+    : []
+);
+
+const isWorkflowPlanningLinear = (planningSteps) => {
+  if (planningSteps.length <= 1) return true;
+  const hasDependencies = planningSteps.some((step) => (
+    Array.isArray(step?.depends_on) && step.depends_on.length
+  ));
+  if (!hasDependencies) return true;
+
+  return planningSteps.every((step, index) => {
+    const dependencies = Array.isArray(step?.depends_on)
+      ? step.depends_on.map((value) => String(value))
+      : [];
+    if (index === 0) return dependencies.length === 0;
+    const previousStep = planningSteps[index - 1];
+    const previousIdentifiers = new Set([
+      String(previousStep?.step_id || `step_${index}`),
+      ...(Array.isArray(previousStep?.subtask_ids)
+        ? previousStep.subtask_ids.map((value) => String(value))
+        : []),
+    ]);
+    return dependencies.length > 0
+      && dependencies.every((dependency) => previousIdentifiers.has(dependency));
+  });
+};
 
 const getLinearWorkflowGraphOrder = (nodeEntries, graphEntries, graphByName) => {
   if (!graphEntries.length) return { isLinear: true, orderedNames: [] };
@@ -6791,6 +7172,7 @@ const getLinearWorkflowGraphOrder = (nodeEntries, graphEntries, graphByName) => 
 
 const getOrderedWorkflowNodes = (detail) => {
   const allNodeEntries = getWorkflowNodes(detail);
+  const planningSteps = getWorkflowPlanningSteps(detail);
   const graphEntries = Array.isArray(detail?.graph) ? detail.graph : [];
   const graphByName = new Map(
     graphEntries
@@ -6798,7 +7180,7 @@ const getOrderedWorkflowNodes = (detail) => {
       .filter(([name]) => name)
   );
   const nodesByName = new Map(allNodeEntries.map((node) => [node.name, node]));
-  const nodeEntries = graphEntries.length
+  const graphNodeEntries = graphEntries.length
     ? graphEntries.map((entry) => {
       const name = getWorkflowGraphEntryName(entry);
       return nodesByName.get(name) || {
@@ -6807,19 +7189,36 @@ const getOrderedWorkflowNodes = (detail) => {
         config: entry?.config || {},
       };
     }).filter((node) => node.name)
-    : allNodeEntries;
-  const topology = getLinearWorkflowGraphOrder(nodeEntries, graphEntries, graphByName);
-  const systemNodes = nodeEntries.filter((node) => (
+    : [];
+  const topologyNodes = graphNodeEntries.length ? graphNodeEntries : allNodeEntries;
+  const topology = getLinearWorkflowGraphOrder(topologyNodes, graphEntries, graphByName);
+  const systemNodes = topologyNodes.filter((node) => (
     getWorkflowNodeType(node, graphByName.get(node.name)) === "system_agent"
   ));
-  const executionNodes = nodeEntries.filter((node) => (
+  const graphExecutionNodes = graphNodeEntries.filter((node) => (
     getWorkflowNodeType(node, graphByName.get(node.name)) === "execution_agent"
   ));
+  const allExecutionNodes = allNodeEntries.filter((node) => (
+    getWorkflowNodeType(node, graphByName.get(node.name)) === "execution_agent"
+  ));
+  const executionNodes = planningSteps.length
+    ? planningSteps.map((step) => {
+      const name = String(step.agent_name).trim();
+      const existingNode = nodesByName.get(name)
+        || graphExecutionNodes.find((node) => node.name === name);
+      return {
+        ...(existingNode || {
+          name,
+          type: "execution_agent",
+          config: { type: "execution_agent", name },
+        }),
+        name,
+        workflowStep: step,
+      };
+    })
+    : (graphExecutionNodes.length ? graphExecutionNodes : allExecutionNodes);
 
-  const fallbackExecutionNames = Array.isArray(detail?.planning_steps)
-    ? detail.planning_steps.map((step) => step?.agent_name).filter(Boolean)
-    : [];
-  const orderedNames = topology.orderedNames.length ? topology.orderedNames : fallbackExecutionNames;
+  const orderedNames = topology.orderedNames;
   const orderIndex = new Map(orderedNames.map((name, index) => [name, index]));
   const sortByTopology = (left, right) => {
     const leftOrder = orderIndex.has(left.name) ? orderIndex.get(left.name) : Number.MAX_SAFE_INTEGER;
@@ -6847,7 +7246,9 @@ const getOrderedWorkflowNodes = (detail) => {
     systemNodes,
     executionNodes,
     graphByName,
-    isLinear: topology.isLinear && confirmationLayoutSupported,
+    isLinear: topology.isLinear
+      && isWorkflowPlanningLinear(planningSteps)
+      && confirmationLayoutSupported,
     hasCommandConfirmation,
   };
 };
@@ -6930,47 +7331,101 @@ const renderWorkflowArchitecture = (detail) => {
 
 
 const selectWorkflow = async (workflowId) => {
+  const selectionSequence = ++workflowSelectionSequence;
   selectedWorkflowId = workflowId;
+  selectedWorkflowDetail = null;
   document.querySelectorAll(".workflow-item").forEach((item) => {
-    item.classList.toggle("active", item.dataset.workflowId === workflowId);
+    const isActive = item.dataset.workflowId === workflowId;
+    item.classList.toggle("active", isActive);
+    if (isActive) item.setAttribute("aria-current", "true");
+    else item.removeAttribute("aria-current");
   });
 
-  workflowDetail.textContent = "Loading...";
-  mermaidContainer.textContent = "Loading...";
+  if (workflowDetailEmpty) workflowDetailEmpty.hidden = true;
+  if (workflowSelectedContent) workflowSelectedContent.hidden = false;
+  if (workflowDetailTitle) workflowDetailTitle.textContent = "正在加载工作流...";
+  if (workflowDetailMeta) workflowDetailMeta.replaceChildren();
+  if (workflowOverview) {
+    workflowOverview.replaceChildren(createStateCard("正在加载工作流概览...", "loading"));
+  }
+  workflowDetail.textContent = "正在加载...";
+  mermaidContainer.textContent = "正在生成流程图...";
   mermaidContainer.classList.remove("workflow-architecture-host");
   mermaidContainer.classList.remove("workflow-diagram-interactive");
+  if (openWorkflowDiagramBtn) openWorkflowDiagramBtn.disabled = true;
 
-  let detail = null;
-  const detailRes = await fetch(`/api/workflows/${encodeURIComponent(workflowId)}`);
-  if (detailRes.ok) {
-    detail = await detailRes.json();
-    workflowDetail.textContent = JSON.stringify(detail, null, 2);
-  } else {
-    workflowDetail.textContent = "Failed to load workflow detail.";
-  }
+  try {
+    const [detailResult, tasksResult] = await Promise.allSettled([
+      fetch(`/api/workflows/${encodeURIComponent(workflowId)}`),
+      fetch(`/api/tasks?workflow_id=${encodeURIComponent(workflowId)}`),
+    ]);
+    if (selectionSequence !== workflowSelectionSequence) return;
 
-  if (detail && renderWorkflowArchitecture(detail)) return;
-
-  const mermaidRes = await fetch(`/api/workflows/${encodeURIComponent(workflowId)}/mermaid`);
-  if (mermaidRes.ok) {
-    const code = await mermaidRes.text();
-    mermaidContainer.textContent = "";
-    const pre = document.createElement("pre");
-    pre.className = "mermaid";
-    pre.textContent = code;
-    mermaidContainer.appendChild(pre);
-    try {
-      await mermaid.run({ nodes: mermaidContainer.querySelectorAll(".mermaid") });
-      const svg = mermaidContainer.querySelector("svg");
-      if (svg) {
-        mermaidContainer.classList.add("workflow-diagram-interactive");
-        makeWorkflowDiagramInteractive(svg, detail, "mermaid");
+    const detailResponse = detailResult.status === "fulfilled" ? detailResult.value : null;
+    if (!detailResponse?.ok) {
+      const listedWorkflow = latestWorkflows.find((workflow) => workflow.workflow_id === workflowId);
+      if (workflowDetailTitle) {
+        workflowDetailTitle.textContent = getWorkflowTaskName(listedWorkflow || {}) || workflowId;
       }
-    } catch (err) {
-      mermaidContainer.textContent = "Mermaid render failed.";
+      if (workflowOverview) {
+        workflowOverview.replaceChildren(createStateCard("工作流详情加载失败，请稍后重试。", "error"));
+      }
+      workflowDetail.textContent = "工作流详情加载失败。";
+      mermaidContainer.textContent = "无法生成流程图。";
+      return;
     }
-  } else {
-    mermaidContainer.textContent = "No graph available.";
+
+    const detail = await detailResponse.json();
+    if (selectionSequence !== workflowSelectionSequence) return;
+    let tasks = [];
+    const tasksResponse = tasksResult.status === "fulfilled" ? tasksResult.value : null;
+    if (tasksResponse?.ok) {
+      const taskPayload = await tasksResponse.json();
+      tasks = Array.isArray(taskPayload) ? taskPayload : [];
+    }
+
+    selectedWorkflowDetail = detail;
+    workflowDetail.textContent = JSON.stringify(detail, null, 2);
+    renderWorkflowDetailHeader(detail, tasks);
+    renderWorkflowOverview(detail, tasks);
+
+    if (renderWorkflowArchitecture(detail)) {
+      if (openWorkflowDiagramBtn) openWorkflowDiagramBtn.disabled = false;
+      return;
+    }
+
+    const mermaidRes = await fetch(`/api/workflows/${encodeURIComponent(workflowId)}/mermaid`);
+    if (selectionSequence !== workflowSelectionSequence) return;
+    if (mermaidRes.ok) {
+      const code = await mermaidRes.text();
+      mermaidContainer.textContent = "";
+      const pre = document.createElement("pre");
+      pre.className = "mermaid";
+      pre.textContent = code;
+      mermaidContainer.appendChild(pre);
+      try {
+        await mermaid.run({ nodes: mermaidContainer.querySelectorAll(".mermaid") });
+        if (selectionSequence !== workflowSelectionSequence) return;
+        const svg = mermaidContainer.querySelector("svg");
+        if (svg) {
+          mermaidContainer.classList.add("workflow-diagram-interactive");
+          makeWorkflowDiagramInteractive(svg, detail, "mermaid");
+          if (openWorkflowDiagramBtn) openWorkflowDiagramBtn.disabled = false;
+        }
+      } catch (err) {
+        mermaidContainer.textContent = "流程图渲染失败。";
+      }
+    } else {
+      mermaidContainer.textContent = "该工作流暂无可视化结构。";
+    }
+  } catch (error) {
+    if (selectionSequence !== workflowSelectionSequence) return;
+    console.error("Failed to load workflow:", error);
+    if (workflowOverview) {
+      workflowOverview.replaceChildren(createStateCard("工作流详情加载失败，请稍后重试。", "error"));
+    }
+    workflowDetail.textContent = "工作流详情加载失败。";
+    mermaidContainer.textContent = "无法生成流程图。";
   }
 };
 
@@ -7109,6 +7564,107 @@ refreshWorkflowsBtn.addEventListener("click", () => {
   fetchWorkflows();
 });
 
+if (workflowsSearchInput) {
+  const searchWorkflows = debounce(() => {
+    workflowsPage = 1;
+    fetchWorkflows();
+  }, 320);
+  workflowsSearchInput.addEventListener("input", searchWorkflows);
+  workflowsSearchInput.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && workflowsSearchInput.value) {
+      workflowsSearchInput.value = "";
+      workflowsPage = 1;
+      fetchWorkflows();
+    }
+  });
+}
+
+workflowDetailTabs.forEach((tab, index) => {
+  tab.addEventListener("click", () => setWorkflowDetailView(tab.dataset.workflowView));
+  tab.addEventListener("keydown", (event) => {
+    if (!new Set(["ArrowLeft", "ArrowRight"]).has(event.key)) return;
+    event.preventDefault();
+    const direction = event.key === "ArrowRight" ? 1 : -1;
+    const nextIndex = (index + direction + workflowDetailTabs.length) % workflowDetailTabs.length;
+    const nextTab = workflowDetailTabs[nextIndex];
+    setWorkflowDetailView(nextTab.dataset.workflowView);
+    nextTab.focus();
+  });
+});
+
+if (workflowViewModeToggle) {
+  workflowViewModeToggle.addEventListener("click", () => {
+    const nextMode = workflowStudio?.classList.contains("is-classic") ? "studio" : "classic";
+    setWorkflowViewMode(nextMode);
+  });
+}
+
+if (copyWorkflowIdBtn) {
+  copyWorkflowIdBtn.addEventListener("click", async () => {
+    if (!selectedWorkflowId || !navigator.clipboard || !window.isSecureContext) {
+      flashButton(copyWorkflowIdBtn, "复制失败");
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(selectedWorkflowId);
+      flashButton(copyWorkflowIdBtn, "已复制");
+    } catch (error) {
+      flashButton(copyWorkflowIdBtn, "复制失败");
+    }
+  });
+}
+
+if (copyWorkflowJsonBtn) {
+  copyWorkflowJsonBtn.addEventListener("click", async () => {
+    if (!selectedWorkflowDetail || !navigator.clipboard || !window.isSecureContext) {
+      flashButton(copyWorkflowJsonBtn, "复制失败");
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(selectedWorkflowDetail, null, 2));
+      flashButton(copyWorkflowJsonBtn, "已复制");
+    } catch (error) {
+      flashButton(copyWorkflowJsonBtn, "复制失败");
+    }
+  });
+}
+
+if (useWorkflowInChatBtn) {
+  useWorkflowInChatBtn.addEventListener("click", () => {
+    if (!selectedWorkflowId || !workflowIdInput) return;
+    workflowIdInput.value = selectedWorkflowId;
+    workflowIdInput.dispatchEvent(new Event("input", { bubbles: true }));
+    updateRunSettingsSummary();
+    switchTab("chat");
+    scheduleChatMirror();
+    requestAnimationFrame(() => {
+      document.getElementById("chatMessage")?.focus();
+    });
+  });
+}
+
+if (openWorkflowDiagramBtn) {
+  openWorkflowDiagramBtn.addEventListener("click", () => {
+    if (!selectedWorkflowDetail) return;
+    const customDiagram = mermaidContainer?.querySelector(".workflow-architecture");
+    const mermaidDiagram = mermaidContainer?.querySelector("svg");
+    const diagram = customDiagram || mermaidDiagram;
+    if (!diagram) return;
+    openWorkflowDiagramPage(
+      selectedWorkflowDetail,
+      diagram,
+      customDiagram ? "custom" : "mermaid",
+    );
+  });
+}
+
+try {
+  setWorkflowViewMode(localStorage.getItem(WORKFLOW_VIEW_MODE_KEY) || "studio", false);
+} catch (error) {
+  setWorkflowViewMode("studio", false);
+}
+setWorkflowDetailView("overview");
+
 // MCP toggle functionality
 if (mcpToggle && mcpContent) {
   mcpToggle.addEventListener("click", () => {
@@ -7244,6 +7800,7 @@ setAgentDetailEmpty("Select an agent to view details.");
 // ============================================================
 const refreshTasksBtn = document.getElementById("refreshTasks");
 const tasksList = document.getElementById("tasksList");
+const taskDetailEmpty = document.getElementById("taskDetailEmpty");
 const checkpointPanel = document.getElementById("checkpointPanel");
 const checkpointTaskIdBadge = document.getElementById("checkpointTaskId");
 const checkpointsList = document.getElementById("checkpointsList");
@@ -7290,21 +7847,122 @@ const statusBadgeClass = (status) => {
 
 const executionPhaseLabel = (phase) => {
   const labels = {
-    'initial_planning': 'Initial planning',
-    're_planning': 'Re-planning',
-    'execution': 'Execution'
+    initial_planning: "初始规划",
+    re_planning: "重新规划",
+    execution: "执行",
   };
-  return labels[phase] || phase;
+  return labels[String(phase || "").toLowerCase()] || phase || "未知阶段";
+};
+
+const taskStatusLabel = (status) => {
+  const labels = {
+    COMPLETED: "已完成",
+    SUCCEEDED: "成功",
+    RUNNING: "执行中",
+    FAILED: "失败",
+    PARTIAL_FAILED: "部分失败",
+    REJECTED: "已拒绝",
+    NEEDS_RECONCILIATION: "待人工核对",
+    APPROVAL_REQUIRED: "待审批",
+    PENDING: "等待中",
+    RESERVED: "待确认",
+    STOPPED: "已停止",
+    PAUSED: "已暂停",
+    ABORTED: "已中止",
+    SKIPPED: "已跳过",
+    SUCCESS: "成功",
+    ERROR: "错误",
+    CANCELLED: "已取消",
+    CANCELED: "已取消",
+  };
+  const raw = String(status || "");
+  return labels[raw.toUpperCase()] || raw || "未知状态";
+};
+
+const taskEventLabel = (eventType) => {
+  const labels = {
+    WORKFLOW_START: "工作流开始",
+    WORKFLOW_STARTED: "工作流开始",
+    WORKFLOW_END: "工作流结束",
+    WORKFLOW_TERMINATED: "工作流结束",
+    STEP_STARTED: "步骤开始",
+    STEP_SUCCEEDED: "步骤成功",
+    STEP_FAILED: "步骤失败",
+    CHECKPOINT_SAVED: "检查点已保存",
+    START_OF_AGENT: "Agent 开始",
+    END_OF_AGENT: "Agent 结束",
+    AGENT_SKILL_CANDIDATE: "Agent 技能候选",
+    MESSAGE: "消息",
+    ERROR: "错误",
+    FINAL_RESULT: "最终结果",
+    PLAN_CREATED: "计划已创建",
+    PLAN_UPDATED: "计划已更新",
+    APPROVAL_REQUIRED: "需要审批",
+    APPROVAL_GRANTED: "审批通过",
+    APPROVAL_APPROVED: "审批通过",
+    APPROVAL_REJECTED: "审批拒绝",
+    PERMISSION_DENIED: "权限已拒绝",
+    RECONCILIATION_REQUIRED: "需要人工核对",
+    RETRY_SCHEDULED: "已安排重试",
+    RECOVERY_EVALUATED: "恢复条件已评估",
+    ROLLBACK_STARTED: "开始回滚",
+    RECOVERY_STARTED: "开始恢复",
+    RESUME_STARTED: "恢复执行开始",
+  };
+  const raw = String(eventType || "");
+  return labels[raw.toUpperCase()] || raw || "未知事件";
+};
+
+const governanceDecisionLabel = (decision) => {
+  const labels = {
+    STARTED: "已开始",
+    SAVED: "已保存",
+    SUCCEEDED: "成功",
+    RUNNING: "执行中",
+    FAILED: "失败",
+    ALLOW: "允许",
+    DENY: "拒绝",
+    DENIED: "已拒绝",
+    APPROVED: "已批准",
+    REJECTED: "已拒绝",
+    REVIEW_REQUIRED: "需要审核",
+    MANUAL_REVIEW: "人工核对",
+    RETRY: "重试",
+    AUTO_RECOVER: "自动恢复",
+    NO_AUTO_RECOVERY: "不自动恢复",
+    DAG_BRANCH_ROLLBACK: "回滚任务分支",
+    AUTO_RESUME: "自动恢复执行",
+    ROLLED_BACK: "已回滚",
+    NEEDS_RECONCILIATION: "待人工核对",
+  };
+  const raw = String(decision || "");
+  return labels[raw.toUpperCase()] || raw;
+};
+
+const governanceReasonLabel = (reasonCode) => {
+  const labels = {
+    POLICY_REVIEW_REQUIRED: "策略要求人工审批",
+    S_ABAC_DENIED: "S-ABAC 权限拒绝",
+    RECONCILIATION_REQUIRED: "需要人工核对",
+    STEP_EXECUTION_FAILED: "步骤执行失败",
+    SIDE_EFFECT_OUTCOME_UNCONFIRMED: "外部操作结果未确认",
+  };
+  const raw = String(reasonCode || "");
+  return labels[raw.toUpperCase()] || raw;
+};
+
+const showTaskDetailEmpty = (show) => {
+  if (taskDetailEmpty) taskDetailEmpty.hidden = !show;
 };
 
 const fetchTasks = async () => {
-  setListState(tasksList, "Loading...", "loading");
+  setListState(tasksList, "正在加载任务...", "loading");
   try {
     const res = await fetch("/api/tasks");
-    if (!res.ok) throw new Error("request failed");
+    if (!res.ok) throw new Error("请求失败");
     const tasks = await res.json();
     if (!tasks.length) {
-      setListState(tasksList, "No tasks found.", "empty");
+      setListState(tasksList, "暂无任务记录。", "empty");
       return;
     }
     tasksList.textContent = "";
@@ -7332,11 +7990,13 @@ const fetchTasks = async () => {
       const phaseBadge = document.createElement("span");
       phaseBadge.className = "phase-badge";
       phaseBadge.textContent = executionPhaseLabel(task.execution_phase);
+      phaseBadge.title = String(task.execution_phase || "");
 
-      // Status badge (use task.status directly)
+      // Status badge
       const statusBadge = document.createElement("span");
       statusBadge.className = `status-badge ${statusBadgeClass(task.status)}`;
-      statusBadge.textContent = task.status;
+      statusBadge.textContent = taskStatusLabel(task.status);
+      statusBadge.title = String(task.status || "");
 
       badgesContainer.appendChild(phaseBadge);
       badgesContainer.appendChild(statusBadge);
@@ -7346,16 +8006,17 @@ const fetchTasks = async () => {
 
       const meta = document.createElement("div");
       meta.className = "task-item-meta";
-      meta.textContent = `${formatDateTime(task.created_at)} | ${task.step_count} steps`;
+      meta.textContent = `${formatDateTime(task.created_at)} · ${task.step_count} 个步骤`;
 
       const wfId = document.createElement("div");
       wfId.className = "task-item-wfid";
-      wfId.textContent = `workflow: ${task.workflow_id || "-"}`;
+      wfId.textContent = `工作流：${task.workflow_id || "-"}`;
 
       // Delete button on card (using trash icon)
       const deleteBtn = document.createElement("button");
       deleteBtn.className = "task-card-delete-btn";
-      deleteBtn.title = "Delete task";
+      deleteBtn.title = "删除任务";
+      deleteBtn.setAttribute("aria-label", "删除任务");
       deleteBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>`;
 
       item.appendChild(header);
@@ -7367,7 +8028,7 @@ const fetchTasks = async () => {
       deleteBtn.addEventListener("click", (e) => {
         e.preventDefault();
         e.stopPropagation();
-        if (confirm(`Are you sure you want to delete task "${task.task_id}"?\nThis will delete the task log and all associated checkpoints.`)) {
+        if (confirm(`确定删除任务“${task.task_id}”吗？\n任务日志及其全部检查点也会被删除。`)) {
           deleteTaskById(task.task_id);
         }
       });
@@ -7382,12 +8043,13 @@ const fetchTasks = async () => {
       tasksList.appendChild(item);
     });
   } catch (err) {
-    setListState(tasksList, "Failed to load tasks.", "error");
+    setListState(tasksList, "任务记录加载失败。", "error");
   }
 };
 
 const selectTask = async (task) => {
   selectedTaskId = task.task_id;
+  showTaskDetailEmpty(false);
   document.querySelectorAll(".task-item").forEach((el) => {
     el.classList.toggle("active", el.dataset.taskId === task.task_id);
   });
@@ -7408,13 +8070,13 @@ const selectTask = async (task) => {
 const loadTaskCheckpoints = async (taskId) => {
   checkpointPanel.style.display = "";
   checkpointTaskIdBadge.textContent = taskId;
-  checkpointsList.textContent = "Loading...";
+  checkpointsList.textContent = "正在加载检查点...";
   try {
     const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/checkpoints`);
-    if (!res.ok) throw new Error("request failed");
+    if (!res.ok) throw new Error("请求失败");
     const checkpoints = await res.json();
     if (!checkpoints.length) {
-      checkpointsList.textContent = "No checkpoints found.";
+      checkpointsList.textContent = "暂无检查点。";
       return;
     }
     checkpointsList.textContent = "";
@@ -7427,7 +8089,7 @@ const loadTaskCheckpoints = async (taskId) => {
 
       const stepBadge = document.createElement("span");
       stepBadge.className = "step-badge";
-      stepBadge.textContent = `Step ${cp.step}`;
+      stepBadge.textContent = `步骤 ${cp.step}`;
 
       const nodeEl = document.createElement("span");
       nodeEl.className = "checkpoint-node";
@@ -7443,7 +8105,7 @@ const loadTaskCheckpoints = async (taskId) => {
 
       const resumeFromBtn = document.createElement("button");
       resumeFromBtn.className = "ghost small";
-      resumeFromBtn.textContent = "Resume from here";
+      resumeFromBtn.textContent = "从此处恢复";
       resumeFromBtn.addEventListener("click", (e) => {
         e.stopPropagation();
         resumeStepInput.value = cp.step;
@@ -7453,12 +8115,12 @@ const loadTaskCheckpoints = async (taskId) => {
       // Collapse toggle
       const cpCollapseToggle = document.createElement("span");
       cpCollapseToggle.className = "cp-collapse-toggle";
-      cpCollapseToggle.innerHTML = '<span class="icon">></span> JSON';
+      cpCollapseToggle.innerHTML = '<span class="icon">›</span> 查看 JSON';
 
       // Details panel - initially empty, will load on expand
       const detailsDiv = document.createElement("div");
       detailsDiv.className = "checkpoint-details";
-      detailsDiv.innerHTML = '<div style="color:var(--muted);font-size:0.8rem">Click to load JSON...</div>';
+      detailsDiv.innerHTML = '<div style="color:var(--muted);font-size:0.8rem">展开后加载 JSON...</div>';
 
       row.appendChild(stepBadge);
       row.appendChild(nodeEl);
@@ -7487,10 +8149,10 @@ const loadTaskCheckpoints = async (taskId) => {
               detailsDiv.appendChild(pre);
               loaded = true;
             } else {
-              detailsDiv.innerHTML = '<div style="color:var(--danger)">Failed to load checkpoint data</div>';
+              detailsDiv.innerHTML = '<div style="color:var(--danger)">检查点数据加载失败</div>';
             }
           } catch (err) {
-            detailsDiv.textContent = `Error: ${String(err?.message || "Failed to load checkpoint data")}`;
+            detailsDiv.textContent = `错误：${String(err?.message || "检查点数据加载失败")}`;
             detailsDiv.style.color = "var(--danger)";
           }
         }
@@ -7499,30 +8161,30 @@ const loadTaskCheckpoints = async (taskId) => {
       checkpointsList.appendChild(row);
     });
   } catch (err) {
-    checkpointsList.textContent = "Failed to load checkpoints.";
+    checkpointsList.textContent = "检查点加载失败。";
   }
 };
 
 const loadTaskLog = async (taskId) => {
   logPanel.style.display = "";
-  logMeta.textContent = "Loading...";
+  logMeta.textContent = "正在加载任务日志...";
   logHistory.textContent = "";
   try {
     const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/log`);
-    if (!res.ok) throw new Error("request failed");
+    if (!res.ok) throw new Error("请求失败");
     const log = await res.json();
 
     logMeta.innerHTML = `
-      <div class="log-meta-item"><b>Task ID</b><span>${escapeHtml(log.task_id || "")}</span></div>
-      <div class="log-meta-item"><b>Execution phase</b><span class="phase-badge">${escapeHtml(executionPhaseLabel(log.execution_phase))}</span></div>
-      <div class="log-meta-item"><b>Task status</b><span class="status-badge ${statusBadgeClass(log.status)}">${escapeHtml(log.status || "")}</span></div>
-      <div class="log-meta-item"><b>Created</b><span>${escapeHtml(formatDateTime(log.created_at))}</span></div>
-      <div class="log-meta-item"><b>Finished</b><span>${escapeHtml(formatDateTime(log.finished_at) || "-")}</span></div>
-      ${log.error ? `<div class="log-meta-item error-text"><b>Error</b><span>${escapeHtml(log.error)}</span></div>` : ""}
+      <div class="log-meta-item"><b>任务 ID</b><span>${escapeHtml(log.task_id || "")}</span></div>
+      <div class="log-meta-item"><b>执行阶段</b><span class="phase-badge" title="${escapeHtml(log.execution_phase || "")}">${escapeHtml(executionPhaseLabel(log.execution_phase))}</span></div>
+      <div class="log-meta-item"><b>任务状态</b><span class="status-badge ${statusBadgeClass(log.status)}" title="${escapeHtml(log.status || "")}">${escapeHtml(taskStatusLabel(log.status))}</span></div>
+      <div class="log-meta-item"><b>创建时间</b><span>${escapeHtml(formatDateTime(log.created_at))}</span></div>
+      <div class="log-meta-item"><b>完成时间</b><span>${escapeHtml(formatDateTime(log.finished_at) || "-")}</span></div>
+      ${log.error ? `<div class="log-meta-item error-text"><b>错误</b><span>${escapeHtml(log.error)}</span></div>` : ""}
     `;
 
     if (!log.history || !log.history.length) {
-      logHistory.textContent = "No log entries.";
+      logHistory.textContent = "暂无日志记录。";
       return;
     }
 
@@ -7546,7 +8208,7 @@ const loadTaskLog = async (taskId) => {
 
       const stepSpan = document.createElement("span");
       stepSpan.className = "step-badge";
-      stepSpan.textContent = `Step ${entry.step}`;
+      stepSpan.textContent = `步骤 ${entry.step}`;
 
       const roleSpan = document.createElement("span");
       roleSpan.className = "log-role";
@@ -7554,12 +8216,13 @@ const loadTaskLog = async (taskId) => {
       if (entry.node_name === "agent_proxy" && entry.sub_agent_name) {
         roleSpan.textContent = `${entry.node_name} [${entry.sub_agent_name}]`;
       } else {
-        roleSpan.textContent = entry.role || entry.node_name;
+        roleSpan.textContent = entry.role || entry.node_name || "未知";
       }
 
       const eventSpan = document.createElement("span");
       eventSpan.className = "log-event-tag";
-      eventSpan.textContent = entry.event || "";
+      eventSpan.textContent = taskEventLabel(entry.event);
+      eventSpan.title = String(entry.event || "");
 
       const tsSpan = document.createElement("span");
       tsSpan.className = "log-ts";
@@ -7584,14 +8247,14 @@ const loadTaskLog = async (taskId) => {
       logHistory.appendChild(entryEl);
     });
   } catch (err) {
-    logMeta.textContent = "Failed to load log.";
+    logMeta.textContent = "任务日志加载失败。";
   }
 };
 
 const copyTaskLog = async () => {
   const text = logHistory.innerText || logHistory.textContent || "";
   if (!text) {
-    flashButton(copyLogBtn, "Empty");
+    flashButton(copyLogBtn, "暂无内容");
     return;
   }
   try {
@@ -7608,9 +8271,9 @@ const copyTaskLog = async () => {
       document.execCommand("copy");
       document.body.removeChild(ta);
     }
-    flashButton(copyLogBtn, "Copied");
+    flashButton(copyLogBtn, "已复制");
   } catch (_) {
-    flashButton(copyLogBtn, "Failed");
+    flashButton(copyLogBtn, "复制失败");
   }
 };
 
@@ -7621,7 +8284,7 @@ const resumeTask = async ({ inChat = false } = {}) => {
   const userId = resumeUserIdInput.value.trim() || "test";
 
   if (!taskId) {
-    alert("Please select a task first.");
+    alert("请先选择一条任务记录。");
     return;
   }
 
@@ -7634,7 +8297,7 @@ const resumeTask = async ({ inChat = false } = {}) => {
     currentRunHasError = false;
     setChatPlanActionsDisabled(true);
     updateChatExecutionProgress("running", "正在从失败步骤继续原任务...");
-    setStatus("Resuming", true);
+    setStatus("正在恢复", true);
     runBtn.disabled = true;
     userIdInput.disabled = true;
   } else {
@@ -7692,38 +8355,38 @@ const resumeTask = async ({ inChat = false } = {}) => {
         return;
       }
       if (eventName === "start_of_agent") {
-        appendResume(`\n[start] ${payload.data?.agent_name || ""}\n`);
+        appendResume(`\n[开始] ${payload.data?.agent_name || ""}\n`);
         return;
       }
       if (eventName === "end_of_agent") {
-        appendResume(`\n[end] ${payload.data?.agent_name || ""}\n`);
+        appendResume(`\n[结束] ${payload.data?.agent_name || ""}\n`);
         return;
       }
       if (eventName === "step_result") {
         const data = payload.data || {};
-        appendResume(`\n[step ${data.step_id || "?"} ${data.status || ""}]\n${formatStepResultContent(data)}\n`);
+        appendResume(`\n[步骤 ${data.step_id || "?"} ${taskStatusLabel(data.status)}]\n${formatStepResultContent(data)}\n`);
         return;
       }
       if (eventName === "final_result") {
-        appendResume(`\n[final result]\n${formatFinalResultContent(payload.data || {})}\n`);
+        appendResume(`\n[最终结果]\n${formatFinalResultContent(payload.data || {})}\n`);
         return;
       }
       if (eventName === "memory_compacted") {
         const data = payload.data || {};
         appendResume(
-          `\n[context compacted generation ${Number(data.generation || 0)}: ${Number(data.covered_message_count || 0)} messages, ${Number(data.retained_turn_count || 0)} turns, tokens ${Number(data.token_count_before || 0)} -> ${Number(data.token_count_after || 0)}]\n`,
+          `\n[上下文压缩 第 ${Number(data.generation || 0)} 代：覆盖 ${Number(data.covered_message_count || 0)} 条消息，保留 ${Number(data.retained_turn_count || 0)} 轮，Token ${Number(data.token_count_before || 0)} → ${Number(data.token_count_after || 0)}]\n`,
         );
         return;
       }
       if (eventName === "end_of_workflow") {
-        appendResume(`\n[workflow ${payload.data?.status || "completed"}]\n`);
+        appendResume(`\n[工作流 ${taskStatusLabel(payload.data?.status || "completed")}]\n`);
         return;
       }
       if (eventName === "error") {
-        appendResume(`\n[error] ${payload.data?.error || "unknown error"}\n`);
+        appendResume(`\n[错误] ${payload.data?.error || "未知错误"}\n`);
         return;
       }
-      appendResume(`\n[${eventName}] ${JSON.stringify(payload)}\n`);
+      appendResume(`\n[${taskEventLabel(eventName)}] ${JSON.stringify(payload)}\n`);
     };
 
     while (true) {
@@ -7738,10 +8401,10 @@ const resumeTask = async ({ inChat = false } = {}) => {
       currentRunHasError = true;
       errorStepCard(resumeFailureMessage);
       updateChatExecutionProgress("error", `恢复失败：${resumeFailureMessage}`);
-      setStatus("Resume Failed", false);
+      setStatus("恢复失败", false);
       throw err;
     } else {
-      resumeOutput.textContent += `\n[error] ${err.message || err}\n`;
+      resumeOutput.textContent += `\n[错误] ${err.message || err}\n`;
     }
   } finally {
     if (inChat) {
@@ -7762,11 +8425,11 @@ const resumeTask = async ({ inChat = false } = {}) => {
         const outcomeStatus = reportedOutcomeStatus === "succeeded" && currentRunHasError
           ? "failed"
           : reportedOutcomeStatus || (resumeFailureMessage ? "failed" : "unknown");
-        let outcomeMessage = "恢复执行结束，但未收到明确终态，请在 Task History 中核对任务状态。";
+        let outcomeMessage = "恢复执行结束，但未收到明确终态，请在任务历史中核对任务状态。";
         if (resumeFailureMessage) {
           outcomeMessage = `恢复执行失败：${resumeFailureMessage}`;
         } else if (reportedOutcomeStatus === "succeeded" && currentRunHasError) {
-          outcomeMessage = "恢复执行过程中出现错误，请在 Task History 中核对任务状态。";
+          outcomeMessage = "恢复执行过程中出现错误，请在任务历史中核对任务状态。";
         } else if (resumeTerminalStatus === "PARTIAL_FAILED") {
           outcomeMessage = "恢复执行部分失败，已保留失败前产生的可用结果。";
         } else if (resumeTerminalStatus === "APPROVAL_REQUIRED") {
@@ -7796,7 +8459,7 @@ const resumeTask = async ({ inChat = false } = {}) => {
           });
           saveActiveConversation();
         } else if (resumeTerminalStatus) {
-          outcomeMessage = `恢复执行未成功，任务状态：${resumeTerminalStatus}。`;
+          outcomeMessage = `恢复执行未成功，任务状态：${taskStatusLabel(resumeTerminalStatus)}。`;
         }
         captureAssistantConversationContext({
           replaceLatest: true,
@@ -7826,15 +8489,15 @@ const stopResume = () => {
 const loadTaskGovernance = async (taskId) => {
   governancePanel.style.display = "";
   governanceTaskId.textContent = taskId;
-  governanceTimeline.textContent = "Loading...";
+  governanceTimeline.textContent = "正在加载治理事件...";
   try {
     const response = await fetch(
       `/api/tasks/${encodeURIComponent(taskId)}/governance`
     );
-    if (!response.ok) throw new Error("request failed");
+    if (!response.ok) throw new Error("请求失败");
     const events = await response.json();
     if (!events.length) {
-      governanceTimeline.textContent = "No governance events found.";
+      governanceTimeline.textContent = "暂无治理事件。";
       return;
     }
     governanceTimeline.replaceChildren();
@@ -7851,15 +8514,16 @@ const loadTaskGovernance = async (taskId) => {
 
       const eventType = document.createElement("span");
       eventType.className = "governance-event-type";
-      eventType.textContent = type;
+      eventType.textContent = taskEventLabel(type);
+      eventType.title = type;
 
       const detail = document.createElement("span");
       detail.className = "governance-event-detail";
       const parts = [
-        event.step_id ? `step=${event.step_id}` : "",
-        event.agent ? `agent=${event.agent}` : "",
-        event.decision ? `decision=${event.decision}` : "",
-        event.reason_code ? `reason=${event.reason_code}` : "",
+        event.step_id ? `步骤=${event.step_id}` : "",
+        event.agent ? `Agent=${event.agent}` : "",
+        event.decision ? `决策=${governanceDecisionLabel(event.decision)}` : "",
+        event.reason_code ? `原因=${governanceReasonLabel(event.reason_code)}` : "",
       ].filter(Boolean);
       detail.textContent = parts.join(" · ");
 
@@ -7867,7 +8531,7 @@ const loadTaskGovernance = async (taskId) => {
       governanceTimeline.appendChild(item);
     });
   } catch (error) {
-    governanceTimeline.textContent = `Failed to load governance events: ${error.message}`;
+    governanceTimeline.textContent = `治理事件加载失败：${error.message}`;
   }
 };
 
@@ -7907,7 +8571,7 @@ const deleteTaskById = async (taskId) => {
     });
     if (!res.ok) {
       const err = await res.json();
-      throw new Error(err.detail || "Delete failed");
+      throw new Error(err.detail || "删除失败");
     }
     // Clear panels if deleted task was selected
     if (selectedTaskId === taskId) {
@@ -7916,20 +8580,21 @@ const deleteTaskById = async (taskId) => {
       logPanel.style.display = "none";
       resumePanel.style.display = "none";
       selectedTaskId = null;
+      showTaskDetailEmpty(true);
     }
     // Refresh task list
     await fetchTasks();
   } catch (err) {
-    alert(`Failed to delete task: ${err.message}`);
+    alert(`任务删除失败：${err.message}`);
   }
 };
 
 const deleteTask = async () => {
   if (!selectedTaskId) {
-    alert("Please select a task first.");
+    alert("请先选择一条任务记录。");
     return;
   }
-  if (!confirm(`Are you sure you want to delete task "${selectedTaskId}"?\nThis will delete the task log and all associated checkpoints.`)) {
+  if (!confirm(`确定删除任务“${selectedTaskId}”吗？\n任务日志及其全部检查点也会被删除。`)) {
     return;
   }
   await deleteTaskById(selectedTaskId);
