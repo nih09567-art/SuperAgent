@@ -10,7 +10,7 @@ import asyncio
 import pytest
 
 from src.interface.artifact import StepStatus
-from src.interface.task_graph import TaskGraph, TaskSpec, TaskStep
+from src.interface.task_graph import TaskGraph, TaskSpec, TaskStep, WorkflowStatus
 from src.manager.executor.base import ExecuteResult, ExecutionStatus
 from src.orchestration.providers import StubRoutingProvider
 from src.orchestration.scheduler import TaskScheduler
@@ -67,6 +67,46 @@ def test_serial_chain_runs_in_order_no_overlap():
     assert fake.calls == ["a", "b", "c"]
     assert fake.peak == 1
     assert all(r.is_success for r in results.values())
+
+
+def test_pause_waits_for_committed_batch_and_stops_before_next_step():
+    fake = FakeExecutor(sleep=0)
+    commits: list[str] = []
+
+    async def commit_step_result(*, step, result):
+        assert result.is_success
+        commits.append(step.step_id)
+
+    def should_pause():
+        # The pause check must happen only after the critical commit hook.
+        assert commits == ["a"]
+        return True
+
+    graph = _graph(_step("a"), _step("b", ["a"]))
+    results = _run(
+        fake,
+        graph,
+        commit_step_result=commit_step_result,
+        should_pause=should_pause,
+    )
+
+    assert results.terminal_status == WorkflowStatus.PAUSED
+    assert results.paused_at_safe_point is True
+    assert fake.calls == ["a"]
+    assert commits == ["a"]
+    assert "b" not in results
+
+
+def test_pause_request_does_not_hide_a_failed_batch():
+    fake = FakeExecutor(sleep=0)
+    fake.fail_ids = {"a"}
+    graph = _graph(_step("a"), _step("b", ["a"]))
+
+    results = _run(fake, graph, should_pause=lambda: True)
+
+    assert results.terminal_status == WorkflowStatus.FAILED
+    assert results["a"].status == StepStatus.FAILED
+    assert results["b"].status == StepStatus.SKIPPED
 
 
 def test_independent_reads_run_in_parallel():

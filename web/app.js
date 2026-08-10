@@ -226,8 +226,8 @@ const initializeChatPanelLayout = () => {
   chatStop.id = "chatStopBtn";
   chatStop.className = "chat-submit chat-stop";
   chatStop.type = "button";
-  chatStop.title = "Stop";
-  chatStop.setAttribute("aria-label", "Stop task");
+  chatStop.title = "Pause at safe point";
+  chatStop.setAttribute("aria-label", "Pause task at safe point");
   chatStop.innerHTML = '<span aria-hidden="true">&#9632;</span>';
   const chatRun = document.createElement("button");
   chatRun.id = "chatRunBtn";
@@ -691,6 +691,15 @@ const setChatPlanActionsDisabled = (disabled) => {
 };
 
 async function confirmChatPlanExecution() {
+  if (activePendingPlan?.status === "paused") {
+    await window.resumeApprovedTask({
+      task_id: activePendingPlan.taskId,
+      workflow_id: activePendingPlan.workflowId,
+      resume_step: activePendingPlan.resumeStep,
+      user_id: activeConversationUserId || userIdInput.value.trim(),
+    });
+    return;
+  }
   if (
     ["recovery_pending", "recovery_unknown"].includes(activePendingPlan?.status)
     || String(activePendingPlan?.status || "").startsWith("reconciliation_")
@@ -1176,6 +1185,7 @@ const normalizePendingPlan = (pendingPlan) => {
     recoveryMessage: String(pendingPlan.recoveryMessage || "")
       .slice(0, CONVERSATION_MESSAGE_CHAR_LIMIT),
     serverStatus: String(pendingPlan.serverStatus || "").slice(0, 64),
+    resumeStep: Math.max(0, Number(pendingPlan.resumeStep) || 0),
   };
 };
 
@@ -1183,7 +1193,8 @@ const isExecutionPlanLockedStatus = (status) => {
   const normalized = String(status || "");
   return normalized.startsWith("recovery_")
     || normalized.startsWith("approval_")
-    || normalized.startsWith("reconciliation_");
+    || normalized.startsWith("reconciliation_")
+    || normalized === "paused";
 };
 
 const recoverInterruptedPendingPlan = (pendingPlan) => {
@@ -1841,7 +1852,7 @@ const renderPendingPlanForCurrentAnswer = (pendingPlan, interactive = true) => {
   const recoveryStatus = String(normalized.status || "").startsWith("recovery_");
   const approvalStatus = String(normalized.status || "").startsWith("approval_");
   const reconciliationStatus = String(normalized.status || "").startsWith("reconciliation_");
-  const recoveryCanCheck = ["recovery_pending", "recovery_unknown"].includes(normalized.status)
+  const recoveryCanCheck = ["recovery_pending", "recovery_unknown", "paused"].includes(normalized.status)
     || (reconciliationStatus && normalized.status !== "reconciliation_terminated");
   const confirmLabels = {
     executing: "执行中...",
@@ -1859,12 +1870,14 @@ const renderPendingPlanForCurrentAnswer = (pendingPlan, interactive = true) => {
     reconciliation_resuming: "检查恢复状态",
     reconciliation_completed: "检查任务状态",
     reconciliation_terminated: "已人工终止",
+    paused: "恢复执行",
   };
   lifecycle.confirmPlanButton.textContent = confirmLabels[normalized.status] || "确认执行";
   if (
     recoveryStatus
     || approvalStatus
     || reconciliationStatus
+    || normalized.status === "paused"
     || interruptedRevision
     || normalized.recoveryMessage
   ) {
@@ -1878,7 +1891,7 @@ const renderPendingPlanForCurrentAnswer = (pendingPlan, interactive = true) => {
   lifecycle.revisionInput.value = normalized.revisionText;
   lifecycle.revisionForm.classList.toggle(
     "hidden",
-    recoveryStatus || approvalStatus || reconciliationStatus || !normalized.revisionOpen
+    recoveryStatus || approvalStatus || reconciliationStatus || normalized.status === "paused" || !normalized.revisionOpen
   );
   setChatPlanActionsDisabled(true);
   if (interactive && normalized.status === "awaiting_confirmation") {
@@ -1906,9 +1919,11 @@ const beginConversationRuntime = (kind = "workflow") => {
     kind,
     controller: null,
     stopRequested: false,
+    pauseRequested: false,
     taskId: "",
     terminalReceived: false,
     terminalStatus: "",
+    resumeStep: 0,
     recoveryRequired: false,
   };
   activeConversationRuntime = runtime;
@@ -4876,6 +4891,7 @@ const handleEvent = (eventName, payload) => {
     if (currentRunContext === "executing" && activeConversationRuntime) {
       activeConversationRuntime.terminalReceived = true;
       activeConversationRuntime.terminalStatus = status || "COMPLETED";
+      activeConversationRuntime.resumeStep = Number(workflowData.resume_step) || 0;
     }
     if (plannerOnlyMode) {
       if (!plannerOnlyStepsUpdated) {
@@ -4949,6 +4965,13 @@ const handleEvent = (eventName, payload) => {
         if (window.SecurityModule?.loadSecurityApprovals) {
           window.SecurityModule.loadSecurityApprovals();
         }
+        break;
+      case "PAUSED":
+        currentRunHasError = false;
+        showSummaryHint("Workflow paused at a durable safe point.");
+        showPlanValidationHint("任务已保存检查点并暂停，可点击“恢复执行”继续。", true);
+        updateChatExecutionProgress("paused", "任务已在服务端安全点暂停。");
+        setStatus("Paused", true);
         break;
       case "REJECTED":
         currentRunHasError = true;
@@ -5456,6 +5479,19 @@ const runExecution = async () => {
         serverStatus: "",
       };
       saveActiveConversation();
+    } else if (terminalStatus === "PAUSED") {
+      activePendingPlan = {
+        ...executionIdentityState,
+        status: "paused",
+        resumeStep: runtime.resumeStep,
+        recoveryMessage: "任务已在服务端安全点暂停，已完成步骤和 Artifact 不会重复执行。点击“恢复执行”可从检查点继续。",
+        serverStatus: terminalStatus,
+      };
+      saveActiveConversation();
+      captureAssistantConversationContext({
+        outcomeStatus: "paused",
+        outcomeMessage: "任务已在服务端安全点暂停，可从检查点继续执行。",
+      });
     } else if (terminalStatus === "APPROVAL_REQUIRED") {
       activePendingPlan = {
         ...executionIdentityState,
@@ -5561,18 +5597,47 @@ if (validatePlanBtn) {
   });
 }
 
-const stopWorkflow = () => {
+const stopWorkflow = async () => {
   const runtime = activeConversationRuntime;
-  const controller = runtime?.controller || currentAbortController;
-  if (!runtime || !controller || runtime.stopRequested) return;
-  runtime.stopRequested = true;
-  currentRunHasError = true;
-  controller.abort();
+  if (!runtime && resumeAbortController) {
+    await stopResume();
+    stopBtn.disabled = true;
+    return;
+  }
+  if (!runtime || runtime.pauseRequested) return;
+  const taskId = String(runtime.taskId || activePendingPlan?.taskId || "").trim();
+  if (!taskId) {
+    showPlanValidationHint("任务尚未取得 Task ID，暂时无法提交服务端暂停请求。", true);
+    return;
+  }
+
+  runtime.pauseRequested = true;
   stopBtn.disabled = true;
-  setStatus("Stopping", false);
-  showSummaryHint("Workflow stop requested. Waiting for cleanup.");
-  showPlanValidationHint("Stopping the current task. You can view another conversation while cleanup finishes.", true);
-  setEmptyAnswerMessage("正在停止任务...");
+  setStatus("Pausing", true);
+  showSummaryHint("Pause requested. Waiting for a durable scheduler safe point.");
+  showPlanValidationHint("正在等待当前执行批次完成并保存检查点，请勿关闭页面。");
+  setEmptyAnswerMessage("正在安全暂停任务...");
+  try {
+    const userId = runtime.userId || userIdInput.value.trim() || "test";
+    const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/pause`, {
+      method: "POST",
+      headers: getWorkflowRequestHeaders(userId),
+      body: JSON.stringify({
+        user_id: userId,
+        reason: "user_requested_from_web",
+      }),
+    });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      throw new Error(payload.detail || `HTTP ${response.status}`);
+    }
+    setStatus("Pause requested", true);
+  } catch (error) {
+    runtime.pauseRequested = false;
+    stopBtn.disabled = false;
+    setStatus("Executing", true);
+    showPlanValidationHint(`暂停请求失败：${error.message || error}`, true);
+  }
 };
 
 const createStateCard = (text, variant = "info") => {
@@ -7837,7 +7902,7 @@ const formatDateTime = (isoStr) => {
 const statusBadgeClass = (status) => {
   const normalized = String(status || "").toUpperCase();
   if (normalized === "COMPLETED" || normalized === "SUCCEEDED") return "badge-success";
-  if (normalized === "RUNNING") return "badge-info";
+  if (["RUNNING", "PAUSED"].includes(normalized)) return "badge-info";
   if (["FAILED", "PARTIAL_FAILED", "REJECTED", "NEEDS_RECONCILIATION"].includes(normalized)) {
     return "badge-error";
   }
@@ -8299,6 +8364,7 @@ const resumeTask = async ({ inChat = false } = {}) => {
     updateChatExecutionProgress("running", "正在从失败步骤继续原任务...");
     setStatus("正在恢复", true);
     runBtn.disabled = true;
+    stopBtn.disabled = false;
     userIdInput.disabled = true;
   } else {
     resumeOutput.textContent = "";
@@ -8308,7 +8374,7 @@ const resumeTask = async ({ inChat = false } = {}) => {
 
   const payload = {
     task_id: taskId,
-    resume_step: isNaN(resumeStep) ? 0 : resumeStep,
+    resume_step: isNaN(resumeStep) ? null : resumeStep,
     workflow_id: workflowId || null,
     user_id: userId,
     task_type: "agent_workflow",
@@ -8321,6 +8387,7 @@ const resumeTask = async ({ inChat = false } = {}) => {
 
   resumeAbortController = new AbortController();
   let resumeTerminalStatus = "";
+  let resumeNextStep = 0;
   let resumeFailureMessage = "";
   try {
     const response = await fetch("/api/tasks/resume", {
@@ -8345,6 +8412,7 @@ const resumeTask = async ({ inChat = false } = {}) => {
       if (inChat) {
         if (eventName === "end_of_workflow") {
           resumeTerminalStatus = String(payload.data?.status || "").toUpperCase();
+          resumeNextStep = Number(payload.data?.resume_step) || 0;
         }
         handleEvent(eventName, payload);
         return;
@@ -8458,6 +8526,20 @@ const resumeTask = async ({ inChat = false } = {}) => {
             recoveryMessage: "恢复执行产生了新的不确定结果，请在 Security 页面处理新的人工核对记录。",
           });
           saveActiveConversation();
+        } else if (resumeTerminalStatus === "PAUSED") {
+          outcomeMessage = "恢复执行已再次在服务端安全点暂停。";
+          activePendingPlan = normalizePendingPlan({
+            ...(activePendingPlan || {}),
+            steps: planSteps.map((step) => normalizeStep(step)),
+            workflowId: workflowId || activePendingPlan?.workflowId || "",
+            taskId,
+            interruptedFrom: "executing",
+            status: "paused",
+            resumeStep: resumeNextStep,
+            serverStatus: resumeTerminalStatus,
+            recoveryMessage: "任务已再次安全暂停，可继续从最新检查点恢复。",
+          });
+          saveActiveConversation();
         } else if (resumeTerminalStatus) {
           outcomeMessage = `恢复执行未成功，任务状态：${taskStatusLabel(resumeTerminalStatus)}。`;
         }
@@ -8470,6 +8552,7 @@ const resumeTask = async ({ inChat = false } = {}) => {
       currentRunContext = null;
       executionInProgress = false;
       runBtn.disabled = false;
+      stopBtn.disabled = true;
       userIdInput.disabled = false;
       if (newConversationBtn) newConversationBtn.disabled = false;
       scrollChatToLatest();
@@ -8480,9 +8563,28 @@ const resumeTask = async ({ inChat = false } = {}) => {
   }
 };
 
-const stopResume = () => {
-  if (resumeAbortController) {
-    resumeAbortController.abort();
+const stopResume = async () => {
+  const taskId = resumeTaskIdInput.value.trim();
+  const userId = resumeUserIdInput.value.trim() || "test";
+  if (!resumeAbortController || !taskId) return;
+  resumeStopBtn.disabled = true;
+  try {
+    const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/pause`, {
+      method: "POST",
+      headers: getWorkflowRequestHeaders(userId),
+      body: JSON.stringify({
+        user_id: userId,
+        reason: "user_requested_during_resume",
+      }),
+    });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      throw new Error(payload.detail || `HTTP ${response.status}`);
+    }
+    resumeOutput.textContent += "\n[暂停] 已提交服务端安全暂停请求，正在等待检查点。\n";
+  } catch (error) {
+    resumeStopBtn.disabled = false;
+    resumeOutput.textContent += `\n[错误] 暂停请求失败：${error.message || error}\n`;
   }
 };
 

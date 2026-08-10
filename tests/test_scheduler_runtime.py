@@ -32,6 +32,8 @@ from src.orchestration.runtime import (
     run_scheduler_workflow,
     scheduler_ready,
 )
+from src.robust.checkpoint import CheckpointManager
+from src.robust.task_control import TaskControlStore
 
 
 @pytest.fixture(autouse=True)
@@ -39,6 +41,7 @@ def _isolate_stores(tmp_path, monkeypatch):
     monkeypatch.setenv("ARTIFACT_PAYLOAD_STORE_DIR",
                        str(tmp_path / "artifacts"))
     monkeypatch.setenv("RECEIPT_STORE_DIR", str(tmp_path / "receipts"))
+    monkeypatch.setenv("TASK_CONTROL_STORE_DIR", str(tmp_path / "task_controls"))
     monkeypatch.setenv(
         "RECONCILIATION_STORE_DIR", str(tmp_path / "reconciliations")
     )
@@ -557,6 +560,101 @@ def _two_step_state():
         ],
     )
     return {"workflow_id": "wf1", "user_id": "u1", "task_graph": graph, "messages": []}
+
+
+def test_runtime_pauses_after_checkpoint_and_resume_skips_completed_step(tmp_path):
+    task_id = "task-safe-pause"
+    graph = TaskGraph(
+        spec=TaskSpec(task_id=task_id),
+        steps=[
+            TaskStep(step_id="s1", preferred_resource_id="A", agent_name="A"),
+            TaskStep(
+                step_id="s2",
+                depends_on=["s1"],
+                preferred_resource_id="B",
+                agent_name="B",
+            ),
+            TaskStep(
+                step_id="s3",
+                depends_on=["s2"],
+                preferred_resource_id="C",
+                agent_name="C",
+            ),
+        ],
+    )
+    state = {
+        "workflow_id": "wf-safe-pause",
+        "user_id": "u1",
+        "task_graph": graph,
+        "messages": [{"role": "user", "content": "pause test"}],
+    }
+    checkpoints = CheckpointManager(tmp_path / "checkpoints")
+    calls: list[str] = []
+
+    async def execute(*, step, selected_agent, inputs, context):
+        calls.append(step.step_id)
+        if step.step_id in {"s1", "s2"}:
+            TaskControlStore().request_pause(
+                task_id,
+                workflow_id="wf-safe-pause",
+                user_id="u1",
+            )
+        return ExecuteResult(
+            status=ExecutionStatus.SUCCESS,
+            result={"ok": step.step_id},
+        )
+
+    async def collect(current_state):
+        return [
+            event
+            async for event in run_scheduler_workflow(
+                current_state,
+                task_id=task_id,
+                checkpoint_manager=checkpoints,
+                execute_step=execute,
+                routing_provider=StubRoutingProvider(),
+            )
+        ]
+
+    first_events = asyncio.run(collect(state))
+    first_terminal = next(
+        event for event in first_events if event["event"] == "end_of_workflow"
+    )
+
+    assert calls == ["s1"]
+    assert first_terminal["data"]["status"] == "PAUSED"
+    assert first_terminal["data"]["checkpoint_step"] == 0
+    assert first_terminal["data"]["resume_step"] == 1
+    control = TaskControlStore().get(task_id)
+    assert control["state"] == "PAUSED"
+    assert control["completed_steps"] == ["s1"]
+
+    checkpoint = checkpoints.load_checkpoint(task_id=task_id, step=0)
+    resumed_state = dict(checkpoint.state)
+    TaskControlStore().resume(task_id, user_id="u1")
+    calls.clear()
+
+    second_events = asyncio.run(collect(resumed_state))
+    second_terminal = next(
+        event for event in second_events if event["event"] == "end_of_workflow"
+    )
+
+    assert calls == ["s2"]
+    assert second_terminal["data"]["status"] == "PAUSED"
+    assert second_terminal["data"]["checkpoint_step"] == 1
+    assert second_terminal["data"]["resume_step"] == 2
+
+    second_checkpoint = checkpoints.load_checkpoint(task_id=task_id, step=1)
+    TaskControlStore().resume(task_id, user_id="u1")
+    calls.clear()
+    final_events = asyncio.run(collect(dict(second_checkpoint.state)))
+    final_terminal = next(
+        event for event in final_events if event["event"] == "end_of_workflow"
+    )
+
+    assert calls == ["s3"]
+    assert final_terminal["data"]["status"] == "SUCCEEDED"
+    assert TaskControlStore().get(task_id)["state"] == "SUCCEEDED"
 
 
 def test_resume_requires_only_required_contract_outputs():

@@ -48,6 +48,7 @@ from src.orchestration.providers import MainAgentRoutingProvider, RoutingProvide
 from src.orchestration.resolver import ArtifactResolver
 from src.orchestration.scheduler import TaskScheduler
 from src.orchestration.store import ArtifactStore, ArtifactStoreCorruption
+from src.robust.task_control import TaskControlStore
 from src.skills.execution_evidence import (
     SkillExecutionEvidence,
     aggregate_evidence,
@@ -979,6 +980,15 @@ async def run_scheduler_workflow(
     state["task_id"] = task_id
     workflow_id = state.get("workflow_id")
     graph = build_task_graph_from_state(state)
+    control_store = TaskControlStore()
+    try:
+        control_store.ensure_running(
+            task_id,
+            workflow_id=str(workflow_id or ""),
+            user_id=str(state.get("user_id") or ""),
+        )
+    except Exception:  # noqa: BLE001 - execution remains observable on control failure
+        logger.exception("scheduler: could not initialize task pause control")
 
     def persist_skill_evidence(evidence: SkillExecutionEvidence) -> None:
         payload = evidence.model_dump(mode="json")
@@ -1965,6 +1975,7 @@ async def run_scheduler_workflow(
         else 0
     )
     results = None
+    pause_snapshot: Optional[dict[str, Any]] = None
     run_task: Optional[asyncio.Task] = None
     try:
         while True:
@@ -1983,6 +1994,7 @@ async def run_scheduler_workflow(
                     commit_step_result=commit_step_result,
                     on_attempt_start=on_attempt_start,
                     on_attempt_end=on_attempt_end,
+                    should_pause=lambda: control_store.pause_requested(task_id),
                 )
             )
             try:
@@ -2010,6 +2022,33 @@ async def run_scheduler_workflow(
                     getattr(results, "terminal_status", ""),
                 )
             )
+            if terminal_value == WorkflowStatus.PAUSED.value:
+                checkpoint_steps = [
+                    int((result.metrics or {}).get("checkpoint_step"))
+                    for result in results.values()
+                    if (result.metrics or {}).get("checkpoint_step") is not None
+                ]
+                checkpoint_step = max(checkpoint_steps, default=-1)
+                resume_step = checkpoint_step + 1
+                pause_snapshot = control_store.mark_paused(
+                    task_id,
+                    checkpoint_step=checkpoint_step,
+                    resume_step=resume_step,
+                    completed_steps=list(state.get("completed_steps") or []),
+                )
+                record_governance_event(
+                    "WORKFLOW_PAUSED",
+                    task_id=task_id,
+                    workflow_id=str(workflow_id or ""),
+                    subject=state.get("user_id"),
+                    decision="PAUSED_AT_SAFE_POINT",
+                    details={
+                        "checkpoint_step": checkpoint_step,
+                        "resume_step": resume_step,
+                        "completed_steps": list(state.get("completed_steps") or []),
+                    },
+                )
+                break
             if terminal_value == WorkflowStatus.SUCCEEDED.value:
                 break
 
@@ -2190,11 +2229,16 @@ async def run_scheduler_workflow(
     )
     persist_skill_evidence(evidence)
     terminal_error = None
-    if status != WorkflowStatus.SUCCEEDED.value:
+    if status not in {WorkflowStatus.SUCCEEDED.value, WorkflowStatus.PAUSED.value}:
         terminal_error = (
             f"scheduler workflow ended with status {status}; " f"failed_steps={failed}"
         )
     finalize_task_log(status, error=terminal_error)
+    if status != WorkflowStatus.PAUSED.value:
+        try:
+            control_store.mark_terminal(task_id, status)
+        except Exception:  # noqa: BLE001 - task result remains authoritative
+            logger.exception("scheduler: could not persist terminal task control state")
     record_governance_event(
         "WORKFLOW_TERMINATED",
         task_id=task_id,
@@ -2227,6 +2271,11 @@ async def run_scheduler_workflow(
             "clarifications": clarifications,
             "approval_required_steps": approval_required_steps,
             "needs_reconciliation": needs_recon,
+            "paused": status == WorkflowStatus.PAUSED.value,
+            "checkpoint_step": (
+                pause_snapshot.get("checkpoint_step") if pause_snapshot else None
+            ),
+            "resume_step": pause_snapshot.get("resume_step") if pause_snapshot else None,
             "results": {sid: str(r.status) for sid, r in results.items()},
             "skill_execution_evidence": evidence.model_dump(mode="json"),
         },

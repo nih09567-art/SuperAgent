@@ -1827,17 +1827,23 @@ async def _process_workflow(
                         yield scheduler_event
                 if state.get("workflow_mode") == "production":
                     try:
-                        scheduler_failed = (
+                        scheduler_status = (
                             (terminal_event or {}).get("data", {}).get("status")
-                            != WorkflowStatus.SUCCEEDED.value
                         )
-                        _resolve_skill_execution_evidence(
-                            state, execution_failed=scheduler_failed
-                        )
-                        _schedule_agent_skill_completion(
-                            dict(state),
-                            execution_failed=scheduler_failed,
-                        )
+                        # PAUSED is not a completed execution attempt. Defer
+                        # Skill completion/distillation until the resumed task
+                        # reaches a true terminal state.
+                        if scheduler_status != WorkflowStatus.PAUSED.value:
+                            scheduler_failed = (
+                                scheduler_status != WorkflowStatus.SUCCEEDED.value
+                            )
+                            _resolve_skill_execution_evidence(
+                                state, execution_failed=scheduler_failed
+                            )
+                            _schedule_agent_skill_completion(
+                                dict(state),
+                                execution_failed=scheduler_failed,
+                            )
                     except Exception as exc:
                         logger.warning(
                             "Scheduler workflow skill completion failed: %s", exc
