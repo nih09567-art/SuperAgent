@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>CoorAgent Web Studio</title>
     <link rel="stylesheet" href="/static/styles.css?v=20260809-task-history-1" />
+    <link rel="stylesheet" href="/static/task-orchestration.css?v=20260810-orchestration-1" />
     <script src="/static/mermaid.min.js"></script>
   </head>
   <body>
@@ -42,6 +43,7 @@
         <aside class="sidebar">
           <button class="tab active" data-tab="chat">Chat</button>
           <button class="tab" data-tab="run">任务执行</button>
+          <button class="tab" data-tab="orchestration">编排运行</button>
           <button class="tab" data-tab="agents">Agents</button>
           <button class="tab" data-tab="tools">Tools</button>
           <button class="tab" data-tab="workflows">工作流库</button>
@@ -305,6 +307,93 @@
             </div>
           </div>
 
+          <section class="panel" id="panel-orchestration">
+            <div class="panel-header orchestration-page-header">
+              <div>
+                <h2>编排运行</h2>
+                <p>查看一次多智能体任务如何规划、并行执行并传递 Artifact。</p>
+              </div>
+              <span class="orchestration-live-legend"><i></i>支持实时运行与历史回放</span>
+            </div>
+            <div class="panel-body orchestration-layout">
+              <aside class="orchestration-runs" aria-label="编排运行列表">
+                <div class="orchestration-list-toolbar">
+                  <input id="orchestrationSearch" type="search" placeholder="搜索任务或 Task ID" />
+                  <select id="orchestrationStatusFilter" aria-label="按状态筛选">
+                    <option value="all">全部状态</option>
+                    <option value="RUNNING">运行中</option>
+                    <option value="SUCCEEDED">成功</option>
+                    <option value="FAILED">失败</option>
+                    <option value="PARTIAL_FAILED">部分失败</option>
+                    <option value="PAUSED">已暂停</option>
+                  </select>
+                  <button id="refreshOrchestrationRuns" class="ghost" type="button">刷新</button>
+                </div>
+                <div id="orchestrationRunsList" class="orchestration-run-list" aria-live="polite"></div>
+              </aside>
+
+              <section class="orchestration-workspace" aria-live="polite">
+                <div id="orchestrationEmpty" class="orchestration-empty">
+                  <div class="orchestration-empty-mark" aria-hidden="true">⌘</div>
+                  <h3>选择一次编排运行</h3>
+                  <p>可查看可信 TaskGraph、实际并行时间轴、工具审计和 Artifact 血缘。</p>
+                </div>
+
+                <div id="orchestrationSelected" hidden>
+                  <div class="orchestration-detail-toolbar">
+                    <div class="orchestration-actions">
+                      <button id="orchestrationOpenHistory" class="ghost" type="button">查看任务历史</button>
+                      <button id="orchestrationPause" class="ghost" type="button">安全暂停</button>
+                      <button id="orchestrationResume" class="primary" type="button">恢复执行</button>
+                    </div>
+                  </div>
+
+                  <div class="orchestration-tabs" role="tablist" aria-label="编排运行详情">
+                    <button class="orchestration-tab active" data-orchestration-tab="overview" type="button">编排总览</button>
+                    <button class="orchestration-tab" data-orchestration-tab="evidence" type="button">数据与工具</button>
+                    <button class="orchestration-tab" data-orchestration-tab="governance" type="button">治理与恢复</button>
+                  </div>
+
+                  <section class="orchestration-pane" data-orchestration-pane="overview">
+                    <div id="orchestrationSummary" class="orchestration-summary"></div>
+                    <div class="orchestration-card">
+                      <div class="orchestration-card-heading">
+                        <div><h4>TaskGraph</h4><p>实线表示执行依赖，虚线表示 Artifact 数据依赖。</p></div>
+                        <div class="orchestration-layer-toggle" role="group" aria-label="图层">
+                          <button class="active" data-graph-layer="both" type="button">叠加</button>
+                          <button data-graph-layer="dependency" type="button">执行</button>
+                          <button data-graph-layer="artifact" type="button">数据</button>
+                        </div>
+                      </div>
+                      <div class="orchestration-graph-layout">
+                        <div id="orchestrationGraph" class="orchestration-graph"></div>
+                        <aside id="orchestrationNodeInspector" class="orchestration-inspector"><p>点击 Agent 节点查看详情。</p></aside>
+                      </div>
+                    </div>
+                    <div class="orchestration-card">
+                      <div class="orchestration-card-heading"><div><h4>实际执行时间轴</h4><p>时间区间来自真实 attempt 边界，而不是根据 DAG 推断。</p></div></div>
+                      <div id="orchestrationTimeline" class="orchestration-timeline"></div>
+                    </div>
+                  </section>
+
+                  <section class="orchestration-pane" data-orchestration-pane="evidence" hidden>
+                    <div class="orchestration-evidence-grid">
+                      <div class="orchestration-card"><h4>工具选择审计</h4><div id="orchestrationToolEvidence"></div></div>
+                      <div class="orchestration-card"><h4>Artifact 血缘</h4><div id="orchestrationArtifactEvidence"></div></div>
+                    </div>
+                  </section>
+
+                  <section class="orchestration-pane" data-orchestration-pane="governance" hidden>
+                    <div class="orchestration-evidence-grid">
+                      <div class="orchestration-card"><h4>治理事件</h4><div id="orchestrationGovernance"></div></div>
+                      <div class="orchestration-card"><h4>Checkpoint 与恢复</h4><div id="orchestrationCheckpoints"></div></div>
+                    </div>
+                  </section>
+                </div>
+              </section>
+            </div>
+          </section>
+
           <section class="panel" id="panel-agents">
             <div class="panel-header">
               <h2>Agents</h2>
@@ -567,6 +656,7 @@
                   <div class="tasks-detail-header">
                     <h3>任务日志</h3>
                     <div class="log-actions">
+                      <button id="openTaskOrchestration" class="ghost">查看编排图</button>
                       <button id="copyLogBtn" class="ghost">复制</button>
                     </div>
                   </div>
@@ -721,6 +811,7 @@
     </div>
 
     <script src="/static/app.js?v=20260809-task-history-1"></script>
+    <script src="/static/task-orchestration.js?v=20260810-orchestration-1"></script>
     <script src="/static/security.js?v=20260809-user-agents-collapse-1"></script>
   </body>
 </html>

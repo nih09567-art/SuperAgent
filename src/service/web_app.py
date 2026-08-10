@@ -31,6 +31,7 @@ from src.orchestration.governance import (
     get_governance_event_store,
     record_governance_event,
 )
+from src.orchestration.observability import build_orchestration_view
 from src.orchestration.artifact_payload_store import ArtifactPayloadStore
 from src.orchestration.completion import (
     PersistentReceiptStore,
@@ -1615,6 +1616,23 @@ def create_app() -> FastAPI:
         if task_log is None:
             raise HTTPException(status_code=404, detail="Task log not found")
         return _public_task_log(task_log)
+
+    @app.get("/api/tasks/{task_id}/orchestration-view")
+    async def get_task_orchestration_view(task_id: str):
+        """Return a payload-free TaskGraph/runtime projection for the Web UI."""
+
+        task_log = TaskLogger.expire_stale_reservation(task_id)
+        if task_log is None:
+            raise HTTPException(status_code=404, detail="Task log not found")
+        governance_events = get_governance_event_store().list(task_id)
+        checkpoints = CheckpointManager().list_checkpoints(task_id=task_id)
+        control = TaskControlStore().get(task_id) or {}
+        return build_orchestration_view(
+            task_log,
+            governance_events=governance_events,
+            control=control,
+            checkpoints=checkpoints,
+        )
 
     @app.get("/api/tasks/{task_id}/control")
     async def get_task_control(task_id: str):

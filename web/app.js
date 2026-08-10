@@ -4462,6 +4462,9 @@ const parseSse = (buffer, onEvent) => {
 };
 
 const handleEvent = (eventName, payload) => {
+  window.dispatchEvent(new CustomEvent("cooragent:sse", {
+    detail: { eventName, payload },
+  }));
   const eventTaskId = String(payload?.data?.task_id || "").trim();
   if (currentRunContext === "executing" && eventTaskId && activeConversationRuntime) {
     activeConversationRuntime.taskId = eventTaskId;

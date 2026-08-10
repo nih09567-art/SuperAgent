@@ -2,6 +2,7 @@ import asyncio
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
 from src.manager.executor.base import ExecutionContext, ExecutionStatus
 from src.manager.executor.local import LocalExecutor
@@ -198,6 +199,10 @@ def test_tool_loader_uses_real_server_name_and_dynamic_schema(monkeypatch):
             "src.manager.registry.tool_loader.mcp_client_config",
             lambda: {"office-mcp": {}, "excel-mcp-remote": {}},
         )
+        monkeypatch.setattr(
+            "src.manager.registry.tool_loader.USE_MCP_TOOLS",
+            True,
+        )
         monkeypatch.setattr(loader, "_get_or_create_client", fake_client)
         loaded = await loader.load_mcp_tools()
         metadata = await registry.list_all_tools()
@@ -208,6 +213,33 @@ def test_tool_loader_uses_real_server_name_and_dynamic_schema(monkeypatch):
         )
         assert all(item.description.startswith("live:") for item in metadata)
         assert all(item.input_schema.get("type") == "object" for item in metadata)
+
+    asyncio.run(scenario())
+
+
+def test_tool_loader_skips_mcp_when_disabled(monkeypatch):
+    async def scenario():
+        registry = ToolRegistry()
+        loader = ToolLoader(registry=registry)
+        config_mock = Mock(side_effect=AssertionError("MCP config must not be read"))
+        client_mock = AsyncMock(
+            side_effect=AssertionError("MCP client must not be created")
+        )
+
+        monkeypatch.setattr(
+            "src.manager.registry.tool_loader.USE_MCP_TOOLS",
+            False,
+        )
+        monkeypatch.setattr(
+            "src.manager.registry.tool_loader.mcp_client_config",
+            config_mock,
+        )
+        monkeypatch.setattr(loader, "_get_or_create_client", client_mock)
+
+        assert await loader.load_mcp_tools() == 0
+        config_mock.assert_not_called()
+        client_mock.assert_not_awaited()
+        assert await registry.list_all_tools() == []
 
     asyncio.run(scenario())
 
