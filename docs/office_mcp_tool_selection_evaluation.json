@@ -1,0 +1,1882 @@
+{
+  "generated_at": "2026-08-10T02:38:45.820544+00:00",
+  "dataset_version": "1.0",
+  "registry_snapshot_generated_at": "2026-08-10T02:38:26.735948+00:00",
+  "algorithm": "generic deterministic layered MCP selector v2",
+  "environment": {
+    "python": "3.12.4",
+    "platform": "Windows-11-10.0.26200-SP0"
+  },
+  "metric_definitions": {
+    "total_tool_coverage_rate_pct": "unique expected (server, tool) pairs in normal cases / discovered registry tools",
+    "server_recognition_accuracy_pct": "labeled cases selecting the expected MCP Server / labeled cases",
+    "tool_top_1_pct": "labeled cases selecting the expected (server, tool) at rank 1 / labeled cases",
+    "tool_top_3_pct": "labeled cases containing the expected (server, tool) in Top-3 / labeled cases",
+    "parameter_schema_valid_rate_pct": "selected outcomes satisfying live tools/list Schema / selected outcomes",
+    "nonexistent_tool_hallucination_rate_pct": "unknown cases returning a selected tool / unknown cases",
+    "average_candidate_count_before_filter": "mean ToolRegistry candidates before layered filters",
+    "average_candidate_count_after_filter": "mean Schema-valid candidates after layered filters",
+    "average_selection_time_ms": "mean in-process wall-clock selection latency per case",
+    "audit_recommendation_actual_match_pct": "labeled cases whose recommendation maps to the expected current concrete/legacy contract / labeled cases"
+  },
+  "metrics": {
+    "catalog_tool_count": 48,
+    "case_count": 53,
+    "normal_case_count": 48,
+    "total_tool_coverage_rate_pct": 100.0,
+    "server_recognition_accuracy_pct": 100.0,
+    "tool_top_1_pct": 100.0,
+    "tool_top_3_pct": 100.0,
+    "parameter_schema_valid_rate_pct": 100.0,
+    "nonexistent_tool_hallucination_rate_pct": 0.0,
+    "average_candidate_count_before_filter": 48.0,
+    "average_candidate_count_after_filter": 2.17,
+    "average_selection_time_ms": 1.513715,
+    "audit_recommendation_actual_match_pct": 100.0
+  },
+  "cases": [
+    {
+      "id": "normal-01",
+      "kind": "normal",
+      "query": "搜索员工王强",
+      "expected_server": "office-mcp",
+      "expected_tool": "search_employees",
+      "selected_server": "office-mcp",
+      "selected_tool": "search_employees",
+      "top_k": [
+        "office-mcp:search_employees",
+        "office-mcp:get_employee_contact",
+        "office-mcp:get_employee_profile"
+      ],
+      "top_1_correct": true,
+      "top_3_correct": true,
+      "server_correct": true,
+      "schema_valid": true,
+      "candidate_count_before_filter": 48,
+      "candidate_count_after_filter": 4,
+      "elapsed_ms": 3.7344,
+      "actual_contract_tool": "remote_person_info_tool",
+      "recommended_contract_tool": "remote_person_info_tool",
+      "audit_matches_actual": true,
+      "inference": {
+        "server_name": "office-mcp",
+        "scenario": "personnel",
+        "scenario_evidence": [
+          "员工"
+        ],
+        "operation_mode": "query",
+        "operation_evidence": [
+          "搜索"
+        ]
+      },
+      "abstention_reason": null
+    },
+    {
+      "id": "normal-02",
+      "kind": "normal",
+      "query": "查看员工档案",
+      "expected_server": "office-mcp",
+      "expected_tool": "get_employee_profile",
+      "selected_server": "office-mcp",
+      "selected_tool": "get_employee_profile",
+      "top_k": [
+        "office-mcp:get_employee_profile",
+        "office-mcp:get_employee_contact",
+        "office-mcp:search_employees"
+      ],
+      "top_1_correct": true,
+      "top_3_correct": true,
+      "server_correct": true,
+      "schema_valid": true,
+      "candidate_count_before_filter": 48,
+      "candidate_count_after_filter": 4,
+      "elapsed_ms": 1.9042,
+      "actual_contract_tool": "remote_person_info_tool",
+      "recommended_contract_tool": "remote_person_info_tool",
+      "audit_matches_actual": true,
+      "inference": {
+        "server_name": "office-mcp",
+        "scenario": "personnel",
+        "scenario_evidence": [
+          "员工",
+          "档案"
+        ],
+        "operation_mode": "query",
+        "operation_evidence": [
+          "查看"
+        ]
+      },
+      "abstention_reason": null
+    },
+    {
+      "id": "normal-03",
+      "kind": "normal",
+      "query": "查询部门成员",
+      "expected_server": "office-mcp",
+      "expected_tool": "get_org_unit",
+      "selected_server": "office-mcp",
+      "selected_tool": "get_org_unit",
+      "top_k": [
+        "office-mcp:get_org_unit",
+        "office-mcp:search_employees",
+        "office-mcp:get_employee_contact"
+      ],
+      "top_1_correct": true,
+      "top_3_correct": true,
+      "server_correct": true,
+      "schema_valid": true,
+      "candidate_count_before_filter": 48,
+      "candidate_count_after_filter": 5,
+      "elapsed_ms": 1.4332,
+      "actual_contract_tool": "remote_person_info_tool",
+      "recommended_contract_tool": "remote_person_info_tool",
+      "audit_matches_actual": true,
+      "inference": {
+        "server_name": "office-mcp",
+        "scenario": "personnel",
+        "scenario_evidence": [
+          "部门"
+        ],
+        "operation_mode": "query",
+        "operation_evidence": [
+          "查询"
+        ]
+      },
+      "abstention_reason": null
+    },
+    {
+      "id": "normal-04",
+      "kind": "normal",
+      "query": "查看王强的汇报链",
+      "expected_server": "office-mcp",
+      "expected_tool": "get_manager_chain",
+      "selected_server": "office-mcp",
+      "selected_tool": "get_manager_chain",
+      "top_k": [
+        "office-mcp:get_manager_chain",
+        "office-mcp:get_employee_profile",
+        "office-mcp:get_employee_contact"
+      ],
+      "top_1_correct": true,
+      "top_3_correct": true,
+      "server_correct": true,
+      "schema_valid": true,
+      "candidate_count_before_filter": 48,
+      "candidate_count_after_filter": 4,
+      "elapsed_ms": 1.6229,
+      "actual_contract_tool": "remote_person_info_tool",
+      "recommended_contract_tool": "remote_person_info_tool",
+      "audit_matches_actual": true,
+      "inference": {
+        "server_name": null,
+        "scenario": null,
+        "scenario_evidence": [],
+        "operation_mode": "query",
+        "operation_evidence": [
+          "查看"
+        ]
+      },
+      "abstention_reason": null
+    },
+    {
+      "id": "normal-05",
+      "kind": "normal",
+      "query": "查询员工联系方式",
+      "expected_server": "office-mcp",
+      "expected_tool": "get_employee_contact",
+      "selected_server": "office-mcp",
+      "selected_tool": "get_employee_contact",
+      "top_k": [
+        "office-mcp:get_employee_contact",
+        "office-mcp:search_employees",
+        "office-mcp:get_employee_profile"
+      ],
+      "top_1_correct": true,
+      "top_3_correct": true,
+      "server_correct": true,
+      "schema_valid": true,
+      "candidate_count_before_filter": 48,
+      "candidate_count_after_filter": 4,
+      "elapsed_ms": 1.6555,
+      "actual_contract_tool": "remote_contact_query_tool",
+      "recommended_contract_tool": "remote_contact_query_tool",
+      "audit_matches_actual": true,
+      "inference": {
+        "server_name": "office-mcp",
+        "scenario": "personnel",
+        "scenario_evidence": [
+          "员工"
+        ],
+        "operation_mode": "query",
+        "operation_evidence": [
+          "查询"
+        ]
+      },
+      "abstention_reason": null
+    },
+    {
+      "id": "normal-06",
+      "kind": "normal",
+      "query": "查询日程列表",
+      "expected_server": "office-mcp",
+      "expected_tool": "list_calendar_events",
+      "selected_server": "office-mcp",
+      "selected_tool": "list_calendar_events",
+      "top_k": [
+        "office-mcp:list_calendar_events"
+      ],
+      "top_1_correct": true,
+      "top_3_correct": true,
+      "server_correct": true,
+      "schema_valid": true,
+      "candidate_count_before_filter": 48,
+      "candidate_count_after_filter": 1,
+      "elapsed_ms": 1.33,
+      "actual_contract_tool": "get_calendar_events_tool",
+      "recommended_contract_tool": "get_calendar_events_tool",
+      "audit_matches_actual": true,
+      "inference": {
+        "server_name": "office-mcp",
+        "scenario": "calendar",
+        "scenario_evidence": [
+          "日程"
+        ],
+        "operation_mode": "query",
+        "operation_evidence": [
+          "查询"
+        ]
+      },
+      "abstention_reason": null
+    },
+    {
+      "id": "normal-07",
+      "kind": "normal",
+      "query": "查找日历空闲时间",
+      "expected_server": "office-mcp",
+      "expected_tool": "find_free_slots",
+      "selected_server": "office-mcp",
+      "selected_tool": "find_free_slots",
+      "top_k": [
+        "office-mcp:find_free_slots"
+      ],
+      "top_1_correct": true,
+      "top_3_correct": true,
+      "server_correct": true,
+      "schema_valid": true,
+      "candidate_count_before_filter": 48,
+      "candidate_count_after_filter": 1,
+      "elapsed_ms": 1.35,
+      "actual_contract_tool": "get_calendar_events_tool",
+      "recommended_contract_tool": "get_calendar_events_tool",
+      "audit_matches_actual": true,
+      "inference": {
+        "server_name": "office-mcp",
+        "scenario": "calendar",
+        "scenario_evidence": [
+          "日历"
+        ],
+        "operation_mode": "query",
+        "operation_evidence": [
+          "查找",
+          "空闲"
+        ]
+      },
+      "abstention_reason": null
+    },
+    {
+      "id": "normal-08",
+      "kind": "normal",
+      "query": "创建日程",
+      "expected_server": "office-mcp",
+      "expected_tool": "create_calendar_event",
+      "selected_server": "office-mcp",
+      "selected_tool": "create_calendar_event",
+      "top_k": [
+        "office-mcp:create_calendar_event"
+      ],
+      "top_1_correct": true,
+      "top_3_correct": true,
+      "server_correct": true,
+      "schema_valid": true,
+      "candidate_count_before_filter": 48,
+      "candidate_count_after_filter": 1,
+      "elapsed_ms": 1.5101,
+      "actual_contract_tool": "create_calendar_event_tool",
+      "recommended_contract_tool": "create_calendar_event_tool",
+      "audit_matches_actual": true,
+      "inference": {
+        "server_name": "office-mcp",
+        "scenario": "calendar",
+        "scenario_evidence": [
+          "日程"
+        ],
+        "operation_mode": "create",
+        "operation_evidence": [
+          "创建"
+        ]
+      },
+      "abstention_reason": null
+    },
+    {
+      "id": "normal-09",
+      "kind": "normal",
+      "query": "更新日程",
+      "expected_server": "office-mcp",
+      "expected_tool": "update_calendar_event",
+      "selected_server": "office-mcp",
+      "selected_tool": "update_calendar_event",
+      "top_k": [
+        "office-mcp:update_calendar_event"
+      ],
+      "top_1_correct": true,
+      "top_3_correct": true,
+      "server_correct": true,
+      "schema_valid": true,
+      "candidate_count_before_filter": 48,
+      "candidate_count_after_filter": 1,
+      "elapsed_ms": 1.4384,
+      "actual_contract_tool": "remote_schedule_tool",
+      "recommended_contract_tool": "remote_schedule_tool",
+      "audit_matches_actual": true,
+      "inference": {
+        "server_name": "office-mcp",
+        "scenario": "calendar",
+        "scenario_evidence": [
+          "日程"
+        ],
+        "operation_mode": "update",
+        "operation_evidence": [
+          "更新"
+        ]
+      },
+      "abstention_reason": null
+    },
+    {
+      "id": "normal-10",
+      "kind": "normal",
+      "query": "取消日程",
+      "expected_server": "office-mcp",
+      "expected_tool": "cancel_calendar_event",
+      "selected_server": "office-mcp",
+      "selected_tool": "cancel_calendar_event",
+      "top_k": [
+        "office-mcp:cancel_calendar_event"
+      ],
+      "top_1_correct": true,
+      "top_3_correct": true,
+      "server_correct": true,
+      "schema_valid": true,
+      "candidate_count_before_filter": 48,
+      "candidate_count_after_filter": 1,
+      "elapsed_ms": 1.2988,
+      "actual_contract_tool": "remote_schedule_tool",
+      "recommended_contract_tool": "remote_schedule_tool",
+      "audit_matches_actual": true,
+      "inference": {
+        "server_name": "office-mcp",
+        "scenario": "calendar",
+        "scenario_evidence": [
+          "日程"
+        ],
+        "operation_mode": "cancel",
+        "operation_evidence": [
+          "取消"
+        ]
+      },
+      "abstention_reason": null
+    },
+    {
+      "id": "normal-11",
+      "kind": "normal",
+      "query": "搜索课程",
+      "expected_server": "office-mcp",
+      "expected_tool": "search_courses",
+      "selected_server": "office-mcp",
+      "selected_tool": "search_courses",
+      "top_k": [
+        "office-mcp:search_courses",
+        "office-mcp:get_learning_record"
+      ],
+      "top_1_correct": true,
+      "top_3_correct": true,
+      "server_correct": true,
+      "schema_valid": true,
+      "candidate_count_before_filter": 48,
+      "candidate_count_after_filter": 2,
+      "elapsed_ms": 1.2829,
+      "actual_contract_tool": "knowledge_search_tool",
+      "recommended_contract_tool": "knowledge_search_tool",
+      "audit_matches_actual": true,
+      "inference": {
+        "server_name": "office-mcp",
+        "scenario": "course",
+        "scenario_evidence": [
+          "课程"
+        ],
+        "operation_mode": "query",
+        "operation_evidence": [
+          "搜索"
+        ]
+      },
+      "abstention_reason": null
+    },
+    {
+      "id": "normal-12",
+      "kind": "normal",
+      "query": "查看课程详情",
+      "expected_server": "office-mcp",
+      "expected_tool": "get_course_detail",
+      "selected_server": "office-mcp",
+      "selected_tool": "get_course_detail",
+      "top_k": [
+        "office-mcp:get_course_detail",
+        "office-mcp:list_course_sessions",
+        "office-mcp:get_learning_record"
+      ],
+      "top_1_correct": true,
+      "top_3_correct": true,
+      "server_correct": true,
+      "schema_valid": true,
+      "candidate_count_before_filter": 48,
+      "candidate_count_after_filter": 4,
+      "elapsed_ms": 1.3188,
+      "actual_contract_tool": "knowledge_search_tool",
+      "recommended_contract_tool": "knowledge_search_tool",
+      "audit_matches_actual": true,
+      "inference": {
+        "server_name": "office-mcp",
+        "scenario": "course",
+        "scenario_evidence": [
+          "课程"
+        ],
+        "operation_mode": "query",
+        "operation_evidence": [
+          "查看",
+          "详情"
+        ]
+      },
+      "abstention_reason": null
+    },
+    {
+      "id": "normal-13",
+      "kind": "normal",
+      "query": "列出课程场次",
+      "expected_server": "office-mcp",
+      "expected_tool": "list_course_sessions",
+      "selected_server": "office-mcp",
+      "selected_tool": "list_course_sessions",
+      "top_k": [
+        "office-mcp:list_course_sessions",
+        "office-mcp:get_course_detail",
+        "office-mcp:get_learning_record"
+      ],
+      "top_1_correct": true,
+      "top_3_correct": true,
+      "server_correct": true,
+      "schema_valid": true,
+      "candidate_count_before_filter": 48,
+      "candidate_count_after_filter": 4,
+      "elapsed_ms": 1.7067,
+      "actual_contract_tool": "knowledge_search_tool",
+      "recommended_contract_tool": "knowledge_search_tool",
+      "audit_matches_actual": true,
+      "inference": {
+        "server_name": "office-mcp",
+        "scenario": "course",
+        "scenario_evidence": [
+          "课程"
+        ],
+        "operation_mode": "query",
+        "operation_evidence": [
+          "列出"
+        ]
+      },
+      "abstention_reason": null
+    },
+    {
+      "id": "normal-14",
+      "kind": "normal",
+      "query": "报名课程",
+      "expected_server": "office-mcp",
+      "expected_tool": "enroll_course",
+      "selected_server": "office-mcp",
+      "selected_tool": "enroll_course",
+      "top_k": [
+        "office-mcp:enroll_course"
+      ],
+      "top_1_correct": true,
+      "top_3_correct": true,
+      "server_correct": true,
+      "schema_valid": true,
+      "candidate_count_before_filter": 48,
+      "candidate_count_after_filter": 1,
+      "elapsed_ms": 1.3761,
+      "actual_contract_tool": "knowledge_search_tool",
+      "recommended_contract_tool": "knowledge_search_tool",
+      "audit_matches_actual": true,
+      "inference": {
+        "server_name": "office-mcp",
+        "scenario": "course",
+        "scenario_evidence": [
+          "课程"
+        ],
+        "operation_mode": "enroll",
+        "operation_evidence": [
+          "报名"
+        ]
+      },
+      "abstention_reason": null
+    },
+    {
+      "id": "normal-15",
+      "kind": "normal",
+      "query": "查询学习记录",
+      "expected_server": "office-mcp",
+      "expected_tool": "get_learning_record",
+      "selected_server": "office-mcp",
+      "selected_tool": "get_learning_record",
+      "top_k": [
+        "office-mcp:get_learning_record",
+        "office-mcp:search_courses"
+      ],
+      "top_1_correct": true,
+      "top_3_correct": true,
+      "server_correct": true,
+      "schema_valid": true,
+      "candidate_count_before_filter": 48,
+      "candidate_count_after_filter": 2,
+      "elapsed_ms": 1.3303,
+      "actual_contract_tool": "knowledge_search_tool",
+      "recommended_contract_tool": "knowledge_search_tool",
+      "audit_matches_actual": true,
+      "inference": {
+        "server_name": "office-mcp",
+        "scenario": "course",
+        "scenario_evidence": [
+          "学习"
+        ],
+        "operation_mode": "query",
+        "operation_evidence": [
+          "查询",
+          "记录"
+        ]
+      },
+      "abstention_reason": null
+    },
+    {
+      "id": "normal-16",
+      "kind": "normal",
+      "query": "查询差旅政策",
+      "expected_server": "office-mcp",
+      "expected_tool": "search_travel_policy",
+      "selected_server": "office-mcp",
+      "selected_tool": "search_travel_policy",
+      "top_k": [
+        "office-mcp:search_travel_policy",
+        "office-mcp:get_travel_request"
+      ],
+      "top_1_correct": true,
+      "top_3_correct": true,
+      "server_correct": true,
+      "schema_valid": true,
+      "candidate_count_before_filter": 48,
+      "candidate_count_after_filter": 2,
+      "elapsed_ms": 1.3105,
+      "actual_contract_tool": "query_travel_record",
+      "recommended_contract_tool": "query_travel_record",
+      "audit_matches_actual": true,
+      "inference": {
+        "server_name": "office-mcp",
+        "scenario": "travel",
+        "scenario_evidence": [
+          "差旅"
+        ],
+        "operation_mode": "query",
+        "operation_evidence": [
+          "查询",
+          "政策"
+        ]
+      },
+      "abstention_reason": null
+    },
+    {
+      "id": "normal-17",
+      "kind": "normal",
+      "query": "估算差旅费用",
+      "expected_server": "office-mcp",
+      "expected_tool": "estimate_trip_cost",
+      "selected_server": "office-mcp",
+      "selected_tool": "estimate_trip_cost",
+      "top_k": [
+        "office-mcp:estimate_trip_cost",
+        "office-mcp:search_travel_policy",
+        "office-mcp:get_travel_request"
+      ],
+      "top_1_correct": true,
+      "top_3_correct": true,
+      "server_correct": true,
+      "schema_valid": true,
+      "candidate_count_before_filter": 48,
+      "candidate_count_after_filter": 3,
+      "elapsed_ms": 1.9216,
+      "actual_contract_tool": "query_travel_record",
+      "recommended_contract_tool": "query_travel_record",
+      "audit_matches_actual": true,
+      "inference": {
+        "server_name": "office-mcp",
+        "scenario": "travel",
+        "scenario_evidence": [
+          "差旅"
+        ],
+        "operation_mode": "query",
+        "operation_evidence": [
+          "估算"
+        ]
+      },
+      "abstention_reason": null
+    },
+    {
+      "id": "normal-18",
+      "kind": "normal",
+      "query": "创建差旅申请",
+      "expected_server": "office-mcp",
+      "expected_tool": "create_travel_request",
+      "selected_server": "office-mcp",
+      "selected_tool": "create_travel_request",
+      "top_k": [
+        "office-mcp:create_travel_request"
+      ],
+      "top_1_correct": true,
+      "top_3_correct": true,
+      "server_correct": true,
+      "schema_valid": true,
+      "candidate_count_before_filter": 48,
+      "candidate_count_after_filter": 1,
+      "elapsed_ms": 1.3778,
+      "actual_contract_tool": "save_travel_record",
+      "recommended_contract_tool": "save_travel_record",
+      "audit_matches_actual": true,
+      "inference": {
+        "server_name": "office-mcp",
+        "scenario": "travel",
+        "scenario_evidence": [
+          "差旅"
+        ],
+        "operation_mode": "create",
+        "operation_evidence": [
+          "创建"
+        ]
+      },
+      "abstention_reason": null
+    },
+    {
+      "id": "normal-19",
+      "kind": "normal",
+      "query": "查询差旅申请",
+      "expected_server": "office-mcp",
+      "expected_tool": "get_travel_request",
+      "selected_server": "office-mcp",
+      "selected_tool": "get_travel_request",
+      "top_k": [
+        "office-mcp:get_travel_request",
+        "office-mcp:search_travel_policy"
+      ],
+      "top_1_correct": true,
+      "top_3_correct": true,
+      "server_correct": true,
+      "schema_valid": true,
+      "candidate_count_before_filter": 48,
+      "candidate_count_after_filter": 2,
+      "elapsed_ms": 1.3103,
+      "actual_contract_tool": "query_travel_record",
+      "recommended_contract_tool": "query_travel_record",
+      "audit_matches_actual": true,
+      "inference": {
+        "server_name": "office-mcp",
+        "scenario": "travel",
+        "scenario_evidence": [
+          "差旅"
+        ],
+        "operation_mode": "query",
+        "operation_evidence": [
+          "查询"
+        ]
+      },
+      "abstention_reason": null
+    },
+    {
+      "id": "normal-20",
+      "kind": "normal",
+      "query": "取消差旅申请",
+      "expected_server": "office-mcp",
+      "expected_tool": "cancel_travel_request",
+      "selected_server": "office-mcp",
+      "selected_tool": "cancel_travel_request",
+      "top_k": [
+        "office-mcp:cancel_travel_request"
+      ],
+      "top_1_correct": true,
+      "top_3_correct": true,
+      "server_correct": true,
+      "schema_valid": true,
+      "candidate_count_before_filter": 48,
+      "candidate_count_after_filter": 1,
+      "elapsed_ms": 1.3124,
+      "actual_contract_tool": "query_travel_record",
+      "recommended_contract_tool": "query_travel_record",
+      "audit_matches_actual": true,
+      "inference": {
+        "server_name": "office-mcp",
+        "scenario": "travel",
+        "scenario_evidence": [
+          "差旅"
+        ],
+        "operation_mode": "cancel",
+        "operation_evidence": [
+          "取消"
+        ]
+      },
+      "abstention_reason": null
+    },
+    {
+      "id": "normal-21",
+      "kind": "normal",
+      "query": "查找会议时段",
+      "expected_server": "office-mcp",
+      "expected_tool": "find_meeting_slots",
+      "selected_server": "office-mcp",
+      "selected_tool": "find_meeting_slots",
+      "top_k": [
+        "office-mcp:find_meeting_slots"
+      ],
+      "top_1_correct": true,
+      "top_3_correct": true,
+      "server_correct": true,
+      "schema_valid": true,
+      "candidate_count_before_filter": 48,
+      "candidate_count_after_filter": 1,
+      "elapsed_ms": 1.7209,
+      "actual_contract_tool": "remote_meeting_scheduling_tool",
+      "recommended_contract_tool": "remote_meeting_scheduling_tool",
+      "audit_matches_actual": true,
+      "inference": {
+        "server_name": "office-mcp",
+        "scenario": "meeting",
+        "scenario_evidence": [
+          "会议"
+        ],
+        "operation_mode": "query",
+        "operation_evidence": [
+          "查找"
+        ]
+      },
+      "abstention_reason": null
+    },
+    {
+      "id": "normal-22",
+      "kind": "normal",
+      "query": "创建会议",
+      "expected_server": "office-mcp",
+      "expected_tool": "create_meeting",
+      "selected_server": "office-mcp",
+      "selected_tool": "create_meeting",
+      "top_k": [
+        "office-mcp:create_meeting"
+      ],
+      "top_1_correct": true,
+      "top_3_correct": true,
+      "server_correct": true,
+      "schema_valid": true,
+      "candidate_count_before_filter": 48,
+      "candidate_count_after_filter": 1,
+      "elapsed_ms": 1.315,
+      "actual_contract_tool": "remote_meeting_scheduling_tool",
+      "recommended_contract_tool": "remote_meeting_scheduling_tool",
+      "audit_matches_actual": true,
+      "inference": {
+        "server_name": "office-mcp",
+        "scenario": "meeting",
+        "scenario_evidence": [
+          "会议"
+        ],
+        "operation_mode": "create",
+        "operation_evidence": [
+          "创建"
+        ]
+      },
+      "abstention_reason": null
+    },
+    {
+      "id": "normal-23",
+      "kind": "normal",
+      "query": "更新会议",
+      "expected_server": "office-mcp",
+      "expected_tool": "update_meeting",
+      "selected_server": "office-mcp",
+      "selected_tool": "update_meeting",
+      "top_k": [
+        "office-mcp:update_meeting"
+      ],
+      "top_1_correct": true,
+      "top_3_correct": true,
+      "server_correct": true,
+      "schema_valid": true,
+      "candidate_count_before_filter": 48,
+      "candidate_count_after_filter": 1,
+      "elapsed_ms": 1.3124,
+      "actual_contract_tool": "remote_meeting_scheduling_tool",
+      "recommended_contract_tool": "remote_meeting_scheduling_tool",
+      "audit_matches_actual": true,
+      "inference": {
+        "server_name": "office-mcp",
+        "scenario": "meeting",
+        "scenario_evidence": [
+          "会议"
+        ],
+        "operation_mode": "update",
+        "operation_evidence": [
+          "更新"
+        ]
+      },
+      "abstention_reason": null
+    },
+    {
+      "id": "normal-24",
+      "kind": "normal",
+      "query": "取消会议",
+      "expected_server": "office-mcp",
+      "expected_tool": "cancel_meeting",
+      "selected_server": "office-mcp",
+      "selected_tool": "cancel_meeting",
+      "top_k": [
+        "office-mcp:cancel_meeting"
+      ],
+      "top_1_correct": true,
+      "top_3_correct": true,
+      "server_correct": true,
+      "schema_valid": true,
+      "candidate_count_before_filter": 48,
+      "candidate_count_after_filter": 1,
+      "elapsed_ms": 1.2785,
+      "actual_contract_tool": "remote_meeting_scheduling_tool",
+      "recommended_contract_tool": "remote_meeting_scheduling_tool",
+      "audit_matches_actual": true,
+      "inference": {
+        "server_name": "office-mcp",
+        "scenario": "meeting",
+        "scenario_evidence": [
+          "会议"
+        ],
+        "operation_mode": "cancel",
+        "operation_evidence": [
+          "取消"
+        ]
+      },
+      "abstention_reason": null
+    },
+    {
+      "id": "normal-25",
+      "kind": "normal",
+      "query": "查看会议纪要",
+      "expected_server": "office-mcp",
+      "expected_tool": "get_meeting_minutes",
+      "selected_server": "office-mcp",
+      "selected_tool": "get_meeting_minutes",
+      "top_k": [
+        "office-mcp:get_meeting_minutes"
+      ],
+      "top_1_correct": true,
+      "top_3_correct": true,
+      "server_correct": true,
+      "schema_valid": true,
+      "candidate_count_before_filter": 48,
+      "candidate_count_after_filter": 1,
+      "elapsed_ms": 1.7425,
+      "actual_contract_tool": "remote_meeting_scheduling_tool",
+      "recommended_contract_tool": "remote_meeting_scheduling_tool",
+      "audit_matches_actual": true,
+      "inference": {
+        "server_name": "office-mcp",
+        "scenario": "meeting",
+        "scenario_evidence": [
+          "会议"
+        ],
+        "operation_mode": "query",
+        "operation_evidence": [
+          "查看",
+          "纪要"
+        ]
+      },
+      "abstention_reason": null
+    },
+    {
+      "id": "normal-26",
+      "kind": "normal",
+      "query": "解析联系人",
+      "expected_server": "office-mcp",
+      "expected_tool": "resolve_contacts",
+      "selected_server": "office-mcp",
+      "selected_tool": "resolve_contacts",
+      "top_k": [
+        "office-mcp:resolve_contacts",
+        "office-mcp:list_message_templates"
+      ],
+      "top_1_correct": true,
+      "top_3_correct": true,
+      "server_correct": true,
+      "schema_valid": true,
+      "candidate_count_before_filter": 48,
+      "candidate_count_after_filter": 2,
+      "elapsed_ms": 1.5274,
+      "actual_contract_tool": "remote_contact_query_tool",
+      "recommended_contract_tool": "remote_contact_query_tool",
+      "audit_matches_actual": true,
+      "inference": {
+        "server_name": "office-mcp",
+        "scenario": "messaging",
+        "scenario_evidence": [
+          "联系人"
+        ],
+        "operation_mode": "query",
+        "operation_evidence": [
+          "解析"
+        ]
+      },
+      "abstention_reason": null
+    },
+    {
+      "id": "normal-27",
+      "kind": "normal",
+      "query": "查看消息模板",
+      "expected_server": "office-mcp",
+      "expected_tool": "list_message_templates",
+      "selected_server": "office-mcp",
+      "selected_tool": "list_message_templates",
+      "top_k": [
+        "office-mcp:list_message_templates",
+        "office-mcp:resolve_contacts"
+      ],
+      "top_1_correct": true,
+      "top_3_correct": true,
+      "server_correct": true,
+      "schema_valid": true,
+      "candidate_count_before_filter": 48,
+      "candidate_count_after_filter": 2,
+      "elapsed_ms": 1.3211,
+      "actual_contract_tool": "remote_email_tool",
+      "recommended_contract_tool": "remote_email_tool",
+      "audit_matches_actual": true,
+      "inference": {
+        "server_name": "office-mcp",
+        "scenario": "messaging",
+        "scenario_evidence": [
+          "消息",
+          "模板"
+        ],
+        "operation_mode": "query",
+        "operation_evidence": [
+          "查看"
+        ]
+      },
+      "abstention_reason": null
+    },
+    {
+      "id": "normal-28",
+      "kind": "normal",
+      "query": "发送邮件",
+      "expected_server": "office-mcp",
+      "expected_tool": "send_email",
+      "selected_server": "office-mcp",
+      "selected_tool": "send_email",
+      "top_k": [
+        "office-mcp:send_email"
+      ],
+      "top_1_correct": true,
+      "top_3_correct": true,
+      "server_correct": true,
+      "schema_valid": true,
+      "candidate_count_before_filter": 48,
+      "candidate_count_after_filter": 1,
+      "elapsed_ms": 1.2978,
+      "actual_contract_tool": "remote_email_tool",
+      "recommended_contract_tool": "remote_email_tool",
+      "audit_matches_actual": true,
+      "inference": {
+        "server_name": "office-mcp",
+        "scenario": "messaging",
+        "scenario_evidence": [
+          "邮件"
+        ],
+        "operation_mode": "send",
+        "operation_evidence": [
+          "发送"
+        ]
+      },
+      "abstention_reason": null
+    },
+    {
+      "id": "normal-29",
+      "kind": "normal",
+      "query": "发送内部消息",
+      "expected_server": "office-mcp",
+      "expected_tool": "send_message",
+      "selected_server": "office-mcp",
+      "selected_tool": "send_message",
+      "top_k": [
+        "office-mcp:send_message"
+      ],
+      "top_1_correct": true,
+      "top_3_correct": true,
+      "server_correct": true,
+      "schema_valid": true,
+      "candidate_count_before_filter": 48,
+      "candidate_count_after_filter": 1,
+      "elapsed_ms": 1.5155,
+      "actual_contract_tool": "remote_email_tool",
+      "recommended_contract_tool": "remote_email_tool",
+      "audit_matches_actual": true,
+      "inference": {
+        "server_name": "office-mcp",
+        "scenario": "messaging",
+        "scenario_evidence": [
+          "消息"
+        ],
+        "operation_mode": "send",
+        "operation_evidence": [
+          "发送"
+        ]
+      },
+      "abstention_reason": null
+    },
+    {
+      "id": "normal-30",
+      "kind": "normal",
+      "query": "查询投递状态",
+      "expected_server": "office-mcp",
+      "expected_tool": "get_delivery_status",
+      "selected_server": "office-mcp",
+      "selected_tool": "get_delivery_status",
+      "top_k": [
+        "office-mcp:get_delivery_status",
+        "office-mcp:resolve_contacts",
+        "office-mcp:list_message_templates"
+      ],
+      "top_1_correct": true,
+      "top_3_correct": true,
+      "server_correct": true,
+      "schema_valid": true,
+      "candidate_count_before_filter": 48,
+      "candidate_count_after_filter": 3,
+      "elapsed_ms": 1.4116,
+      "actual_contract_tool": "remote_email_tool",
+      "recommended_contract_tool": "remote_email_tool",
+      "audit_matches_actual": true,
+      "inference": {
+        "server_name": "office-mcp",
+        "scenario": "messaging",
+        "scenario_evidence": [
+          "投递"
+        ],
+        "operation_mode": "query",
+        "operation_evidence": [
+          "查询",
+          "状态"
+        ]
+      },
+      "abstention_reason": null
+    },
+    {
+      "id": "excel-01",
+      "kind": "normal",
+      "query": "应用Excel公式",
+      "expected_server": "excel-mcp-remote",
+      "expected_tool": "apply_formula",
+      "selected_server": "excel-mcp-remote",
+      "selected_tool": "apply_formula",
+      "top_k": [
+        "excel-mcp-remote:apply_formula"
+      ],
+      "top_1_correct": true,
+      "top_3_correct": true,
+      "server_correct": true,
+      "schema_valid": true,
+      "candidate_count_before_filter": 48,
+      "candidate_count_after_filter": 1,
+      "elapsed_ms": 1.397,
+      "actual_contract_tool": "apply_formula",
+      "recommended_contract_tool": "apply_formula",
+      "audit_matches_actual": true,
+      "inference": {
+        "server_name": "excel-mcp-remote",
+        "scenario": "spreadsheet",
+        "scenario_evidence": [
+          "excel",
+          "公式"
+        ],
+        "operation_mode": "apply",
+        "operation_evidence": [
+          "应用"
+        ]
+      },
+      "abstention_reason": null
+    },
+    {
+      "id": "excel-02",
+      "kind": "normal",
+      "query": "校验Excel公式",
+      "expected_server": "excel-mcp-remote",
+      "expected_tool": "validate_formula_syntax",
+      "selected_server": "excel-mcp-remote",
+      "selected_tool": "validate_formula_syntax",
+      "top_k": [
+        "excel-mcp-remote:validate_formula_syntax"
+      ],
+      "top_1_correct": true,
+      "top_3_correct": true,
+      "server_correct": true,
+      "schema_valid": true,
+      "candidate_count_before_filter": 48,
+      "candidate_count_after_filter": 1,
+      "elapsed_ms": 1.4218,
+      "actual_contract_tool": "validate_formula_syntax",
+      "recommended_contract_tool": "validate_formula_syntax",
+      "audit_matches_actual": true,
+      "inference": {
+        "server_name": "excel-mcp-remote",
+        "scenario": "spreadsheet",
+        "scenario_evidence": [
+          "excel",
+          "公式"
+        ],
+        "operation_mode": "validate",
+        "operation_evidence": [
+          "校验"
+        ]
+      },
+      "abstention_reason": null
+    },
+    {
+      "id": "excel-03",
+      "kind": "normal",
+      "query": "格式化Excel区域",
+      "expected_server": "excel-mcp-remote",
+      "expected_tool": "format_range",
+      "selected_server": "excel-mcp-remote",
+      "selected_tool": "format_range",
+      "top_k": [
+        "excel-mcp-remote:format_range"
+      ],
+      "top_1_correct": true,
+      "top_3_correct": true,
+      "server_correct": true,
+      "schema_valid": true,
+      "candidate_count_before_filter": 48,
+      "candidate_count_after_filter": 1,
+      "elapsed_ms": 1.6457,
+      "actual_contract_tool": "format_range",
+      "recommended_contract_tool": "format_range",
+      "audit_matches_actual": true,
+      "inference": {
+        "server_name": "excel-mcp-remote",
+        "scenario": "spreadsheet",
+        "scenario_evidence": [
+          "excel"
+        ],
+        "operation_mode": "format",
+        "operation_evidence": [
+          "格式化"
+        ]
+      },
+      "abstention_reason": null
+    },
+    {
+      "id": "excel-04",
+      "kind": "normal",
+      "query": "读取Excel数据",
+      "expected_server": "excel-mcp-remote",
+      "expected_tool": "read_data_from_excel",
+      "selected_server": "excel-mcp-remote",
+      "selected_tool": "read_data_from_excel",
+      "top_k": [
+        "excel-mcp-remote:read_data_from_excel",
+        "excel-mcp-remote:get_workbook_metadata"
+      ],
+      "top_1_correct": true,
+      "top_3_correct": true,
+      "server_correct": true,
+      "schema_valid": true,
+      "candidate_count_before_filter": 48,
+      "candidate_count_after_filter": 2,
+      "elapsed_ms": 1.64,
+      "actual_contract_tool": "read_data_from_excel",
+      "recommended_contract_tool": "read_data_from_excel",
+      "audit_matches_actual": true,
+      "inference": {
+        "server_name": "excel-mcp-remote",
+        "scenario": "spreadsheet",
+        "scenario_evidence": [
+          "excel"
+        ],
+        "operation_mode": "query",
+        "operation_evidence": [
+          "读取"
+        ]
+      },
+      "abstention_reason": null
+    },
+    {
+      "id": "excel-05",
+      "kind": "normal",
+      "query": "写入Excel数据",
+      "expected_server": "excel-mcp-remote",
+      "expected_tool": "write_data_to_excel",
+      "selected_server": "excel-mcp-remote",
+      "selected_tool": "write_data_to_excel",
+      "top_k": [
+        "excel-mcp-remote:write_data_to_excel",
+        "excel-mcp-remote:read_data_from_excel",
+        "excel-mcp-remote:create_workbook"
+      ],
+      "top_1_correct": true,
+      "top_3_correct": true,
+      "server_correct": true,
+      "schema_valid": true,
+      "candidate_count_before_filter": 48,
+      "candidate_count_after_filter": 6,
+      "elapsed_ms": 1.3568,
+      "actual_contract_tool": "write_data_to_excel",
+      "recommended_contract_tool": "write_data_to_excel",
+      "audit_matches_actual": true,
+      "inference": {
+        "server_name": "excel-mcp-remote",
+        "scenario": "spreadsheet",
+        "scenario_evidence": [
+          "excel"
+        ],
+        "operation_mode": null,
+        "operation_evidence": []
+      },
+      "abstention_reason": null
+    },
+    {
+      "id": "excel-06",
+      "kind": "normal",
+      "query": "创建Excel工作簿",
+      "expected_server": "excel-mcp-remote",
+      "expected_tool": "create_workbook",
+      "selected_server": "excel-mcp-remote",
+      "selected_tool": "create_workbook",
+      "top_k": [
+        "excel-mcp-remote:create_workbook"
+      ],
+      "top_1_correct": true,
+      "top_3_correct": true,
+      "server_correct": true,
+      "schema_valid": true,
+      "candidate_count_before_filter": 48,
+      "candidate_count_after_filter": 1,
+      "elapsed_ms": 1.4247,
+      "actual_contract_tool": "create_workbook",
+      "recommended_contract_tool": "create_workbook",
+      "audit_matches_actual": true,
+      "inference": {
+        "server_name": "excel-mcp-remote",
+        "scenario": "spreadsheet",
+        "scenario_evidence": [
+          "excel",
+          "工作簿"
+        ],
+        "operation_mode": "create",
+        "operation_evidence": [
+          "创建"
+        ]
+      },
+      "abstention_reason": null
+    },
+    {
+      "id": "excel-07",
+      "kind": "normal",
+      "query": "创建Excel工作表",
+      "expected_server": "excel-mcp-remote",
+      "expected_tool": "create_worksheet",
+      "selected_server": "excel-mcp-remote",
+      "selected_tool": "create_worksheet",
+      "top_k": [
+        "excel-mcp-remote:create_worksheet",
+        "excel-mcp-remote:create_workbook"
+      ],
+      "top_1_correct": true,
+      "top_3_correct": true,
+      "server_correct": true,
+      "schema_valid": true,
+      "candidate_count_before_filter": 48,
+      "candidate_count_after_filter": 2,
+      "elapsed_ms": 1.6941,
+      "actual_contract_tool": "create_worksheet",
+      "recommended_contract_tool": "create_worksheet",
+      "audit_matches_actual": true,
+      "inference": {
+        "server_name": "excel-mcp-remote",
+        "scenario": "spreadsheet",
+        "scenario_evidence": [
+          "excel",
+          "工作表"
+        ],
+        "operation_mode": "create",
+        "operation_evidence": [
+          "创建"
+        ]
+      },
+      "abstention_reason": null
+    },
+    {
+      "id": "excel-08",
+      "kind": "normal",
+      "query": "创建Excel图表",
+      "expected_server": "excel-mcp-remote",
+      "expected_tool": "create_chart",
+      "selected_server": "excel-mcp-remote",
+      "selected_tool": "create_chart",
+      "top_k": [
+        "excel-mcp-remote:create_chart",
+        "excel-mcp-remote:create_workbook",
+        "excel-mcp-remote:create_worksheet"
+      ],
+      "top_1_correct": true,
+      "top_3_correct": true,
+      "server_correct": true,
+      "schema_valid": true,
+      "candidate_count_before_filter": 48,
+      "candidate_count_after_filter": 3,
+      "elapsed_ms": 1.7079,
+      "actual_contract_tool": "create_chart",
+      "recommended_contract_tool": "create_chart",
+      "audit_matches_actual": true,
+      "inference": {
+        "server_name": "excel-mcp-remote",
+        "scenario": "spreadsheet",
+        "scenario_evidence": [
+          "excel",
+          "图表"
+        ],
+        "operation_mode": "create",
+        "operation_evidence": [
+          "创建"
+        ]
+      },
+      "abstention_reason": null
+    },
+    {
+      "id": "excel-09",
+      "kind": "normal",
+      "query": "创建Excel透视表",
+      "expected_server": "excel-mcp-remote",
+      "expected_tool": "create_pivot_table",
+      "selected_server": "excel-mcp-remote",
+      "selected_tool": "create_pivot_table",
+      "top_k": [
+        "excel-mcp-remote:create_pivot_table",
+        "excel-mcp-remote:create_workbook",
+        "excel-mcp-remote:create_worksheet"
+      ],
+      "top_1_correct": true,
+      "top_3_correct": true,
+      "server_correct": true,
+      "schema_valid": true,
+      "candidate_count_before_filter": 48,
+      "candidate_count_after_filter": 3,
+      "elapsed_ms": 1.4234,
+      "actual_contract_tool": "create_pivot_table",
+      "recommended_contract_tool": "create_pivot_table",
+      "audit_matches_actual": true,
+      "inference": {
+        "server_name": "excel-mcp-remote",
+        "scenario": "spreadsheet",
+        "scenario_evidence": [
+          "excel",
+          "透视表"
+        ],
+        "operation_mode": "create",
+        "operation_evidence": [
+          "创建"
+        ]
+      },
+      "abstention_reason": null
+    },
+    {
+      "id": "excel-10",
+      "kind": "normal",
+      "query": "复制Excel工作表",
+      "expected_server": "excel-mcp-remote",
+      "expected_tool": "copy_worksheet",
+      "selected_server": "excel-mcp-remote",
+      "selected_tool": "copy_worksheet",
+      "top_k": [
+        "excel-mcp-remote:copy_worksheet"
+      ],
+      "top_1_correct": true,
+      "top_3_correct": true,
+      "server_correct": true,
+      "schema_valid": true,
+      "candidate_count_before_filter": 48,
+      "candidate_count_after_filter": 1,
+      "elapsed_ms": 1.3714,
+      "actual_contract_tool": "copy_worksheet",
+      "recommended_contract_tool": "copy_worksheet",
+      "audit_matches_actual": true,
+      "inference": {
+        "server_name": "excel-mcp-remote",
+        "scenario": "spreadsheet",
+        "scenario_evidence": [
+          "excel",
+          "工作表"
+        ],
+        "operation_mode": "copy",
+        "operation_evidence": [
+          "复制"
+        ]
+      },
+      "abstention_reason": null
+    },
+    {
+      "id": "excel-11",
+      "kind": "normal",
+      "query": "删除Excel工作表",
+      "expected_server": "excel-mcp-remote",
+      "expected_tool": "delete_worksheet",
+      "selected_server": "excel-mcp-remote",
+      "selected_tool": "delete_worksheet",
+      "top_k": [
+        "excel-mcp-remote:delete_worksheet"
+      ],
+      "top_1_correct": true,
+      "top_3_correct": true,
+      "server_correct": true,
+      "schema_valid": true,
+      "candidate_count_before_filter": 48,
+      "candidate_count_after_filter": 1,
+      "elapsed_ms": 1.5965,
+      "actual_contract_tool": "delete_worksheet",
+      "recommended_contract_tool": "delete_worksheet",
+      "audit_matches_actual": true,
+      "inference": {
+        "server_name": "excel-mcp-remote",
+        "scenario": "spreadsheet",
+        "scenario_evidence": [
+          "excel",
+          "工作表"
+        ],
+        "operation_mode": "delete",
+        "operation_evidence": [
+          "删除"
+        ]
+      },
+      "abstention_reason": null
+    },
+    {
+      "id": "excel-12",
+      "kind": "normal",
+      "query": "重命名Excel工作表",
+      "expected_server": "excel-mcp-remote",
+      "expected_tool": "rename_worksheet",
+      "selected_server": "excel-mcp-remote",
+      "selected_tool": "rename_worksheet",
+      "top_k": [
+        "excel-mcp-remote:rename_worksheet"
+      ],
+      "top_1_correct": true,
+      "top_3_correct": true,
+      "server_correct": true,
+      "schema_valid": true,
+      "candidate_count_before_filter": 48,
+      "candidate_count_after_filter": 1,
+      "elapsed_ms": 1.6895,
+      "actual_contract_tool": "rename_worksheet",
+      "recommended_contract_tool": "rename_worksheet",
+      "audit_matches_actual": true,
+      "inference": {
+        "server_name": "excel-mcp-remote",
+        "scenario": "spreadsheet",
+        "scenario_evidence": [
+          "excel",
+          "工作表"
+        ],
+        "operation_mode": "update",
+        "operation_evidence": [
+          "重命名"
+        ]
+      },
+      "abstention_reason": null
+    },
+    {
+      "id": "excel-13",
+      "kind": "normal",
+      "query": "查询Excel工作簿信息",
+      "expected_server": "excel-mcp-remote",
+      "expected_tool": "get_workbook_metadata",
+      "selected_server": "excel-mcp-remote",
+      "selected_tool": "get_workbook_metadata",
+      "top_k": [
+        "excel-mcp-remote:get_workbook_metadata"
+      ],
+      "top_1_correct": true,
+      "top_3_correct": true,
+      "server_correct": true,
+      "schema_valid": true,
+      "candidate_count_before_filter": 48,
+      "candidate_count_after_filter": 1,
+      "elapsed_ms": 1.4399,
+      "actual_contract_tool": "get_workbook_metadata",
+      "recommended_contract_tool": "get_workbook_metadata",
+      "audit_matches_actual": true,
+      "inference": {
+        "server_name": "excel-mcp-remote",
+        "scenario": "spreadsheet",
+        "scenario_evidence": [
+          "excel",
+          "工作簿"
+        ],
+        "operation_mode": "query",
+        "operation_evidence": [
+          "查询"
+        ]
+      },
+      "abstention_reason": null
+    },
+    {
+      "id": "excel-14",
+      "kind": "normal",
+      "query": "合并Excel单元格",
+      "expected_server": "excel-mcp-remote",
+      "expected_tool": "merge_cells",
+      "selected_server": "excel-mcp-remote",
+      "selected_tool": "merge_cells",
+      "top_k": [
+        "excel-mcp-remote:merge_cells",
+        "excel-mcp-remote:unmerge_cells",
+        "excel-mcp-remote:delete_range"
+      ],
+      "top_1_correct": true,
+      "top_3_correct": true,
+      "server_correct": true,
+      "schema_valid": true,
+      "candidate_count_before_filter": 48,
+      "candidate_count_after_filter": 10,
+      "elapsed_ms": 1.407,
+      "actual_contract_tool": "merge_cells",
+      "recommended_contract_tool": "merge_cells",
+      "audit_matches_actual": true,
+      "inference": {
+        "server_name": "excel-mcp-remote",
+        "scenario": "spreadsheet",
+        "scenario_evidence": [
+          "excel",
+          "单元格"
+        ],
+        "operation_mode": null,
+        "operation_evidence": []
+      },
+      "abstention_reason": null
+    },
+    {
+      "id": "excel-15",
+      "kind": "normal",
+      "query": "取消合并Excel单元格",
+      "expected_server": "excel-mcp-remote",
+      "expected_tool": "unmerge_cells",
+      "selected_server": "excel-mcp-remote",
+      "selected_tool": "unmerge_cells",
+      "top_k": [
+        "excel-mcp-remote:unmerge_cells"
+      ],
+      "top_1_correct": true,
+      "top_3_correct": true,
+      "server_correct": true,
+      "schema_valid": true,
+      "candidate_count_before_filter": 48,
+      "candidate_count_after_filter": 1,
+      "elapsed_ms": 1.6587,
+      "actual_contract_tool": "unmerge_cells",
+      "recommended_contract_tool": "unmerge_cells",
+      "audit_matches_actual": true,
+      "inference": {
+        "server_name": "excel-mcp-remote",
+        "scenario": "spreadsheet",
+        "scenario_evidence": [
+          "excel",
+          "单元格"
+        ],
+        "operation_mode": "unmerge",
+        "operation_evidence": [
+          "取消合并"
+        ]
+      },
+      "abstention_reason": null
+    },
+    {
+      "id": "excel-16",
+      "kind": "normal",
+      "query": "复制Excel区域",
+      "expected_server": "excel-mcp-remote",
+      "expected_tool": "copy_range",
+      "selected_server": "excel-mcp-remote",
+      "selected_tool": "copy_range",
+      "top_k": [
+        "excel-mcp-remote:copy_range"
+      ],
+      "top_1_correct": true,
+      "top_3_correct": true,
+      "server_correct": true,
+      "schema_valid": true,
+      "candidate_count_before_filter": 48,
+      "candidate_count_after_filter": 1,
+      "elapsed_ms": 1.6154,
+      "actual_contract_tool": "copy_range",
+      "recommended_contract_tool": "copy_range",
+      "audit_matches_actual": true,
+      "inference": {
+        "server_name": "excel-mcp-remote",
+        "scenario": "spreadsheet",
+        "scenario_evidence": [
+          "excel"
+        ],
+        "operation_mode": "copy",
+        "operation_evidence": [
+          "复制"
+        ]
+      },
+      "abstention_reason": null
+    },
+    {
+      "id": "excel-17",
+      "kind": "normal",
+      "query": "删除Excel区域",
+      "expected_server": "excel-mcp-remote",
+      "expected_tool": "delete_range",
+      "selected_server": "excel-mcp-remote",
+      "selected_tool": "delete_range",
+      "top_k": [
+        "excel-mcp-remote:delete_range",
+        "excel-mcp-remote:delete_worksheet"
+      ],
+      "top_1_correct": true,
+      "top_3_correct": true,
+      "server_correct": true,
+      "schema_valid": true,
+      "candidate_count_before_filter": 48,
+      "candidate_count_after_filter": 2,
+      "elapsed_ms": 1.4984,
+      "actual_contract_tool": "delete_range",
+      "recommended_contract_tool": "delete_range",
+      "audit_matches_actual": true,
+      "inference": {
+        "server_name": "excel-mcp-remote",
+        "scenario": "spreadsheet",
+        "scenario_evidence": [
+          "excel"
+        ],
+        "operation_mode": "delete",
+        "operation_evidence": [
+          "删除"
+        ]
+      },
+      "abstention_reason": null
+    },
+    {
+      "id": "excel-18",
+      "kind": "normal",
+      "query": "校验Excel区域",
+      "expected_server": "excel-mcp-remote",
+      "expected_tool": "validate_excel_range",
+      "selected_server": "excel-mcp-remote",
+      "selected_tool": "validate_excel_range",
+      "top_k": [
+        "excel-mcp-remote:validate_excel_range"
+      ],
+      "top_1_correct": true,
+      "top_3_correct": true,
+      "server_correct": true,
+      "schema_valid": true,
+      "candidate_count_before_filter": 48,
+      "candidate_count_after_filter": 1,
+      "elapsed_ms": 1.3936,
+      "actual_contract_tool": "validate_excel_range",
+      "recommended_contract_tool": "validate_excel_range",
+      "audit_matches_actual": true,
+      "inference": {
+        "server_name": "excel-mcp-remote",
+        "scenario": "spreadsheet",
+        "scenario_evidence": [
+          "excel"
+        ],
+        "operation_mode": "validate",
+        "operation_evidence": [
+          "校验"
+        ]
+      },
+      "abstention_reason": null
+    },
+    {
+      "id": "ambiguous-01",
+      "kind": "ambiguous",
+      "query": "查询员工信息",
+      "expected_server": "office-mcp",
+      "expected_tool": "search_employees",
+      "selected_server": "office-mcp",
+      "selected_tool": "search_employees",
+      "top_k": [
+        "office-mcp:search_employees",
+        "office-mcp:get_employee_contact",
+        "office-mcp:get_employee_profile"
+      ],
+      "top_1_correct": true,
+      "top_3_correct": true,
+      "server_correct": true,
+      "schema_valid": true,
+      "candidate_count_before_filter": 48,
+      "candidate_count_after_filter": 4,
+      "elapsed_ms": 1.5524,
+      "actual_contract_tool": "remote_person_info_tool",
+      "recommended_contract_tool": "remote_person_info_tool",
+      "audit_matches_actual": true,
+      "inference": {
+        "server_name": "office-mcp",
+        "scenario": "personnel",
+        "scenario_evidence": [
+          "员工"
+        ],
+        "operation_mode": "query",
+        "operation_evidence": [
+          "查询"
+        ]
+      },
+      "abstention_reason": null
+    },
+    {
+      "id": "missing-01",
+      "kind": "insufficient",
+      "query": "发送邮件",
+      "expected_server": null,
+      "expected_tool": null,
+      "selected_server": "office-mcp",
+      "selected_tool": null,
+      "top_k": [],
+      "top_1_correct": false,
+      "top_3_correct": false,
+      "server_correct": false,
+      "schema_valid": null,
+      "candidate_count_before_filter": 48,
+      "candidate_count_after_filter": 0,
+      "elapsed_ms": 1.524,
+      "actual_contract_tool": null,
+      "recommended_contract_tool": null,
+      "audit_matches_actual": false,
+      "inference": {
+        "server_name": "office-mcp",
+        "scenario": "messaging",
+        "scenario_evidence": [
+          "邮件"
+        ],
+        "operation_mode": "send",
+        "operation_evidence": [
+          "发送"
+        ]
+      },
+      "abstention_reason": "best_semantic_candidate_failed_schema"
+    },
+    {
+      "id": "missing-02",
+      "kind": "insufficient",
+      "query": "创建会议",
+      "expected_server": null,
+      "expected_tool": null,
+      "selected_server": "office-mcp",
+      "selected_tool": null,
+      "top_k": [],
+      "top_1_correct": false,
+      "top_3_correct": false,
+      "server_correct": false,
+      "schema_valid": null,
+      "candidate_count_before_filter": 48,
+      "candidate_count_after_filter": 0,
+      "elapsed_ms": 1.3005,
+      "actual_contract_tool": null,
+      "recommended_contract_tool": null,
+      "audit_matches_actual": false,
+      "inference": {
+        "server_name": "office-mcp",
+        "scenario": "meeting",
+        "scenario_evidence": [
+          "会议"
+        ],
+        "operation_mode": "create",
+        "operation_evidence": [
+          "创建"
+        ]
+      },
+      "abstention_reason": "best_semantic_candidate_failed_schema"
+    },
+    {
+      "id": "unknown-01",
+      "kind": "unknown",
+      "query": "生成增值税发票",
+      "expected_server": null,
+      "expected_tool": null,
+      "selected_server": null,
+      "selected_tool": null,
+      "top_k": [],
+      "top_1_correct": false,
+      "top_3_correct": false,
+      "server_correct": false,
+      "schema_valid": null,
+      "candidate_count_before_filter": 48,
+      "candidate_count_after_filter": 0,
+      "elapsed_ms": 1.259,
+      "actual_contract_tool": null,
+      "recommended_contract_tool": null,
+      "audit_matches_actual": false,
+      "inference": {
+        "server_name": null,
+        "scenario": null,
+        "scenario_evidence": [],
+        "operation_mode": "create",
+        "operation_evidence": [
+          "生成"
+        ]
+      },
+      "abstention_reason": "best_semantic_candidate_failed_schema"
+    },
+    {
+      "id": "unknown-02",
+      "kind": "unknown",
+      "query": "archive_office_document",
+      "expected_server": null,
+      "expected_tool": null,
+      "selected_server": null,
+      "selected_tool": null,
+      "top_k": [
+        "office-mcp:get_employee_contact",
+        "office-mcp:get_employee_profile",
+        "office-mcp:get_learning_record"
+      ],
+      "top_1_correct": false,
+      "top_3_correct": false,
+      "server_correct": false,
+      "schema_valid": null,
+      "candidate_count_before_filter": 48,
+      "candidate_count_after_filter": 10,
+      "elapsed_ms": 1.2416,
+      "actual_contract_tool": null,
+      "recommended_contract_tool": null,
+      "audit_matches_actual": false,
+      "inference": {
+        "server_name": null,
+        "scenario": null,
+        "scenario_evidence": [],
+        "operation_mode": null,
+        "operation_evidence": []
+      },
+      "abstention_reason": "no_semantic_match_or_schema_valid_candidate"
+    }
+  ]
+}

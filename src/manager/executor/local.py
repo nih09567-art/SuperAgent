@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 
 from .base import AgentExecutor, ExecuteResult, ExecutionContext, ExecutionStatus
 from src.manager.registry import ToolRegistry
+from src.manager.registry.tool_selection_service import ToolSelectionService
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.WARNING)
@@ -21,6 +22,15 @@ class LocalExecutor(AgentExecutor):
         super().__init__()
         self._tool_registry: Optional[ToolRegistry] = None
         self._agent_cache: Dict[str, Any] = {}
+        self._tool_selection_service = ToolSelectionService()
+
+    @staticmethod
+    def _runtime_tool_names(tools: List[Any]) -> List[str]:
+        return [
+            str(getattr(tool, "name", "") or "")
+            for tool in tools
+            if str(getattr(tool, "name", "") or "")
+        ]
 
     @staticmethod
     def _is_direct_programming_learning(context: ExecutionContext) -> bool:
@@ -223,11 +233,17 @@ class LocalExecutor(AgentExecutor):
                 return ExecuteResult(status=ExecutionStatus.FAILED, error="Agent validation failed")
 
             tools = await self.load_tools(agent)
-
             # 编程学习/知识问答应直接由模型回答。为这类任务挂载终端工具会诱导
             # ReAct Agent 反复探测本地环境，既无助于答案，也容易触发递归上限。
             if self._is_direct_programming_learning(context):
                 tools = []
+
+            await self._tool_selection_service.audit(
+                agent_name=agent.agent_name,
+                messages=messages,
+                context=context,
+                actual_tool_names=self._runtime_tool_names(tools),
+            )
 
             from langgraph.prebuilt import create_react_agent
 
@@ -275,6 +291,11 @@ class LocalExecutor(AgentExecutor):
                     "workflow_id": context.workflow_id,
                     "workflow_mode": context.workflow_mode,
                     "tool_count": len(secure_tools),
+                    **(
+                        {"tool_selection_audit": context.metadata["tool_selection_audit"]}
+                        if "tool_selection_audit" in context.metadata
+                        else {}
+                    ),
                 },
             )
 
@@ -308,6 +329,13 @@ class LocalExecutor(AgentExecutor):
 
             if self._is_direct_programming_learning(context):
                 tools = []
+
+            await self._tool_selection_service.audit(
+                agent_name=agent.agent_name,
+                messages=messages,
+                context=context,
+                actual_tool_names=self._runtime_tool_names(tools),
+            )
 
             from langgraph.prebuilt import create_react_agent
 
@@ -353,6 +381,11 @@ class LocalExecutor(AgentExecutor):
                     "agent_name": agent.agent_name,
                     "duration": duration,
                     "tool_count": len(secure_tools),
+                    **(
+                        {"tool_selection_audit": context.metadata["tool_selection_audit"]}
+                        if "tool_selection_audit" in context.metadata
+                        else {}
+                    ),
                 },
             )
 

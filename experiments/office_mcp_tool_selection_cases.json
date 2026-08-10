@@ -1,0 +1,65 @@
+{
+  "dataset_version": "1.0",
+  "cases": [
+    {"id": "normal-01", "kind": "normal", "query": "搜索员工王强", "agent_name": "RemoteHRAssistantAgent", "known_inputs": {"keyword": "王强", "limit": 3}, "expected_tool": "search_employees"},
+    {"id": "normal-02", "kind": "normal", "query": "查看员工档案", "agent_name": "RemoteHRAssistantAgent", "known_inputs": {"employee_name": "王强"}, "expected_tool": "get_employee_profile"},
+    {"id": "normal-03", "kind": "normal", "query": "查询部门成员", "agent_name": "RemoteHRAssistantAgent", "known_inputs": {"department": "人力资源部"}, "expected_tool": "get_org_unit"},
+    {"id": "normal-04", "kind": "normal", "query": "查看王强的汇报链", "agent_name": "RemoteHRAssistantAgent", "known_inputs": {"employee_name": "王强"}, "expected_tool": "get_manager_chain"},
+    {"id": "normal-05", "kind": "normal", "query": "查询员工联系方式", "agent_name": "RemoteHRAssistantAgent", "known_inputs": {"name": "王强"}, "expected_tool": "get_employee_contact"},
+
+    {"id": "normal-06", "kind": "normal", "query": "查询日程列表", "agent_name": "RemoteHRCalendarAgent", "known_inputs": {"start_date": "2026-08-18", "end_date": "2026-08-18"}, "expected_tool": "list_calendar_events"},
+    {"id": "normal-07", "kind": "normal", "query": "查找日历空闲时间", "agent_name": "RemoteHRCalendarAgent", "known_inputs": {"target_date": "2026-08-18"}, "expected_tool": "find_free_slots"},
+    {"id": "normal-08", "kind": "normal", "query": "创建日程", "agent_name": "RemoteHRCalendarAgent", "known_inputs": {"summary": "培训", "start_date": "2026-08-19"}, "expected_tool": "create_calendar_event"},
+    {"id": "normal-09", "kind": "normal", "query": "更新日程", "agent_name": "RemoteHRCalendarAgent", "known_inputs": {"event_id": "event-001", "summary": "更新例会"}, "expected_tool": "update_calendar_event"},
+    {"id": "normal-10", "kind": "normal", "query": "取消日程", "agent_name": "RemoteHRCalendarAgent", "known_inputs": {"event_id": "event-001"}, "expected_tool": "cancel_calendar_event"},
+
+    {"id": "normal-11", "kind": "normal", "query": "搜索课程", "agent_name": "RemoteKnowledgeAgent", "known_inputs": {"query": "大模型"}, "expected_tool": "search_courses"},
+    {"id": "normal-12", "kind": "normal", "query": "查看课程详情", "agent_name": "RemoteKnowledgeAgent", "known_inputs": {"course_id": "COURSE-002"}, "expected_tool": "get_course_detail"},
+    {"id": "normal-13", "kind": "normal", "query": "列出课程场次", "agent_name": "RemoteKnowledgeAgent", "known_inputs": {"course_id": "COURSE-002"}, "expected_tool": "list_course_sessions"},
+    {"id": "normal-14", "kind": "normal", "query": "报名课程", "agent_name": "RemoteKnowledgeAgent", "known_inputs": {"employee_id": "86000103", "employee_name": "王强", "course_id": "COURSE-002", "session_id": "SESSION-002"}, "expected_tool": "enroll_course"},
+    {"id": "normal-15", "kind": "normal", "query": "查询学习记录", "agent_name": "RemoteKnowledgeAgent", "known_inputs": {"employee_id": "86000103"}, "expected_tool": "get_learning_record"},
+
+    {"id": "normal-16", "kind": "normal", "query": "查询差旅政策", "agent_name": "RemoteOfficeAssistantAgent", "known_inputs": {"destination": "深圳"}, "expected_tool": "search_travel_policy"},
+    {"id": "normal-17", "kind": "normal", "query": "估算差旅费用", "agent_name": "RemoteOfficeAssistantAgent", "known_inputs": {"destination": "深圳", "days": 2}, "expected_tool": "estimate_trip_cost"},
+    {"id": "normal-18", "kind": "normal", "query": "创建差旅申请", "agent_name": "RemoteOfficeAssistantAgent", "known_inputs": {"employee_id": "86000103", "employee_name": "王强", "destination": "深圳", "start_date": "2026-08-20", "end_date": "2026-08-21"}, "expected_tool": "create_travel_request"},
+    {"id": "normal-19", "kind": "normal", "query": "查询差旅申请", "agent_name": "RemoteOfficeAssistantAgent", "known_inputs": {"employee_id": "86000103"}, "expected_tool": "get_travel_request"},
+    {"id": "normal-20", "kind": "normal", "query": "取消差旅申请", "agent_name": "RemoteOfficeAssistantAgent", "known_inputs": {"record_id": "TRAVEL-001"}, "expected_tool": "cancel_travel_request"},
+
+    {"id": "normal-21", "kind": "normal", "query": "查找会议时段", "agent_name": "RemoteMeetingManagerAgent", "known_inputs": {"target_date": "2026-08-18"}, "expected_tool": "find_meeting_slots"},
+    {"id": "normal-22", "kind": "normal", "query": "创建会议", "agent_name": "RemoteMeetingManagerAgent", "known_inputs": {"title": "项目会", "meeting_date": "2026-08-18", "meeting_time": "14:00", "participants": ["王强"]}, "expected_tool": "create_meeting"},
+    {"id": "normal-23", "kind": "normal", "query": "更新会议", "agent_name": "RemoteMeetingManagerAgent", "known_inputs": {"meeting_id": "meeting-0001", "title": "更新项目会"}, "expected_tool": "update_meeting"},
+    {"id": "normal-24", "kind": "normal", "query": "取消会议", "agent_name": "RemoteMeetingManagerAgent", "known_inputs": {"meeting_id": "meeting-0001"}, "expected_tool": "cancel_meeting"},
+    {"id": "normal-25", "kind": "normal", "query": "查看会议纪要", "agent_name": "RemoteMeetingManagerAgent", "known_inputs": {"meeting_id": "meeting-0001"}, "expected_tool": "get_meeting_minutes"},
+
+    {"id": "normal-26", "kind": "normal", "query": "解析联系人", "agent_name": "RemoteCommunicationAgent", "known_inputs": {"name": "人事部门"}, "expected_tool": "resolve_contacts"},
+    {"id": "normal-27", "kind": "normal", "query": "查看消息模板", "agent_name": "RemoteCommunicationAgent", "known_inputs": {}, "expected_tool": "list_message_templates"},
+    {"id": "normal-28", "kind": "normal", "query": "发送邮件", "agent_name": "RemoteEmailDispatchAgent", "known_inputs": {"to": "hr@example.test", "subject": "通知", "body": "原型已完成"}, "expected_tool": "send_email"},
+    {"id": "normal-29", "kind": "normal", "query": "发送内部消息", "agent_name": "RemoteCommunicationAgent", "known_inputs": {"recipient": "王强", "content": "原型已完成"}, "expected_tool": "send_message"},
+    {"id": "normal-30", "kind": "normal", "query": "查询投递状态", "agent_name": "RemoteEmailDispatchAgent", "known_inputs": {"message_id": "MSG-001"}, "expected_tool": "get_delivery_status"},
+
+    {"id": "excel-01", "kind": "normal", "query": "应用Excel公式", "agent_name": "coder", "known_inputs": {"filepath": "demo.xlsx", "sheet_name": "Sheet1", "cell": "B2", "formula": "=SUM(A1:A2)"}, "expected_server": "excel-mcp-remote", "expected_tool": "apply_formula"},
+    {"id": "excel-02", "kind": "normal", "query": "校验Excel公式", "agent_name": "coder", "known_inputs": {"filepath": "demo.xlsx", "sheet_name": "Sheet1", "cell": "B2", "formula": "=SUM(A1:A2)"}, "expected_server": "excel-mcp-remote", "expected_tool": "validate_formula_syntax"},
+    {"id": "excel-03", "kind": "normal", "query": "格式化Excel区域", "agent_name": "coder", "known_inputs": {"filepath": "demo.xlsx", "sheet_name": "Sheet1", "start_cell": "A1"}, "expected_server": "excel-mcp-remote", "expected_tool": "format_range"},
+    {"id": "excel-04", "kind": "normal", "query": "读取Excel数据", "agent_name": "coder", "known_inputs": {"filepath": "demo.xlsx", "sheet_name": "Sheet1"}, "expected_server": "excel-mcp-remote", "expected_tool": "read_data_from_excel"},
+    {"id": "excel-05", "kind": "normal", "query": "写入Excel数据", "agent_name": "coder", "known_inputs": {"filepath": "demo.xlsx", "sheet_name": "Sheet1", "data": [{"name": "王强"}]}, "expected_server": "excel-mcp-remote", "expected_tool": "write_data_to_excel"},
+    {"id": "excel-06", "kind": "normal", "query": "创建Excel工作簿", "agent_name": "coder", "known_inputs": {"filepath": "demo.xlsx"}, "expected_server": "excel-mcp-remote", "expected_tool": "create_workbook"},
+    {"id": "excel-07", "kind": "normal", "query": "创建Excel工作表", "agent_name": "coder", "known_inputs": {"filepath": "demo.xlsx", "sheet_name": "新表"}, "expected_server": "excel-mcp-remote", "expected_tool": "create_worksheet"},
+    {"id": "excel-08", "kind": "normal", "query": "创建Excel图表", "agent_name": "coder", "known_inputs": {"filepath": "demo.xlsx", "sheet_name": "Sheet1", "data_range": "A1:B5", "chart_type": "bar", "target_cell": "D2"}, "expected_server": "excel-mcp-remote", "expected_tool": "create_chart"},
+    {"id": "excel-09", "kind": "normal", "query": "创建Excel透视表", "agent_name": "coder", "known_inputs": {"filepath": "demo.xlsx", "sheet_name": "Sheet1", "data_range": "A1:C10", "rows": ["部门"], "values": ["金额"]}, "expected_server": "excel-mcp-remote", "expected_tool": "create_pivot_table"},
+    {"id": "excel-10", "kind": "normal", "query": "复制Excel工作表", "agent_name": "coder", "known_inputs": {"filepath": "demo.xlsx", "source_sheet": "Sheet1", "target_sheet": "副本"}, "expected_server": "excel-mcp-remote", "expected_tool": "copy_worksheet"},
+    {"id": "excel-11", "kind": "normal", "query": "删除Excel工作表", "agent_name": "coder", "known_inputs": {"filepath": "demo.xlsx", "sheet_name": "副本"}, "expected_server": "excel-mcp-remote", "expected_tool": "delete_worksheet"},
+    {"id": "excel-12", "kind": "normal", "query": "重命名Excel工作表", "agent_name": "coder", "known_inputs": {"filepath": "demo.xlsx", "old_name": "Sheet1", "new_name": "数据"}, "expected_server": "excel-mcp-remote", "expected_tool": "rename_worksheet"},
+    {"id": "excel-13", "kind": "normal", "query": "查询Excel工作簿信息", "agent_name": "coder", "known_inputs": {"filepath": "demo.xlsx"}, "expected_server": "excel-mcp-remote", "expected_tool": "get_workbook_metadata"},
+    {"id": "excel-14", "kind": "normal", "query": "合并Excel单元格", "agent_name": "coder", "known_inputs": {"filepath": "demo.xlsx", "sheet_name": "Sheet1", "start_cell": "A1", "end_cell": "B1"}, "expected_server": "excel-mcp-remote", "expected_tool": "merge_cells"},
+    {"id": "excel-15", "kind": "normal", "query": "取消合并Excel单元格", "agent_name": "coder", "known_inputs": {"filepath": "demo.xlsx", "sheet_name": "Sheet1", "start_cell": "A1", "end_cell": "B1"}, "expected_server": "excel-mcp-remote", "expected_tool": "unmerge_cells"},
+    {"id": "excel-16", "kind": "normal", "query": "复制Excel区域", "agent_name": "coder", "known_inputs": {"filepath": "demo.xlsx", "sheet_name": "Sheet1", "source_start": "A1", "source_end": "B5", "target_start": "D1"}, "expected_server": "excel-mcp-remote", "expected_tool": "copy_range"},
+    {"id": "excel-17", "kind": "normal", "query": "删除Excel区域", "agent_name": "coder", "known_inputs": {"filepath": "demo.xlsx", "sheet_name": "Sheet1", "start_cell": "A1", "end_cell": "B5"}, "expected_server": "excel-mcp-remote", "expected_tool": "delete_range"},
+    {"id": "excel-18", "kind": "normal", "query": "校验Excel区域", "agent_name": "coder", "known_inputs": {"filepath": "demo.xlsx", "sheet_name": "Sheet1", "start_cell": "A1"}, "expected_server": "excel-mcp-remote", "expected_tool": "validate_excel_range"},
+
+    {"id": "ambiguous-01", "kind": "ambiguous", "query": "查询员工信息", "agent_name": "RemoteHRAssistantAgent", "known_inputs": {"keyword": "王强"}, "expected_tool": "search_employees"},
+    {"id": "missing-01", "kind": "insufficient", "query": "发送邮件", "agent_name": "RemoteEmailDispatchAgent", "known_inputs": {"to": "hr@example.test", "subject": "通知"}, "expected_tool": null, "expected_excluded_tool": "send_email"},
+    {"id": "missing-02", "kind": "insufficient", "query": "创建会议", "agent_name": "RemoteMeetingManagerAgent", "known_inputs": {"title": "项目会", "meeting_date": "2026-08-18"}, "expected_tool": null, "expected_excluded_tool": "create_meeting"},
+    {"id": "unknown-01", "kind": "unknown", "query": "生成增值税发票", "agent_name": null, "known_inputs": {}, "expected_tool": null},
+    {"id": "unknown-02", "kind": "unknown", "query": "archive_office_document", "agent_name": null, "known_inputs": {}, "expected_tool": null}
+  ]
+}

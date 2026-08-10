@@ -14,6 +14,11 @@ except Exception:  # pragma: no cover - optional dependency in lightweight test 
 
 from src.manager.mcp import mcp_client_config
 from src.manager.registry import ToolIdentifier, ToolRegistry, ToolScope, ToolServer
+from src.manager.registry.tool_semantics import (
+    extract_tool_schema,
+    load_mcp_tool_semantics,
+    validate_semantics_against_discovery,
+)
 from src.service.env import USE_BROWSER, USE_MCP_TOOLS
 
 logger = logging.getLogger(__name__)
@@ -121,31 +126,65 @@ class ToolLoader:
                     self._mcp_tools_cache["config_hash"] == config_hash
                     and (now - float(self._mcp_tools_cache["loaded_at"])) < self.cache_ttl_seconds
                 ):
-                    mcp_tools = list(self._mcp_tools_cache["tools"])
+                    discovered_tools = list(self._mcp_tools_cache["tools"])
                 else:
                     client = await self._get_or_create_client(config, config_hash)
-                    mcp_tools = await asyncio.wait_for(client.get_tools(), timeout=self.load_timeout)
+                    discovered_tools = []
+                    for server_name in sorted(config):
+                        server_tools = await asyncio.wait_for(
+                            client.get_tools(server_name=server_name),
+                            timeout=self.load_timeout,
+                        )
+                        discovered_tools.extend(
+                            (server_name, tool) for tool in server_tools
+                        )
                     self._mcp_tools_cache = {
-                        "tools": list(mcp_tools),
+                        "tools": list(discovered_tools),
                         "loaded_at": now,
                         "config_hash": config_hash,
                     }
 
+            semantics = load_mcp_tool_semantics()
+            discovered_keys = {
+                (server_name, str(getattr(tool, "name", "") or ""))
+                for server_name, tool in discovered_tools
+                if str(getattr(tool, "name", "") or "")
+            }
+            configured_semantics = {
+                key: value for key, value in semantics.items() if key[0] in config
+            }
+            semantic_diff = validate_semantics_against_discovery(
+                discovered_keys, configured_semantics
+            )
+            if semantic_diff["missing_semantics"] or semantic_diff["orphan_semantics"]:
+                raise ValueError(f"MCP semantic coverage mismatch: {semantic_diff}")
+
             loaded_count = 0
-            for mcp_tool in mcp_tools:
+            for server_name, mcp_tool in discovered_tools:
                 tool_name = getattr(mcp_tool, "name", "")
                 if not tool_name:
                     continue
-
+                schema = extract_tool_schema(mcp_tool)
+                semantic = semantics[(server_name, tool_name)]
+                if list(semantic.get("required_inputs") or []) != list(
+                    schema.get("required") or []
+                ):
+                    raise ValueError(
+                        f"required_inputs differs from tools/list schema: "
+                        f"{server_name}/{tool_name}"
+                    )
                 identifier = ToolIdentifier(
                     scope=ToolScope.GLOBAL,
-                    server=self._get_mcp_server_name(tool_name),
+                    server=server_name,
                     name=tool_name,
                 )
                 await registry.register_tool(
                     identifier=identifier,
                     tool=mcp_tool,
                     description=getattr(mcp_tool, "description", "") or "",
+                    tags=[f"server:{server_name}", f"scenario:{semantic['scenario']}"],
+                    input_schema=schema,
+                    semantics=semantic,
                 )
                 loaded_count += 1
 
@@ -169,16 +208,24 @@ class ToolLoader:
         try:
             config_hash = self._hash_config(servers)
             mcp_client = await self._get_or_create_client(servers, config_hash)
-            mcp_tools = await asyncio.wait_for(mcp_client.get_tools(), timeout=self.load_timeout)
+            discovered_tools = []
+            for server_name in sorted(servers):
+                server_tools = await asyncio.wait_for(
+                    mcp_client.get_tools(server_name=server_name),
+                    timeout=self.load_timeout,
+                )
+                discovered_tools.extend((server_name, tool) for tool in server_tools)
 
-            for mcp_tool in mcp_tools:
+            semantics = load_mcp_tool_semantics()
+            for server_name, mcp_tool in discovered_tools:
                 tool_name = getattr(mcp_tool, "name", "")
                 if not tool_name:
                     continue
-
+                semantic = semantics.get((server_name, tool_name), {})
+                schema = extract_tool_schema(mcp_tool)
                 identifier = ToolIdentifier(
                     scope=ToolScope.AGENT,
-                    server=self._get_mcp_server_name(tool_name),
+                    server=server_name,
                     name=tool_name,
                 )
                 await registry.register_agent_tool(
@@ -186,6 +233,9 @@ class ToolLoader:
                     identifier=identifier,
                     tool=mcp_tool,
                     description=getattr(mcp_tool, "description", "") or "",
+                    tags=[f"server:{server_name}"],
+                    input_schema=schema,
+                    semantics=semantic,
                 )
                 loaded_count += 1
 
