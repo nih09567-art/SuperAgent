@@ -64,6 +64,11 @@ from src.skills.execution_evidence import (
     evaluate_distillation_evidence,
     load_execution_evidence,
 )
+from src.service.employee_travel import (
+    EmployeeTravelService,
+    TRAVEL_FIELDS,
+    handle_travel_turn,
+)
 
 
 class NoStoreStaticFiles(StaticFiles):
@@ -692,6 +697,28 @@ class PlanningStepsRequest(BaseModel):
     planning_steps: list[dict[str, Any]]
 
 
+class TravelTurnRequest(BaseModel):
+    user_id: str = Field(min_length=1, max_length=128)
+    conversation_id: str = Field(min_length=1, max_length=256)
+    message: str = Field(min_length=1, max_length=4000)
+    state: dict[str, Any] = Field(default_factory=dict)
+
+
+class TravelConfirmRequest(BaseModel):
+    user_id: str = Field(min_length=1, max_length=128)
+    plan_id: str = Field(min_length=1, max_length=256)
+    draft: dict[str, Any]
+
+
+class TravelUpdateRequest(BaseModel):
+    user_id: str = Field(min_length=1, max_length=128)
+    changes: dict[str, Any]
+
+
+class TravelCancelRequest(BaseModel):
+    user_id: str = Field(min_length=1, max_length=128)
+
+
 def _format_datetime(dt: Optional[datetime]) -> Optional[str]:
     if dt is None:
         return None
@@ -793,6 +820,9 @@ def create_app() -> FastAPI:
     app = FastAPI(title="CoorAgent Web", version="0.1.0")
 
     project_root = get_project_root()
+    travel_service = EmployeeTravelService(
+        project_root / "store" / "employee_travel_requests.json"
+    )
     web_dir = project_root / "web"
     if not web_dir.exists():
         web_dir.mkdir(parents=True, exist_ok=True)
@@ -1550,6 +1580,89 @@ def create_app() -> FastAPI:
         response.headers["X-Total-Pages"] = str(total_pages)
 
         return paged
+
+    # ---- Minimal employee travel scenario API ----
+
+    @app.post("/api/travel/turn")
+    async def travel_turn(body: TravelTurnRequest):
+        try:
+            return handle_travel_turn(
+                travel_service,
+                user_id=body.user_id,
+                conversation_id=body.conversation_id,
+                message=body.message,
+                state=body.state,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc.args[0])) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/travel/confirm")
+    async def confirm_travel_plan(body: TravelConfirmRequest):
+        try:
+            record, created = travel_service.create(
+                user_id=body.user_id,
+                draft=body.draft,
+                plan_id=body.plan_id,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {
+            "kind": "records",
+            "message": "差旅申请已创建。" if created else "该差旅计划已经创建，无需重复执行。",
+            "state": None,
+            "records": [record],
+            "created": created,
+        }
+
+    @app.get("/api/travel/requests")
+    async def list_travel_requests(
+        user_id: str,
+        employee_name: str = "",
+        travel_date: str = "",
+        destination: str = "",
+        status: str = "",
+        request_id: str = "",
+    ):
+        return {
+            "records": travel_service.query(
+                user_id=user_id,
+                employee_name=employee_name,
+                travel_date=travel_date,
+                destination=destination,
+                status=status,
+                request_id=request_id,
+            )
+        }
+
+    @app.put("/api/travel/requests/{request_id}")
+    async def update_travel_request(request_id: str, body: TravelUpdateRequest):
+        changes = {
+            key: value for key, value in body.changes.items() if key in TRAVEL_FIELDS
+        }
+        try:
+            record = travel_service.update(
+                user_id=body.user_id,
+                request_id=request_id,
+                changes=changes,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc.args[0])) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"record": record}
+
+    @app.post("/api/travel/requests/{request_id}/cancel")
+    async def cancel_travel_request(request_id: str, body: TravelCancelRequest):
+        try:
+            record = travel_service.cancel(
+                user_id=body.user_id,
+                request_id=request_id,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc.args[0])) from exc
+        return {"record": record}
 
     @app.get("/api/workflows/{workflow_id}")
     async def get_workflow(workflow_id: str):

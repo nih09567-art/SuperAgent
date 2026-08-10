@@ -331,9 +331,15 @@ const initializeChatPanelLayout = () => {
     if (!button) return;
     const actions = [
       "chat-plan-confirm", "chat-plan-modify", "chat-plan-revision-apply", "chat-plan-revision-cancel",
+      "travel-confirm-button",
     ];
     const action = actions.find((className) => button.classList.contains(className));
-    if (action) chatConversation.querySelector(`#answer .${action}`)?.click();
+    if (action === "travel-confirm-button") {
+      const sourceButton = chatConversation.querySelector("#answer .travel-confirm-button");
+      void confirmTravelPlan(sourceButton);
+    } else if (action) {
+      chatConversation.querySelector(`#answer .${action}`)?.click();
+    }
     schedule();
   });
 
@@ -398,6 +404,8 @@ let activeConversationTranscript = [];
 let activeConversationId = null;
 let activeConversationCreatedAt = null;
 let activePendingPlan = null;
+let activeTravelScenario = null;
+let travelRequestInProgress = false;
 let runningConversationId = null;
 let viewedConversationId = null;
 let runningConversationNodes = null;
@@ -824,6 +832,178 @@ const showAssistantText = (message) => {
   scrollChatToLatest();
 };
 
+const TRAVEL_FIELD_LABELS = {
+  employee_name: "员工",
+  origin: "出发地",
+  destination: "目的地",
+  start_date: "出发日期",
+  end_date: "返回日期",
+  purpose: "事由",
+  project_or_cost_center: "项目或成本中心",
+  transport_preference: "交通偏好",
+  accommodation_standard: "住宿标准",
+};
+
+const cloneTravelData = (value) => {
+  if (!value || typeof value !== "object") return null;
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch (error) {
+    console.warn("Failed to clone employee travel data:", error);
+    return null;
+  }
+};
+
+const normalizeTravelScenario = (value) => {
+  const normalized = cloneTravelData(value);
+  if (!normalized || !["collecting", "pending_confirmation"].includes(normalized.mode)) return null;
+  normalized.draft = normalized.draft && typeof normalized.draft === "object"
+    ? normalized.draft
+    : {};
+  return normalized;
+};
+
+const formatTravelMoney = (value) => `¥${Number(value || 0).toLocaleString("zh-CN", {
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+})}`;
+
+const appendTravelDetailTable = (container, draft) => {
+  const table = document.createElement("table");
+  table.className = "travel-detail-table";
+  const body = document.createElement("tbody");
+  Object.entries(TRAVEL_FIELD_LABELS).forEach(([field, label]) => {
+    const row = document.createElement("tr");
+    const header = document.createElement("th");
+    const value = document.createElement("td");
+    header.scope = "row";
+    header.textContent = label;
+    value.textContent = String(draft?.[field] || "-");
+    row.append(header, value);
+    body.appendChild(row);
+  });
+  table.appendChild(body);
+  const wrapper = document.createElement("div");
+  wrapper.className = "travel-table-wrapper";
+  wrapper.appendChild(table);
+  container.appendChild(wrapper);
+};
+
+const appendTravelBudget = (container, budget) => {
+  if (!budget) return;
+  const section = document.createElement("section");
+  section.className = "travel-budget";
+  const title = document.createElement("h4");
+  title.textContent = "预算预估";
+  const items = document.createElement("div");
+  items.className = "travel-budget-grid";
+  [
+    ["交通费", budget.transport],
+    ["住宿费", budget.accommodation],
+    ["补贴", budget.allowance],
+    ["预计总额", budget.total],
+  ].forEach(([label, value], index) => {
+    const item = document.createElement("div");
+    if (index === 3) item.classList.add("total");
+    const itemLabel = document.createElement("span");
+    const itemValue = document.createElement("strong");
+    itemLabel.textContent = label;
+    itemValue.textContent = formatTravelMoney(value);
+    item.append(itemLabel, itemValue);
+    items.appendChild(item);
+  });
+  section.append(title, items);
+  if (budget.note) {
+    const note = document.createElement("p");
+    note.className = "travel-budget-note";
+    note.textContent = budget.note;
+    section.appendChild(note);
+  }
+  container.appendChild(section);
+};
+
+const appendTravelRecords = (container, records) => {
+  if (!Array.isArray(records) || !records.length) return;
+  const wrapper = document.createElement("div");
+  wrapper.className = "travel-table-wrapper";
+  const table = document.createElement("table");
+  table.className = "travel-records-table";
+  const head = document.createElement("thead");
+  const headerRow = document.createElement("tr");
+  ["申请编号", "员工", "行程", "日期", "预算总额", "状态"].forEach((label) => {
+    const cell = document.createElement("th");
+    cell.scope = "col";
+    cell.textContent = label;
+    headerRow.appendChild(cell);
+  });
+  head.appendChild(headerRow);
+  const body = document.createElement("tbody");
+  records.forEach((record) => {
+    const row = document.createElement("tr");
+    [
+      record.request_id,
+      record.employee_name,
+      `${record.origin || "-"} → ${record.destination || "-"}`,
+      `${record.start_date || "-"} 至 ${record.end_date || "-"}`,
+      formatTravelMoney(record.budget?.total),
+      record.status,
+    ].forEach((value) => {
+      const cell = document.createElement("td");
+      cell.textContent = String(value || "-");
+      row.appendChild(cell);
+    });
+    body.appendChild(row);
+  });
+  table.append(head, body);
+  wrapper.appendChild(table);
+  container.appendChild(wrapper);
+};
+
+const renderTravelResponse = (payload, interactive = true) => {
+  if (!answerOutput || !payload) return;
+  answerOutput.replaceChildren();
+  answerOutput.classList.remove("is-empty");
+  answerOutput.removeAttribute("data-empty-text");
+  currentChatLifecycle = null;
+
+  const root = document.createElement("div");
+  root.className = "travel-response";
+  const message = document.createElement("p");
+  message.className = "travel-response-message";
+  message.textContent = String(payload.message || "");
+  root.appendChild(message);
+
+  if (payload.kind === "plan") {
+    const title = document.createElement("h3");
+    title.textContent = "员工差旅计划";
+    root.insertBefore(title, message);
+    appendTravelDetailTable(root, payload.draft || payload.state?.draft || {});
+    appendTravelBudget(root, payload.budget || payload.state?.budget);
+    if (interactive) {
+      const actions = document.createElement("div");
+      actions.className = "travel-actions";
+      const confirmButton = document.createElement("button");
+      confirmButton.type = "button";
+      confirmButton.className = "travel-confirm-button";
+      confirmButton.textContent = "确认执行";
+      confirmButton.disabled = false;
+      confirmButton.addEventListener("click", () => confirmTravelPlan(confirmButton));
+      actions.appendChild(confirmButton);
+      root.appendChild(actions);
+    }
+  } else if (payload.kind === "records") {
+    appendTravelRecords(root, payload.records || []);
+  }
+
+  answerOutput.appendChild(root);
+  scrollChatToLatest();
+};
+
+const isTravelScenarioRequest = (message) => Boolean(
+  activeTravelScenario
+  || /差旅|出差|\bTR-\d{8}-[A-Z0-9]{6}\b/i.test(String(message || ""))
+);
+
 const parseClarification = (content) => {
   const match = String(content || "").match(/^\s*(?:\[?CLARIFY\]?)\s*[:：]\s*([\s\S]+)$/i);
   return match ? match[1].trim() : "";
@@ -887,6 +1067,9 @@ const rememberPendingClarification = (eventData, question = "") => {
 };
 
 const applyConversationMessageMetadata = (message, metadata = {}) => {
+  if (metadata.travelPayload) {
+    message.travelPayload = cloneTravelData(metadata.travelPayload);
+  }
   if (Array.isArray(metadata.results) && metadata.results.length) {
     message.results = metadata.results
       .filter((result) => result && String(result.content || "").trim())
@@ -1351,6 +1534,7 @@ const normalizeStoredConversation = (conversation) => {
       : [],
     decisions,
     pendingPlan: normalizePendingPlan(conversation.pendingPlan),
+    travelScenario: normalizeTravelScenario(conversation.travelScenario),
     messages,
   };
 };
@@ -1427,6 +1611,7 @@ const saveActiveConversation = () => {
       eventData: cloneDecisionEventData(decision.eventData),
     })),
     pendingPlan: normalizePendingPlan(activePendingPlan),
+    travelScenario: normalizeTravelScenario(activeTravelScenario),
     messages: activeConversationTranscript.map((message) => ({ ...message })),
   });
   persistChatHistory(userId, conversations);
@@ -1495,6 +1680,10 @@ const parseHistoricalAgentResults = (content) => {
 
 const renderLoadedAssistantMessage = (message) => {
   const content = String(message?.content || "");
+  if (message?.travelPayload) {
+    renderTravelResponse(message.travelPayload, false);
+    return;
+  }
   const results = Array.isArray(message?.results) && message.results.length
     ? message.results
     : parseHistoricalAgentResults(content);
@@ -1756,6 +1945,7 @@ const loadConversation = (conversation) => {
     : [];
   const recoveredPlan = recoverInterruptedPendingPlan(normalized.pendingPlan);
   activePendingPlan = recoveredPlan.pendingPlan;
+  activeTravelScenario = normalizeTravelScenario(normalized.travelScenario);
   if (recoveredPlan.recovered) {
     persistRecoveredPendingPlan(activeConversationUserId, normalized.id, activePendingPlan);
   }
@@ -1767,6 +1957,12 @@ const loadConversation = (conversation) => {
   resetSummary();
   resetPlan();
   renderLoadedConversation(activeConversationTranscript);
+  if (activeTravelScenario?.mode === "pending_confirmation") {
+    const latestTravelPayload = [...activeConversationTranscript]
+      .reverse()
+      .find((message) => message.travelPayload)?.travelPayload;
+    if (latestTravelPayload?.kind === "plan") renderTravelResponse(latestTravelPayload, true);
+  }
   if (activePendingPlan) {
     planSteps = activePendingPlan.steps.map((step) => normalizeStep(step));
     renderPlanSummary(planSteps);
@@ -1840,6 +2036,7 @@ const resetActiveConversation = (userId = userIdInput.value.trim()) => {
   viewedConversationId = null;
   activeConversationCreatedAt = null;
   activePendingPlan = null;
+  activeTravelScenario = null;
   activeConversationTaskIds = new Set();
   instructionHistory = [];
   originalUserQuery = "";
@@ -4586,7 +4783,111 @@ const handleEvent = (eventName, payload) => {
   }
 };
 
+const runTravelTurn = async (userId, message) => {
+  if (travelRequestInProgress) return;
+  if (activeConversationUserId !== userId) resetActiveConversation(userId);
+  activeConversationUserId = userId;
+  activePendingPlan = null;
+  appendActiveConversationMessage("user", message);
+  showCurrentChatTurn(message);
+  messageInput.value = "";
+  resizeMessageInput();
+
+  travelRequestInProgress = true;
+  runBtn.disabled = true;
+  userIdInput.disabled = true;
+  if (newConversationBtn) newConversationBtn.disabled = true;
+  setStatus("处理中", true);
+  try {
+    const response = await fetch("/api/travel/turn", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        user_id: userId,
+        conversation_id: activeConversationId,
+        message,
+        state: activeTravelScenario || {},
+      }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
+    activeTravelScenario = normalizeTravelScenario(data.state);
+    renderTravelResponse(data, true);
+    appendActiveConversationMessage("assistant", data.message || "差旅请求已处理。", {
+      travelPayload: data,
+    });
+    setStatus(data.kind === "plan" ? "等待确认" : "已完成", true);
+    if (data.kind === "clarification") messageInput.focus();
+  } catch (error) {
+    const failure = `差旅请求处理失败：${error.message || error}`;
+    showAssistantText(failure);
+    appendActiveConversationMessage("assistant", failure);
+    setStatus("处理失败", false);
+  } finally {
+    travelRequestInProgress = false;
+    runBtn.disabled = false;
+    userIdInput.disabled = false;
+    if (newConversationBtn) newConversationBtn.disabled = false;
+  }
+};
+
+const confirmTravelPlan = async (button) => {
+  const scenario = normalizeTravelScenario(activeTravelScenario);
+  const userId = activeConversationUserId || userIdInput.value.trim();
+  if (travelRequestInProgress || scenario?.mode !== "pending_confirmation" || !userId) return;
+  travelRequestInProgress = true;
+  if (button) {
+    button.disabled = true;
+    button.textContent = "执行中...";
+  }
+  setStatus("正在创建差旅申请", true);
+  try {
+    const response = await fetch("/api/travel/confirm", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        user_id: userId,
+        plan_id: scenario.plan_id,
+        draft: scenario.draft,
+      }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
+    activeTravelScenario = null;
+    renderTravelResponse(data, false);
+    replaceLatestAssistantConversationMessage(data.message || "差旅申请已创建。", {
+      travelPayload: data,
+      outcomeStatus: "succeeded",
+    });
+    setStatus("差旅申请已创建", true);
+  } catch (error) {
+    if (button) {
+      button.disabled = false;
+      button.textContent = "确认执行";
+    }
+    setStatus("创建失败", false);
+    window.alert(`差旅申请未创建：${error.message || error}`);
+  } finally {
+    travelRequestInProgress = false;
+  }
+};
+
 const runWorkflow = async () => {
+  if (runBtn.disabled || executionInProgress || currentAbortController || travelRequestInProgress) return;
+  const candidateUserId = userIdInput.value.trim();
+  const candidateMessage = messageInput.value.trim();
+  if (isTravelScenarioRequest(candidateMessage)) {
+    if (!candidateUserId) {
+      setStatus("User ID required", false);
+      return;
+    }
+    if (!candidateMessage) {
+      setStatus("Message required", false);
+      return;
+    }
+    await runTravelTurn(candidateUserId, candidateMessage);
+    return;
+  }
   if (!runtimeCanRun) {
     setStatus("Environment not ready", false);
     readinessBanner?.scrollIntoView({ behavior: "smooth", block: "center" });

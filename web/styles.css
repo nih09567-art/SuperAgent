@@ -4217,6 +4217,145 @@ button.danger:hover {
   white-space: pre-wrap;
 }
 
+.travel-response {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.travel-response h3,
+.travel-response h4,
+.travel-response p {
+  margin: 0;
+}
+
+.travel-response h3 {
+  font-size: 15px;
+}
+
+.travel-response-message {
+  color: #3c4658;
+  font-size: 13px;
+}
+
+.travel-table-wrapper {
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid #dfe4ea;
+  border-radius: 7px;
+}
+
+.travel-detail-table,
+.travel-records-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: #fff;
+  font-size: 12px;
+}
+
+.travel-detail-table th,
+.travel-detail-table td,
+.travel-records-table th,
+.travel-records-table td {
+  padding: 9px 10px;
+  border-bottom: 1px solid #e8ebef;
+  text-align: left;
+  vertical-align: top;
+  white-space: nowrap;
+}
+
+.travel-detail-table tr:last-child th,
+.travel-detail-table tr:last-child td,
+.travel-records-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.travel-detail-table th,
+.travel-records-table th {
+  color: #596375;
+  background: #f7f8fa;
+  font-weight: 650;
+}
+
+.travel-detail-table th {
+  width: 132px;
+}
+
+.travel-budget {
+  display: grid;
+  gap: 9px;
+}
+
+.travel-budget h4 {
+  font-size: 13px;
+}
+
+.travel-budget-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(105px, 1fr));
+  border: 1px solid #dfe4ea;
+  border-radius: 7px;
+  overflow: hidden;
+}
+
+.travel-budget-grid > div {
+  display: grid;
+  gap: 4px;
+  padding: 10px;
+  border-right: 1px solid #e8ebef;
+  background: #fff;
+}
+
+.travel-budget-grid > div:last-child {
+  border-right: 0;
+}
+
+.travel-budget-grid span,
+.travel-budget-note {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.travel-budget-grid strong {
+  font-size: 14px;
+}
+
+.travel-budget-grid .total {
+  background: #edf8f4;
+}
+
+.travel-budget-grid .total strong {
+  color: #176b54;
+}
+
+.travel-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.travel-confirm-button {
+  min-height: 34px;
+  padding: 7px 14px;
+  border-color: var(--accent);
+  border-radius: 6px;
+  color: #fff;
+  background: var(--accent);
+}
+
+@media (max-width: 700px) {
+  .travel-budget-grid {
+    grid-template-columns: repeat(2, minmax(105px, 1fr));
+  }
+
+  .travel-budget-grid > div:nth-child(2) {
+    border-right: 0;
+  }
+
+  .travel-budget-grid > div:nth-child(-n + 2) {
+    border-bottom: 1px solid #e8ebef;
+  }
+}
+
 .chat-task-lifecycle {
   display: grid;
   gap: 12px;
