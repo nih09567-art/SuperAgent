@@ -1,0 +1,109 @@
+{
+  "generated_at": "2026-08-10T10:41:04.7805404+08:00",
+  "scope": "MCP tool selection control-plane prototype",
+  "test_evidence": {
+    "command": ".\\.venv\\Scripts\\python.exe -B -m pytest tests\\test_mcp_tool_selection_control_plane.py tests\\test_office_mcp_tool_selector.py tests\\test_office_mcp_prototype.py -q -o addopts= -p no:cacheprovider --basetemp .pytest-defense-mcp-selection",
+    "result": "21 passed in 4.51s"
+  },
+  "live_registry_evidence": {
+    "source": "live MCP tools/list",
+    "generated_at": "2026-08-10T10:38:26.735948+08:00",
+    "server_tools": 48,
+    "registry_tools": 48,
+    "semantic_tools": 48,
+    "by_server": {
+      "excel-mcp-remote": 18,
+      "office-mcp": 30
+    },
+    "server_minus_registry": [],
+    "registry_minus_server": [],
+    "server_minus_semantics": [],
+    "semantics_minus_server": []
+  },
+  "evaluation_evidence": {
+    "generated_at": "2026-08-10T10:38:45.820544+08:00",
+    "catalog_tool_count": 48,
+    "case_count": 53,
+    "normal_case_count": 48,
+    "total_tool_coverage_rate_pct": 100.0,
+    "server_recognition_accuracy_pct": 100.0,
+    "tool_top_1_pct": 100.0,
+    "tool_top_3_pct": 100.0,
+    "parameter_schema_valid_rate_pct": 100.0,
+    "nonexistent_tool_hallucination_rate_pct": 0.0,
+    "average_candidate_count_before_filter": 48.0,
+    "average_candidate_count_after_filter": 2.17,
+    "average_selection_time_ms": 1.513715,
+    "audit_recommendation_actual_match_pct": 100.0
+  },
+  "live_audit_evidence": {
+    "mode": "audit",
+    "live_registry_count": 48,
+    "task": "搜索员工<REDACTED>",
+    "agent": "RemoteHRAssistantAgent",
+    "selected_tool_key": "office-mcp:search_employees",
+    "top_k": [
+      "office-mcp:search_employees",
+      "office-mcp:get_employee_contact",
+      "office-mcp:get_employee_profile"
+    ],
+    "candidate_count_before_filter": 48,
+    "candidate_count_after_filter": 4,
+    "compatible_legacy_tool": "remote_person_info_tool",
+    "recommendation_matches_actual": true,
+    "behavior": "audit only; existing Agent tool list was not changed"
+  },
+  "live_protocol_call_evidence": {
+    "scenario": "人员查询",
+    "agent": "RemoteHRAssistantAgent",
+    "logical_tool": "remote_person_info_tool",
+    "transport": "mcp",
+    "mcp_tool": "search_employees",
+    "argument_keys": [
+      "department",
+      "job_keyword",
+      "keyword",
+      "limit"
+    ],
+    "status": "success",
+    "side_effect": false
+  },
+  "tool_execution_observability_evidence": {
+    "generated_at": "2026-08-10T15:18:02.8234839+08:00",
+    "focused_test_result": "65 passed in 4.13s",
+    "request_isolation": "ContextVar",
+    "structured_log_event": "remote_tool_execution",
+    "agent_metadata_field": "metadata.tool_executions",
+    "live_read_only_result": {
+      "logical_tool": "remote_person_info_tool",
+      "runtime_tool": "search_employees",
+      "execution_transport": "mcp",
+      "server_name": "office-mcp",
+      "status": "success",
+      "argument_keys": [
+        "department",
+        "job_keyword",
+        "keyword",
+        "limit"
+      ]
+    },
+    "privacy": "argument values are not recorded",
+    "frontend_rendering": "not implemented"
+  },
+  "claim_boundary": {
+    "verified": [
+      "focused selector/control-plane tests",
+      "live tools/list to ToolRegistry consistency",
+      "live audit recommendation from ToolRegistry metadata",
+      "deterministic BaseRemoteAgent to MCP Client to Office MCP Server read-only call",
+      "structured MCP and HTTP execution logs with request-isolated Agent metadata"
+    ],
+    "not_verified": [
+      "Planner or web entrypoint end-to-end flow",
+      "LLM-driven parameter extraction",
+      "enforce mode changing production tool choice",
+      "frontend visualization of tool selection or execution provenance",
+      "authorization, approval, or write-operation behavior"
+    ]
+  }
+}

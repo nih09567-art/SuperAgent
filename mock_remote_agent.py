@@ -19,7 +19,10 @@ from dotenv import load_dotenv
 from remote_agents.factory import AgentFactory
 from remote_agents.base_agent import (
     bind_authorized_remote_tools,
+    bind_tool_execution_trace,
+    get_tool_execution_trace,
     reset_authorized_remote_tools,
+    reset_tool_execution_trace,
 )
 
 # 本地远程 Agent Demo 与主服务共用项目 .env。
@@ -515,6 +518,7 @@ async def agent(req: RemoteRequest, authorization: Optional[str] = Header(defaul
             }
         }
 
+    tool_executions: List[Dict[str, Any]] = []
     try:
         # 获取Agent实例
         agent = AgentFactory.get_agent(req.agent_name)
@@ -528,6 +532,7 @@ async def agent(req: RemoteRequest, authorization: Optional[str] = Header(defaul
 
         # 执行Agent
         authorization_token = bind_authorized_remote_tools(execution_context)
+        trace_token = bind_tool_execution_trace()
         try:
             result = await agent.execute(
                 tools=req.tools,
@@ -536,6 +541,8 @@ async def agent(req: RemoteRequest, authorization: Optional[str] = Header(defaul
                 parameter_extractor=parameter_extractor
             )
         finally:
+            tool_executions = get_tool_execution_trace()
+            reset_tool_execution_trace(trace_token)
             reset_authorized_remote_tools(authorization_token)
 
         if isinstance(result, dict) and str(result.get("status") or "").lower() in {
@@ -552,6 +559,7 @@ async def agent(req: RemoteRequest, authorization: Optional[str] = Header(defaul
                     "tools_count": len(req.tools),
                     "has_auth": bool(authorization),
                     "message_count": len(req.messages),
+                    "tool_executions": tool_executions,
                 },
             }
 
@@ -573,6 +581,7 @@ async def agent(req: RemoteRequest, authorization: Optional[str] = Header(defaul
                 "tools_count": len(req.tools),
                 "has_auth": bool(authorization),
                 "message_count": len(req.messages),
+                "tool_executions": tool_executions,
                 **(
                     {"external_operation_id": str(external_operation_id)}
                     if external_operation_id
@@ -617,6 +626,7 @@ async def agent(req: RemoteRequest, authorization: Optional[str] = Header(defaul
                 "agent_name": req.agent_name,
                 "has_auth": bool(authorization),
                 "message_count": len(req.messages),
+                "tool_executions": tool_executions,
                 **failure_metadata,
             },
             "traceback": traceback.format_exc()

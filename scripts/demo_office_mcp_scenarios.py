@@ -13,7 +13,9 @@ from typing import Any, Dict
 
 from remote_agents.base_agent import (
     bind_authorized_remote_tools,
+    bind_tool_execution_trace,
     reset_authorized_remote_tools,
+    reset_tool_execution_trace,
 )
 from remote_agents.factory import AgentFactory
 
@@ -112,6 +114,7 @@ async def _run_scenario(scenario: Dict[str, Any]) -> Dict[str, Any]:
             ]
         }
     )
+    trace_token = bind_tool_execution_trace()
     try:
         return await agent.execute(
             tools=[_tool_definition(scenario["agent"], scenario["tool"])],
@@ -120,6 +123,7 @@ async def _run_scenario(scenario: Dict[str, Any]) -> Dict[str, Any]:
             parameter_extractor=DemoParameterExtractor(scenario["arguments"]),
         )
     finally:
+        reset_tool_execution_trace(trace_token)
         reset_authorized_remote_tools(token)
 
 

@@ -25,9 +25,24 @@ class AgentResultError(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class ToolExecutionRecord(BaseModel):
+    """Redacted provenance for one tool execution attempt."""
+
+    logical_tool: str = Field(min_length=1)
+    runtime_tool: str = Field(min_length=1)
+    execution_transport: str = Field(min_length=1)
+    server_name: str = Field(min_length=1)
+    status: str = Field(min_length=1)
+    argument_keys: list[str] = Field(default_factory=list)
+    error_type: str | None = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class AgentResultMetadata(BaseModel):
     producer_agent: str = Field(min_length=1)
     schema_version: str = Field(min_length=1)
+    tool_executions: list[ToolExecutionRecord] = Field(default_factory=list)
 
     model_config = ConfigDict(extra="forbid")
 
