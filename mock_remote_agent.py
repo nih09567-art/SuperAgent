@@ -600,6 +600,17 @@ async def agent(req: RemoteRequest, authorization: Optional[str] = Header(defaul
         logger.error(f"Traceback:\n{traceback.format_exc()}")
         tool_result = getattr(e, "tool_result", None)
         failure_metadata = {}
+        if isinstance(e, PermissionError):
+            # The governed tool boundary rejected the call before transport;
+            # no side effect can have started, so the scheduler may release
+            # the STARTED receipt and offer a reviewed retry.
+            failure_metadata.update(
+                {
+                    "side_effect_started": False,
+                    "failure_phase": "authorization",
+                    "safe_to_retry": True,
+                }
+            )
         if isinstance(tool_result, dict):
             for key in (
                 "side_effect_started",

@@ -8,7 +8,11 @@ from src.contracts.agent_schema_catalog import AGENT_SCHEMA_CATALOG
 from src.interface.agent import Agent, AgentSource, LLMType
 from src.interface.mcp import Tool
 from src.manager.registry.resource_registry import ResourceRegistry, ResourceSpec
-from src.orchestration.output_contracts import OUTPUT_SCHEMAS
+from src.orchestration.output_contracts import (
+    OUTPUT_SCHEMAS,
+    get_agent_output_logical_names,
+    get_agent_output_schema_ref,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -145,6 +149,24 @@ async def sync_remote_agents(resource_registry: ResourceRegistry, agent_registry
         parameter_mapping = metadata.get("parameter_mapping", {})
         contract_activation = metadata.get("contract_activation", "runtime")
         planning_selected_tools = metadata.get("planning_selected_tools", [])
+
+        # Some legacy remote registries still omit the v1 contract even though
+        # the platform owns a trusted output schema for the Agent.  Promote
+        # that server-owned catalog entry into a real runtime/planning
+        # contract so downstream steps can bind the produced Artifact instead
+        # of inventing an unrelated placeholder source.
+        if not contract_version:
+            trusted_outputs = get_agent_output_logical_names(agent_name)
+            trusted_output_schema = get_agent_output_schema_ref(agent_name)
+            if trusted_outputs and trusted_output_schema:
+                contract_version = "1.0"
+                produces = trusted_outputs
+                output_schema_refs = {
+                    name: trusted_output_schema for name in trusted_outputs
+                }
+                contract_activation = "runtime"
+                if not planning_selected_tools:
+                    planning_selected_tools = [tool.name for tool in selected_tools]
         agent_contract = None
         if contract_version:
             missing_input_refs = [

@@ -25,8 +25,8 @@ _authorized_remote_tools: ContextVar[tuple[tuple[str, Dict[str, Any]], ...]] = C
 _SECURITY_ARGUMENT_ALIASES: Dict[str, tuple[str, ...]] = {
     "employee_name": ("employee_name", "keyword"),
     "employee_id": ("employee_id", "employee_id_list"),
-    "recipient": ("recipient", "recipients", "names", "to"),
-    "recipients": ("recipients", "recipient", "names", "to"),
+    "recipient": ("recipient", "recipients", "participants", "names", "to"),
+    "recipients": ("recipients", "recipient", "participants", "names", "to"),
     "resolved_recipient_addresses": ("resolved_recipient_addresses", "to"),
     "document_type": ("document_type", "template_name"),
     "date": ("date",),
@@ -152,6 +152,8 @@ def _arguments_match_authorization(
         )
 
     canonical_employee_query = tool_name in _CANONICAL_EMPLOYEE_QUERY_TOOLS
+    canonical_calendar_query = tool_name == "get_calendar_events_tool"
+    canonical_meeting_write = tool_name == "remote_meeting_scheduling_tool"
     if canonical_employee_query:
         expected_identities = {
             _normalize_security_value(value)
@@ -166,6 +168,23 @@ def _arguments_match_authorization(
         if expected_identities and expected_identities.isdisjoint(actual_identities):
             return False
 
+    if canonical_meeting_write:
+        expected_start_found, expected_start = _find_argument(
+            expected, _SECURITY_ARGUMENT_ALIASES["start_date"]
+        )
+        expected_end_found, expected_end = _find_argument(
+            expected, _SECURITY_ARGUMENT_ALIASES["end_date"]
+        )
+        actual_date_found, actual_date = _find_argument(
+            actual, _SECURITY_ARGUMENT_ALIASES["date"]
+        )
+        if expected_start_found or expected_end_found:
+            if not (expected_start_found and expected_end_found and actual_date_found):
+                return False
+            normalized_date = str(actual_date or "").strip()
+            if not (str(expected_start) <= normalized_date <= str(expected_end)):
+                return False
+
     keys = _TOOL_SECURITY_ARGUMENTS.get(tool_name, frozenset())
     for key in keys:
         if canonical_employee_query and key in {"employee_name", "employee_id"}:
@@ -173,6 +192,14 @@ def _arguments_match_authorization(
         aliases = _SECURITY_ARGUMENT_ALIASES[key]
         expected_found, expected_value = _find_argument(expected, aliases)
         actual_values = _find_all_arguments(actual, aliases)
+        if (canonical_calendar_query or canonical_meeting_write) and key in {
+            "date",
+            "start_date",
+            "end_date",
+        }:
+            # The platform has already resolved the approved relative time
+            # range. Model-produced dates are never trusted or forwarded.
+            continue
         if expected_found != bool(actual_values):
             return False
         if not expected_found:
@@ -206,6 +233,24 @@ def _canonical_authorized_arguments(
             )
             if found:
                 outbound[key] = value
+    if tool_name == "get_calendar_events_tool":
+        for key in ("date", "start_date", "end_date"):
+            outbound.pop(key, None)
+            found, value = _find_argument(expected, _SECURITY_ARGUMENT_ALIASES[key])
+            if found:
+                outbound[key] = value
+    if tool_name == "remote_meeting_scheduling_tool":
+        found, recipients = _find_argument(
+            expected, _SECURITY_ARGUMENT_ALIASES["recipients"]
+        )
+        if found:
+            meeting = dict(outbound.get("meeting") or {})
+            meeting["participants"] = (
+                list(recipients)
+                if isinstance(recipients, (list, tuple, set, frozenset))
+                else [recipients]
+            )
+            outbound["meeting"] = meeting
     if tool_name == "remote_email_tool":
         found, addresses = _find_argument(
             expected, _SECURITY_ARGUMENT_ALIASES["resolved_recipient_addresses"]

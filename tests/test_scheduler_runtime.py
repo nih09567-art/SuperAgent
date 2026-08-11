@@ -275,6 +275,74 @@ def test_trusted_subtask_type_can_match_declared_resource_capability():
     assert profile["trusted_resource_fit"]["fit"] == "match"
 
 
+def test_hr_calendar_accepts_trusted_office_schedule_subtask():
+    state = {
+        "workflow_id": "wf-calendar",
+        "user_id": "admin",
+        "task_profile": {
+            "risk_profile": "HIGH",
+            "subtasks": [
+                {
+                    "id": "subtask_schedule",
+                    "intent": "schedule_management",
+                    "task_type": "OFFICE",
+                    "goal": "Query a manager's calendar",
+                    "data_scope": ["calendar.personal"],
+                    "expected_capabilities": ["Office"],
+                    "scenario_tags": ["office_assistance"],
+                }
+            ],
+        },
+    }
+    step = TaskStep(
+        step_id="query_schedule",
+        agent_name="RemoteHRCalendarAgent",
+        preferred_resource_id="RemoteHRCalendarAgent",
+        operation_mode="read",
+        subtask_ids=["subtask_schedule"],
+    )
+
+    context = _build_execution_context(state, step, "RemoteHRCalendarAgent")
+    profile = context.metadata["task_profile"]
+
+    assert profile["task_type"] == "OFFICE"
+    assert profile["trusted_resource_fit"]["fit"] == "match"
+
+
+def test_meeting_manager_accepts_trusted_meeting_subtask():
+    state = {
+        "workflow_id": "wf-meeting",
+        "user_id": "admin",
+        "task_profile": {
+            "risk_profile": "HIGH",
+            "subtasks": [
+                {
+                    "id": "subtask_meeting",
+                    "intent": "meeting_arrangement",
+                    "task_type": "MEETING",
+                    "goal": "Arrange a meeting",
+                    "data_scope": ["calendar.meeting"],
+                    "expected_capabilities": ["Meeting", "Office"],
+                    "scenario_tags": ["meeting_management"],
+                }
+            ],
+        },
+    }
+    step = TaskStep(
+        step_id="arrange_meeting",
+        agent_name="RemoteMeetingManagerAgent",
+        preferred_resource_id="RemoteMeetingManagerAgent",
+        operation_mode="write",
+        subtask_ids=["subtask_meeting"],
+    )
+
+    context = _build_execution_context(state, step, "RemoteMeetingManagerAgent")
+    profile = context.metadata["task_profile"]
+
+    assert profile["task_type"] == "MEETING"
+    assert profile["trusted_resource_fit"]["fit"] == "match"
+
+
 def test_missing_trusted_subtask_binding_cannot_use_selected_agent_profile():
     state = {
         "workflow_id": "wf",

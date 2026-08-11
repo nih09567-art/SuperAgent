@@ -152,7 +152,7 @@ class AgentRequest(BaseModel):
     messages: List[AgentMessage]
     debug: bool
     deep_thinking_mode: bool
-    search_before_planning: bool
+    search_before_planning: bool = False
     coor_agents: Optional[list[str]]
     workmode: WorkMode
     workflow_id: Optional[str] = None

@@ -9,6 +9,7 @@ the scheduler can authorize it before the remote request leaves the process.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date, timedelta
 from typing import Any, Iterable, Mapping
 
 from src.security.trusted_recipients import resolve_trusted_recipient_addresses
@@ -85,6 +86,34 @@ def _stable_arguments(task_profile: Mapping[str, Any], intent: str) -> dict[str,
     return arguments
 
 
+def _calendar_query_range(value: Any, *, today: date | None = None) -> dict[str, str]:
+    """Resolve trusted relative calendar terms before remote dispatch.
+
+    Calendar Agents may calculate dates with a model, but the governed tool
+    call must use the server-owned interpretation of the approved task scope.
+    """
+
+    text = str(value or "").strip().lower()
+    if not text:
+        return {}
+    current = today or date.today()
+    if any(token in text for token in ("明天", "tomorrow")):
+        start = current + timedelta(days=1)
+        end = start
+    elif any(token in text for token in ("下周", "next week")):
+        start = current + timedelta(days=7 - current.weekday())
+        end = start + timedelta(days=6)
+    elif any(token in text for token in ("本周", "这周", "this week")):
+        start = current - timedelta(days=current.weekday())
+        end = start + timedelta(days=6)
+    elif any(token in text for token in ("今天", "今日", "today")):
+        start = current
+        end = current
+    else:
+        return {}
+    return {"start_date": start.isoformat(), "end_date": end.isoformat()}
+
+
 def required_remote_tool_authorizations(
     *,
     agent_name: str,
@@ -140,9 +169,19 @@ def required_remote_tool_authorizations(
                 continue
             seen.add(tool_name)
             arguments = _stable_arguments(profile, intent)
+            if tool_name in {
+                "get_calendar_events_tool",
+                "remote_meeting_scheduling_tool",
+            }:
+                entities = _as_mapping(profile.get("entities"))
+                arguments.update(_calendar_query_range(entities.get("time")))
             semantic_recipients = arguments.get("recipients") or arguments.get("recipient")
             if (
-                agent_name == "RemoteCommunicationAgent"
+                agent_name in {
+                    "RemoteCommunicationAgent",
+                    "RemoteEmailDispatchAgent",
+                    "RemoteMeetingManagerAgent",
+                }
                 and str(semantic_recipients or "").strip()
                 in {"参会人", "所有参会人", "全体参会人", "与会人员", "相关人员"}
                 and arguments.get("people")

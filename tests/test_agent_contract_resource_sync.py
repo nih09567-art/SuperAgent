@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 from src.manager.registry.agent_registry import AgentRegistry
 from src.manager.registry.resource_registry import ResourceRegistry, ResourceSpec
@@ -74,6 +75,58 @@ def test_legacy_remote_agent_still_registers_without_contract(tmp_path) -> None:
     card = build_agent_cards([agent])[0]
     assert card.planning_eligible is False
     assert eligible_planning_agent_cards([card]) == []
+
+
+def test_trusted_local_researcher_receives_runtime_markdown_contract() -> None:
+    card = build_agent_cards(
+        [
+            SimpleNamespace(
+                agent_name="researcher",
+                nick_name="researcher",
+                source="local",
+                selected_tools=[],
+                description="public research",
+            )
+        ]
+    )[0]
+
+    assert card.agent_contract is not None
+    assert card.agent_contract.output_schema_refs == {
+        "research.markdown": "markdown_text_result@v1"
+    }
+    assert card.planning_agent_contract == card.agent_contract
+    assert card.planning_eligible is True
+
+
+def test_known_legacy_document_agent_receives_platform_owned_contract(tmp_path) -> None:
+    resources = ResourceRegistry()
+    agents = AgentRegistry(tmp_path / "agents", tmp_path / "prompts")
+    spec = ResourceSpec(
+        type="agent",
+        name="RemoteDocumentGeneratorAgent",
+        server_id="remote-demo",
+        endpoint="http://127.0.0.1:8010/agent",
+        metadata={
+            "selected_tools": [{"name": "remote_docx_generator_tool"}],
+        },
+    )
+
+    async def scenario():
+        await resources.register(spec, persist=False)
+        assert await sync_remote_agents(resources, agents) == 1
+        return await agents.get("RemoteDocumentGeneratorAgent")
+
+    agent = asyncio.run(scenario())
+
+    assert agent is not None
+    assert agent.produces == ["document.file"]
+    assert agent.output_schema_refs == {
+        "document.file": "document_generation_result@v1"
+    }
+    assert agent.agent_contract is not None
+    assert agent.planning_agent_contract is not None
+    assert agent.planning_selected_tools == ["remote_docx_generator_tool"]
+    assert build_agent_cards([agent])[0].planning_eligible is True
 
 
 def test_planning_only_contract_enters_pool_without_changing_legacy_runtime(
@@ -354,7 +407,8 @@ def test_mock_registry_exposes_the_five_contract_backed_planning_agents(
 
     assert expected <= set(planning_cards)
     assert planning_cards["RemoteOfficeAssistantAgent"].planning_tool_scopes == [
-        "query_leave_record"
+        "query_leave_record",
+        "query_travel_record",
     ]
     assert planning_cards["RemoteEmailDispatchAgent"].planning_tool_scopes == [
         "remote_email_tool"

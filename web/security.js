@@ -821,16 +821,16 @@ function initSecurityTab() {
     setSecurityCollapse(
         "toggleAdvancedSecurityBtn",
         "advancedSecurityContent",
-        true
+        false
     );
     bindSecurityCollapseButton("toggleToolAccessBtn", "toolAccessGrid", true);
-    bindSecurityCollapseButton("toggleUserAgentsBtn", "userAgentsList", false);
+    bindSecurityCollapseButton("toggleUserAgentsBtn", "userAgentsList", true);
     bindSecurityCollapseButton("toggleApprovalsBtn", "securityApprovalsContent", true);
     bindSecurityCollapseButton("toggleReconciliationsBtn", "securityReconciliationsContent", true);
     bindSecurityCollapseButton(
         "toggleAdvancedSecurityBtn",
         "advancedSecurityContent",
-        true
+        false
     );
 
     const sel = document.getElementById("securityUserSelect");

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -28,6 +29,32 @@ CASES = [
     "查询北京明天天气，结合出差行程给出提醒",
 ]
 
+ADMIN_HEADERS = {"X-Authenticated-User": "admin"}
+
+
+def _execution_plan_hash(
+    workflow_id: str, plan: list[dict[str, Any]]
+) -> str:
+    """Mirror the canonical confirmation hash enforced by the Web API."""
+
+    canonical = {
+        "workflowId": workflow_id,
+        "steps": [
+            {
+                "title": step.get("title") or "",
+                "description": step.get("description") or "",
+                "agent_name": step.get("agent_name") or "",
+                "note": step.get("note") or "",
+            }
+            for step in plan
+            if isinstance(step, dict)
+        ],
+    }
+    encoded = json.dumps(
+        canonical, ensure_ascii=False, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
 
 async def _stream_events(
     client: httpx.AsyncClient,
@@ -36,7 +63,10 @@ async def _stream_events(
 ) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
     async with client.stream(
-        "POST", f"{base_url}/api/workflows/run", json=payload
+        "POST",
+        f"{base_url}/api/workflows/run",
+        headers=ADMIN_HEADERS,
+        json=payload,
     ) as response:
         response.raise_for_status()
         event_name = "message"
@@ -120,6 +150,38 @@ async def run_case(
             "failure_events": planning_failures,
         }
 
+    workflow_response = await client.get(
+        f"{base_url}/api/workflows/{workflow_id}", headers=ADMIN_HEADERS
+    )
+    workflow_response.raise_for_status()
+    workflow = workflow_response.json()
+    plan = workflow.get("planning_steps") if isinstance(workflow, dict) else None
+    if not isinstance(plan, list) or not plan:
+        return {
+            "case": case_number,
+            "instruction": instruction,
+            "workflow_id": workflow_id,
+            "status": "PLANNING_FAILED",
+            "terminal": plan_terminal,
+            "failure_events": [{"message": "persisted plan is missing"}],
+        }
+
+    confirmation_request_id = f"admin-eight-{case_number}-{uuid4().hex}"
+    authorization_response = await client.post(
+        f"{base_url}/api/workflows/execution-authorizations",
+        headers={
+            **ADMIN_HEADERS,
+            "Idempotency-Key": confirmation_request_id,
+        },
+        json={
+            "workflow_id": workflow_id,
+            "plan_hash": _execution_plan_hash(workflow_id, plan),
+            "user_query": instruction,
+        },
+    )
+    authorization_response.raise_for_status()
+    identity = authorization_response.json()
+
     print(f"[{case_number}/8] EXEC {workflow_id}", flush=True)
     execution_events = await _stream_events(
         client,
@@ -134,6 +196,13 @@ async def run_case(
             "messages": [
                 {"role": "user", "content": instruction},
                 {"role": "user", "content": "Execute the confirmed plan."},
+            ],
+            "execution_task_id": identity["task_id"],
+            "execution_attempt_id": identity["execution_attempt_id"],
+            "execution_idempotency_key": identity["execution_idempotency_key"],
+            "execution_plan_hash": identity["execution_plan_hash"],
+            "execution_authorization_token": identity[
+                "execution_authorization_token"
             ],
         },
     )

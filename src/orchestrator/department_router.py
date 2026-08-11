@@ -4,8 +4,20 @@ import hashlib
 from typing import Any, Iterable
 
 from config.s_abac_config import AGENT_SECURITY_ATTRIBUTES, RESOURCE_SECURITY_ATTRIBUTES
-from src.contracts import AgentCard, ExcludedAgent, RoutingCandidate, RoutingDecision, TaskProfile
-from src.orchestration.output_contracts import get_agent_output_schema
+from src.contracts import (
+    AgentCard,
+    AgentContract,
+    DataContractRef,
+    ExcludedAgent,
+    RoutingCandidate,
+    RoutingDecision,
+    TaskProfile,
+)
+from src.orchestration.output_contracts import (
+    get_agent_output_logical_names,
+    get_agent_output_schema,
+    get_agent_output_schema_ref,
+)
 
 
 KNOWN_AGENT_CAPABILITIES = {
@@ -160,6 +172,24 @@ def build_agent_cards(agents: Iterable[Any]) -> list[AgentCard]:
         source = getattr(agent, "source", "local")
         source_value = getattr(source, "value", source)
         agent_contract = getattr(agent, "agent_contract", None)
+        if (
+            agent_contract is None
+            and str(source_value).lower() == "local"
+            and name in {"researcher", "reporter"}
+        ):
+            trusted_outputs = get_agent_output_logical_names(name)
+            trusted_schema_ref = get_agent_output_schema_ref(name)
+            if trusted_outputs and trusted_schema_ref:
+                agent_contract = AgentContract(
+                    contract_version="1.0",
+                    produces=[
+                        DataContractRef(
+                            name=logical_name,
+                            schema_ref=trusted_schema_ref,
+                        )
+                        for logical_name in trusted_outputs
+                    ],
+                )
         planning_contract = (
             getattr(agent, "planning_agent_contract", None) or agent_contract
         )

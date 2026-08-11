@@ -48,6 +48,10 @@ from src.orchestration.contract_planning import (
     ContractClosure,
     validate_plan_candidate_closure,
 )
+from src.orchestration.output_contracts import (
+    get_agent_output_logical_names,
+    get_agent_output_schema_ref,
+)
 
 try:
     from src.llm.llm import get_llm_by_type
@@ -944,9 +948,12 @@ def _normalize_compatible_plan(
 ) -> tuple[list, list[str]]:
     """Normalize only unambiguous legacy Planner structure.
 
-    The compatibility pass never invents an Agent, business step, Artifact,
-    Schema, recipient, approval, or receipt. Its output must still pass the
-    existing profile, data-flow, TaskGraph, and runtime security validation.
+    The compatibility pass never invents business data, Artifacts, Schemas,
+    recipients, approvals, or receipts. It may split an explicitly covered
+    TaskProfile subtask onto the platform-owned trusted Agent mapping when a
+    Planner incorrectly merges incompatible intents into one Agent call. Its
+    output must still pass profile, data-flow, TaskGraph, and runtime security
+    validation.
     """
 
     from src.service.env import CONTRACT_PLANNING_COMPAT_ENABLED
@@ -1043,6 +1050,80 @@ def _normalize_compatible_plan(
         intent = str(subtask.get("intent") or "").strip()
         if intent:
             subtasks_by_intent.setdefault(intent, []).append(subtask)
+
+    # A Planner sometimes claims that one autonomous Agent can satisfy every
+    # intent in a composite request (for example Weather + Travel). Split only
+    # the already-declared TaskProfile coverage and select Agents exclusively
+    # from the platform-owned intent map and the current trusted team catalog.
+    profile_subtask_by_id = {
+        str(subtask["id"]): subtask for subtask in profile_subtasks
+    }
+    trusted_team = set(_string_list(state.get("TEAM_MEMBERS")))
+    reassigned_steps: list[dict] = []
+    for step in normalized:
+        covered_ids = _step_subtask_ids(step)
+        current_agent = str(step.get("agent_name") or "").strip()
+        if len(covered_ids) < 2 or not current_agent:
+            reassigned_steps.append(step)
+            continue
+
+        grouped: dict[str, list[str]] = {}
+        compatible = True
+        for subtask_id in covered_ids:
+            subtask = profile_subtask_by_id.get(subtask_id)
+            intent = str((subtask or {}).get("intent") or "").strip()
+            preferences = _PROFILE_INTENT_AGENT_PREFERENCES.get(intent, ())
+            if not intent or not preferences:
+                compatible = False
+                break
+            if current_agent in preferences:
+                target_agent = current_agent
+            else:
+                target_agent = next(
+                    (agent for agent in preferences if agent in trusted_team),
+                    "",
+                )
+            if not target_agent:
+                compatible = False
+                break
+            grouped.setdefault(target_agent, []).append(subtask_id)
+
+        if not compatible or list(grouped) == [current_agent]:
+            reassigned_steps.append(step)
+            continue
+
+        for group_index, (target_agent, group_ids) in enumerate(grouped.items()):
+            split_step = deepcopy(step)
+            split_step["agent_name"] = target_agent
+            split_step["subtask_ids"] = group_ids
+            split_step["intents"] = [
+                str(profile_subtask_by_id[subtask_id].get("intent") or "")
+                for subtask_id in group_ids
+            ]
+            split_step["depends_on"] = []
+            if target_agent != current_agent or group_index > 0:
+                for field in (
+                    "inputs",
+                    "expected_outputs",
+                    "produces",
+                    "planning_tools",
+                    "tool_names",
+                    "tool_name",
+                ):
+                    split_step.pop(field, None)
+            if group_index > 0:
+                candidate_index = len(used_step_ids) + 1
+                candidate = f"step_{candidate_index}"
+                while candidate in used_step_ids:
+                    candidate_index += 1
+                    candidate = f"step_{candidate_index}"
+                split_step["step_id"] = candidate
+                used_step_ids.add(candidate)
+            reassigned_steps.append(split_step)
+            repairs.append(
+                f"split {step['step_id']} intents onto trusted Agent {target_agent}"
+            )
+    normalized = reassigned_steps
 
     claimed_subtasks = {
         subtask_id
@@ -1261,6 +1342,25 @@ def _validate_plan_against_task_profile(steps: list, state: State) -> list[str]:
                     f"{sorted(expected_intents)}，实际为 {sorted(planned_intents)}"
                 )
 
+            agent_name = str(step.get("agent_name") or "").strip()
+            unsupported_intents = sorted(
+                intent
+                for intent in expected_intents
+                if _PROFILE_INTENT_AGENT_PREFERENCES.get(intent)
+                and agent_name
+                not in _PROFILE_INTENT_AGENT_PREFERENCES[intent]
+            )
+            if unsupported_intents:
+                expected_agents = {
+                    intent: list(_PROFILE_INTENT_AGENT_PREFERENCES[intent])
+                    for intent in unsupported_intents
+                }
+                errors.append(
+                    f"Step {step.get('step_id') or index + 1} assigns intents "
+                    f"{unsupported_intents} to incompatible Agent {agent_name}; "
+                    f"trusted Agent mappings are {expected_agents}"
+                )
+
             covered_set = set(covered_ids)
             expected_dependencies: set[str] = set()
             for subtask_id in covered_ids:
@@ -1339,6 +1439,23 @@ async def _validate_plan_data_flow(steps: list, user_id: str) -> tuple[bool, lis
             planning_contract = getattr(
                 agent, "planning_agent_contract", None
             ) or getattr(agent, "agent_contract", None)
+            catalog_outputs = get_agent_output_logical_names(agent.agent_name)
+            catalog_schema_ref = get_agent_output_schema_ref(agent.agent_name)
+            live_outputs = list(getattr(agent, "produces", []) or [])
+            trusted_outputs = (
+                [ref.name for ref in planning_contract.produces]
+                if planning_contract
+                else live_outputs or catalog_outputs
+            )
+            output_schema_refs = (
+                dict(planning_contract.output_schema_refs)
+                if planning_contract
+                else dict(getattr(agent, "output_schema_refs", {}) or {})
+            )
+            if not output_schema_refs and catalog_schema_ref:
+                output_schema_refs = {
+                    name: catalog_schema_ref for name in trusted_outputs
+                }
             agent_metadata[agent.agent_name] = {
                 "requires": (
                     [ref.name for ref in planning_contract.requires if ref.required]
@@ -1346,9 +1463,7 @@ async def _validate_plan_data_flow(steps: list, user_id: str) -> tuple[bool, lis
                     else getattr(agent, "requires", [])
                 ),
                 "produces": (
-                    [ref.name for ref in planning_contract.produces]
-                    if planning_contract
-                    else getattr(agent, "produces", [])
+                    trusted_outputs
                 ),
                 "input_schema_refs": (
                     dict(planning_contract.input_schema_refs)
@@ -1356,9 +1471,7 @@ async def _validate_plan_data_flow(steps: list, user_id: str) -> tuple[bool, lis
                     else dict(getattr(agent, "input_schema_refs", {}) or {})
                 ),
                 "output_schema_refs": (
-                    dict(planning_contract.output_schema_refs)
-                    if planning_contract
-                    else dict(getattr(agent, "output_schema_refs", {}) or {})
+                    output_schema_refs
                 ),
                 "planning_tools": _string_list(
                     getattr(agent, "planning_selected_tools", [])
@@ -1463,41 +1576,130 @@ async def _validate_plan_data_flow(steps: list, user_id: str) -> tuple[bool, lis
         existing_params = {
             item.get("parameter_name") for item in inputs if isinstance(item, dict)
         }
-        if (
-            "email.dispatch.request" in required_params
-            and "email.dispatch.request" not in existing_params
-        ):
+        if "email.dispatch.request" in required_params:
             report_source = None
-            for prev_step in reversed(steps[:step_idx]):
+            report_output = None
+            preferred_email_outputs = (
+                "report.markdown",
+                "document.file",
+                "meeting.result",
+                "calendar.result",
+            )
+            dependency_refs = {
+                str(value) for value in (step.get("depends_on") or []) if str(value)
+            }
+            candidates = []
+            for candidate_index, prev_step in enumerate(steps):
+                if candidate_index == step_idx or not isinstance(prev_step, dict):
+                    continue
                 prev_metadata = agent_metadata.get(prev_step.get("agent_name")) or {}
                 prev_outputs = _string_list(
                     prev_step.get("expected_outputs") or prev_metadata.get("produces")
                 )
-                if "report.markdown" in prev_outputs:
-                    report_source = str(
-                        prev_step.get("step_id") or prev_step.get("agent_name")
-                    )
-                    break
-            if report_source:
-                inputs.append(
-                    {
-                        "parameter_name": "email.dispatch.request",
-                        "source_artifacts": [
-                            {
-                                "source_step": report_source,
-                                "source_output": "report.markdown",
-                            }
-                        ],
-                        "assembly": {
-                            "schema_ref": "email.dispatch.request@v1",
-                            "title": "邮件发送请求",
-                            "instruction": (
-                                "审批通过后由平台补充 approval_id 和幂等键"
-                            ),
-                        },
-                    }
+                prev_refs = {
+                    str(prev_step.get("step_id") or ""),
+                    str(prev_step.get("agent_name") or ""),
+                    str(prev_step.get("subtask_id") or ""),
+                    *_step_subtask_ids(prev_step),
+                }
+                for preference, output_name in enumerate(preferred_email_outputs):
+                    if output_name in prev_outputs:
+                        candidates.append(
+                            (
+                                0 if dependency_refs & prev_refs else 1,
+                                preference,
+                                0 if candidate_index < step_idx else 1,
+                                -candidate_index,
+                                prev_step,
+                                output_name,
+                            )
+                        )
+            if candidates:
+                _, _, _, _, source_step, report_output = min(
+                    candidates, key=lambda item: item[:4]
                 )
+                report_source = str(
+                    source_step.get("step_id") or source_step.get("agent_name")
+                )
+            if report_source:
+                existing_binding = next(
+                    (
+                        item
+                        for item in inputs
+                        if isinstance(item, dict)
+                        and item.get("parameter_name") == "email.dispatch.request"
+                    ),
+                    None,
+                )
+                existing_assembly = (
+                    existing_binding.get("assembly")
+                    if isinstance(existing_binding, dict)
+                    and isinstance(existing_binding.get("assembly"), dict)
+                    else {}
+                )
+                email_binding = {
+                    "parameter_name": "email.dispatch.request",
+                    "source_artifacts": [
+                        {
+                            "source_step": report_source,
+                            "source_output": report_output,
+                        }
+                    ],
+                    "assembly": {
+                        "schema_ref": "email.dispatch.request@v1",
+                        "title": str(
+                            existing_assembly.get("title")
+                            or "邮件发送请求"
+                        ),
+                        "instruction": str(
+                            existing_assembly.get("instruction")
+                            or "人工确认后由平台补充 approval_id 和幂等键"
+                        ),
+                    },
+                }
+                if existing_binding is None:
+                    inputs.append(email_binding)
+                else:
+                    existing_binding.clear()
+                    existing_binding.update(email_binding)
                 existing_params.add("email.dispatch.request")
+
+        if "report.sources" in required_params:
+            existing_report_binding = next(
+                (
+                    item
+                    for item in inputs
+                    if isinstance(item, dict)
+                    and item.get("parameter_name") == "report.sources"
+                ),
+                None,
+            )
+            if existing_report_binding is not None:
+                existing_sources = existing_report_binding.get("source_artifacts")
+                if not isinstance(existing_sources, list):
+                    source_step = existing_report_binding.get("source_step")
+                    source_output = existing_report_binding.get("source_output")
+                    existing_sources = (
+                        [
+                            {
+                                "source_step": source_step,
+                                "source_output": source_output,
+                            }
+                        ]
+                        if source_step and source_output
+                        else []
+                    )
+                if existing_sources:
+                    existing_report_binding.clear()
+                    existing_report_binding.update(
+                        {
+                            "parameter_name": "report.sources",
+                            "source_artifacts": existing_sources,
+                            "assembly": {"schema_ref": "report.sources@v1"},
+                        }
+                    )
+                    existing_params.add("report.sources")
+
         if (
             "report.sources" in required_params
             and "report.sources" not in existing_params
@@ -1506,28 +1708,44 @@ async def _validate_plan_data_flow(steps: list, user_id: str) -> tuple[bool, lis
                 str(value) for value in (step.get("depends_on") or []) if str(value)
             }
             source_artifacts = []
-            for prev_step in steps[:step_idx]:
+            candidate_sources = []
+            for candidate_index, prev_step in enumerate(steps):
+                if candidate_index == step_idx or not isinstance(prev_step, dict):
+                    continue
                 prev_refs = {
                     str(prev_step.get("agent_name") or ""),
                     str(prev_step.get("step_id") or ""),
                     str(prev_step.get("subtask_id") or ""),
                     *_step_subtask_ids(prev_step),
                 }
-                if dependency_refs and not (dependency_refs & prev_refs):
-                    continue
                 prev_metadata = agent_metadata.get(prev_step.get("agent_name")) or {}
-                prev_outputs = _string_list(prev_metadata.get("produces"))
+                prev_outputs = _string_list(
+                    prev_step.get("expected_outputs") or prev_metadata.get("produces")
+                )
                 source_output = _primary_output_for_step(prev_step, prev_outputs)
                 if not source_output:
                     continue
-                source_artifacts.append(
-                    {
-                        "source_step": str(
-                            prev_step.get("step_id") or prev_step.get("agent_name")
-                        ),
-                        "source_output": source_output,
-                    }
+                candidate_sources.append(
+                    (
+                        0 if dependency_refs & prev_refs else 1,
+                        0 if candidate_index < step_idx else 1,
+                        candidate_index,
+                        {
+                            "source_step": str(
+                                prev_step.get("step_id")
+                                or prev_step.get("agent_name")
+                            ),
+                            "source_output": source_output,
+                        },
+                    )
                 )
+            if candidate_sources:
+                preferred_group = min(item[0] for item in candidate_sources)
+                source_artifacts = [
+                    item[3]
+                    for item in sorted(candidate_sources, key=lambda value: value[:3])
+                    if item[0] == preferred_group
+                ]
             if source_artifacts:
                 inputs.append(
                     {
@@ -1536,9 +1754,15 @@ async def _validate_plan_data_flow(steps: list, user_id: str) -> tuple[bool, lis
                         "assembly": {"schema_ref": "report.sources@v1"},
                     }
                 )
+                existing_params.add("report.sources")
         mapped_params = set()
 
         for input_mapping in inputs:
+            if not isinstance(input_mapping, dict):
+                errors.append(
+                    f"Step {step_idx + 1} ({agent_name}): Input mapping must be an object"
+                )
+                continue
             param_name = input_mapping.get("parameter_name")
             source_artifacts = input_mapping.get("source_artifacts")
             if isinstance(source_artifacts, list):

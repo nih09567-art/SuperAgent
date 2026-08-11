@@ -365,13 +365,13 @@ RESOURCE_SECURITY_ATTRIBUTES = {
     "RemoteMeetingManagerAgent": {
         "type": "agent",
         "department_domain": "Office",
-        "capability_domain": "Operations",
+        "capability_domain": "Meeting",
         "sensitivity": "MEDIUM",
         "allowed_roles": ["UniversalAssistant", "OperationAgent"],
         "allowed_job_roles": ["office_operator", "office_manager", "system_orchestrator"],
         "allowed_operation_modes": ["delegate", "write"],
         "scenario_tags": ["meeting_management", "office_operation"],
-        "expected_capabilities": ["Operations"],
+        "expected_capabilities": ["Meeting", "Office", "Operations"],
     },
     "RemoteOfficeAssistantAgent": {
         "type": "agent",
@@ -382,7 +382,7 @@ RESOURCE_SECURITY_ATTRIBUTES = {
         "allowed_job_roles": ["office_operator", "office_manager", "communication_officer", "hr_manager", "system_orchestrator"],
         "allowed_operation_modes": ["delegate", "write", "query"],
         "scenario_tags": ["leave_record_query", "leave_request", "travel_service", "travel_request", "office_operation"],
-        "expected_capabilities": ["HR", "Office", "Operations"],
+        "expected_capabilities": ["HR", "Travel", "Office", "Operations"],
     },
     "RemoteWeatherAgent": {
         "type": "agent",
@@ -425,7 +425,12 @@ RESOURCE_SECURITY_ATTRIBUTES = {
         "allowed_roles": ["UniversalAssistant", "HRAgent", "OperationAgent"],
         "allowed_job_roles": ["hr_specialist", "hr_manager", "office_manager", "system_orchestrator"],
         "allowed_operation_modes": ["delegate", "query", "read", "write"],
-        "scenario_tags": ["schedule_management", "hr_calendar", "meeting_management"],
+        "scenario_tags": [
+            "schedule_management",
+            "hr_calendar",
+            "meeting_management",
+            "office_assistance",
+        ],
         "expected_capabilities": ["HR", "Office"],
     },
     "tavily_search_results_json": {

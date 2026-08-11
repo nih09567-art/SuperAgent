@@ -2150,9 +2150,6 @@ async def tool(req: ToolRequest, authorization: Optional[str] = Header(default=N
             employee_name = req.arguments.get("employee_name")
             filters = req.arguments.get("filters", {})
 
-            if not employee_id and not employee_name:
-                raise ValueError("employee_id or employee_name is required")
-
             # Load all records
             all_records = _load_travel_applications()
 

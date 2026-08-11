@@ -77,6 +77,16 @@ def _is_dispatch_permission_error(exc: BaseException) -> bool:
     return isinstance(exc, PermissionDeniedError)
 
 
+def _is_trusted_recipient_resolution_error(exc: BaseException) -> bool:
+    """Recognize a pre-side-effect recipient lookup that needs human input."""
+
+    try:
+        from src.security.trusted_recipients import TrustedRecipientResolutionError
+    except Exception:  # noqa: BLE001 - optional security dependencies
+        return False
+    return isinstance(exc, TrustedRecipientResolutionError)
+
+
 # Optional authorization hook. It runs after routing/context construction but
 # before a side-effect receipt is claimed, so an approval pause never leaves a
 # misleading STARTED receipt behind.
@@ -725,6 +735,10 @@ class TaskScheduler:
                 step, context, on_step_start, on_retry
             )
         except Exception as exc:  # noqa: BLE001 - degrade to a failed step
+            logger.exception(
+                "scheduler step %s crashed before a governed result was produced",
+                step.step_id,
+            )
             result = StepResult(
                 step_id=step.step_id,
                 status=StepStatus.FAILED,
@@ -1478,6 +1492,23 @@ class TaskScheduler:
                 governed = self._policy_failure_result(step, selected_agent, exc)
                 if governed is not None:
                     return governed
+                if _is_trusted_recipient_resolution_error(exc):
+                    return StepResult(
+                        step_id=step.step_id,
+                        status=StepStatus.FAILED,
+                        error=(
+                            "recipient identity requires human review before "
+                            "the side effect can be executed"
+                        ),
+                        metrics={
+                            "failure_code": "CLARIFICATION_REQUIRED",
+                            "clarify": True,
+                            "safe_to_retry": True,
+                            "side_effect_started": False,
+                            "failure_phase": "authorization",
+                            "selected_agent": selected_agent,
+                        },
+                    )
                 raise
         else:
             step_ctx["permission_decision"] = "NOT_ENFORCED"
@@ -2861,10 +2892,26 @@ class TaskScheduler:
                         report_body = str(
                             report_payload.get("markdown")
                             or report_payload.get("content")
+                            or report_payload.get("message")
                             or ""
                         )
+                        if not report_body.strip() and (
+                            report_payload.get("file_path")
+                            or report_payload.get("file_name")
+                        ):
+                            document_name = str(
+                                report_payload.get("file_name")
+                                or report_payload.get("file_path")
+                            )
+                            report_body = f"已生成并提交文档：{document_name}"
                     else:
                         report_body = str(report_payload or "")
+                    if not report_body.strip():
+                        report_body = str(
+                            assembled.get("instruction")
+                            or assembled.get("title")
+                            or "请查收本次任务生成的结果。"
+                        )
                     report_ref = binding_refs[0] if binding_refs else None
                     recipients = (
                         entities.get("recipient") or entities.get("recipients") or []

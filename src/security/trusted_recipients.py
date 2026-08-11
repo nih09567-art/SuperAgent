@@ -50,6 +50,15 @@ def _matches_name_title_alias(entry: dict[str, Any], recipient: str) -> bool:
     return False
 
 
+def _matches_explicit_alias(entry: dict[str, Any], recipient: str) -> bool:
+    aliases = entry.get("aliases") or []
+    if isinstance(aliases, str):
+        aliases = [aliases]
+    return recipient in {
+        _normalized(alias) for alias in aliases if _normalized(alias)
+    }
+
+
 def _trusted_directory() -> list[dict[str, Any]]:
     root = get_project_root() / "assets"
     entries: list[dict[str, Any]] = []
@@ -112,6 +121,13 @@ def resolve_trusted_recipient_addresses(recipients: Any) -> list[str]:
                 for entry in directory
                 if str(entry.get("email") or "").strip()
                 and _matches_name_title_alias(entry, recipient)
+            }
+        if not matches:
+            matches = {
+                str(entry.get("email") or "").strip()
+                for entry in directory
+                if str(entry.get("email") or "").strip()
+                and _matches_explicit_alias(entry, recipient)
             }
         if len(matches) > 1:
             raise AmbiguousTrustedRecipientError(

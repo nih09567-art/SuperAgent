@@ -1677,6 +1677,221 @@ def test_data_flow_validation_materializes_report_fan_in(monkeypatch):
     ]
 
 
+def test_data_flow_validation_upgrades_single_report_source_to_fan_in(monkeypatch):
+    import src.workflow.coor_task as coor_task
+
+    class Registry:
+        async def list(self):
+            return [
+                SimpleNamespace(
+                    user_id="share",
+                    agent_name="RemoteKnowledgeAgent",
+                    requires=[],
+                    produces=["policy.info"],
+                ),
+                SimpleNamespace(
+                    user_id="share",
+                    agent_name="RemoteReportAgent",
+                    requires=["report.sources"],
+                    produces=["report.markdown"],
+                ),
+            ]
+
+    monkeypatch.setattr(
+        coor_task,
+        "agent_manager",
+        SimpleNamespace(agent_registry=Registry()),
+    )
+    steps = [
+        {"step_id": "knowledge", "agent_name": "RemoteKnowledgeAgent"},
+        {
+            "step_id": "report",
+            "agent_name": "RemoteReportAgent",
+            "depends_on": ["knowledge"],
+            "inputs": [
+                {
+                    "parameter_name": "report.sources",
+                    "source_step": "knowledge",
+                    "source_output": "policy.info",
+                }
+            ],
+        },
+    ]
+
+    is_valid, errors = asyncio.run(
+        coor_task._validate_plan_data_flow(steps, "admin")
+    )
+
+    assert is_valid is True
+    assert errors == []
+    assert steps[1]["inputs"] == [
+        {
+            "parameter_name": "report.sources",
+            "source_artifacts": [
+                {"source_step": "knowledge", "source_output": "policy.info"}
+            ],
+            "assembly": {"schema_ref": "report.sources@v1"},
+        }
+    ]
+
+
+def test_profile_validation_rejects_weather_agent_owning_travel_subtask():
+    import src.workflow.coor_task as coor_task
+
+    state = {
+        "_require_trusted_subtask_bindings": True,
+        "task_profile": {
+            "subtasks": [
+                {
+                    "id": "weather",
+                    "intent": "weather_query",
+                    "depends_on": [],
+                },
+                {
+                    "id": "travel",
+                    "intent": "travel_service",
+                    "depends_on": ["weather"],
+                },
+            ]
+        },
+    }
+    steps = [
+        {
+            "step_id": "combined",
+            "agent_name": "RemoteWeatherAgent",
+            "subtask_ids": ["weather", "travel"],
+            "intents": ["weather_query", "travel_service"],
+            "depends_on": [],
+        }
+    ]
+
+    errors = coor_task._validate_plan_against_task_profile(steps, state)
+
+    assert any("travel_service" in error and "RemoteWeatherAgent" in error for error in errors)
+
+
+def test_compatibility_normalization_splits_weather_and_travel_agents(monkeypatch):
+    import src.workflow.coor_task as coor_task
+
+    monkeypatch.setattr(
+        "src.service.env.CONTRACT_PLANNING_COMPAT_ENABLED",
+        True,
+    )
+
+    state = {
+        "TEAM_MEMBERS": ["RemoteWeatherAgent", "RemoteOfficeAssistantAgent"],
+        "task_profile": {
+            "subtasks": [
+                {
+                    "id": "weather",
+                    "intent": "weather_query",
+                    "depends_on": [],
+                },
+                {
+                    "id": "travel",
+                    "intent": "travel_service",
+                    "depends_on": ["weather"],
+                },
+            ]
+        },
+    }
+    steps = [
+        {
+            "step_id": "combined",
+            "agent_name": "RemoteWeatherAgent",
+            "subtask_ids": ["weather", "travel"],
+            "intents": ["weather_query", "travel_service"],
+            "depends_on": [],
+            "expected_outputs": ["weather.forecast"],
+        }
+    ]
+
+    normalized, repairs = coor_task._normalize_compatible_plan(steps, state)
+
+    assert [step["agent_name"] for step in normalized] == [
+        "RemoteWeatherAgent",
+        "RemoteOfficeAssistantAgent",
+    ]
+    assert normalized[0]["subtask_ids"] == ["weather"]
+    assert normalized[1]["subtask_ids"] == ["travel"]
+    assert normalized[1]["depends_on"] == ["combined"]
+    assert "expected_outputs" not in normalized[1]
+    assert repairs == [
+        "split combined intents onto trusted Agent RemoteWeatherAgent",
+        "split combined intents onto trusted Agent RemoteOfficeAssistantAgent",
+        "derived depends_on for step_2",
+    ]
+
+
+def test_data_flow_validation_rebinds_email_from_employee_to_document(monkeypatch):
+    import src.workflow.coor_task as coor_task
+
+    class Registry:
+        async def list(self):
+            return [
+                SimpleNamespace(
+                    user_id="share",
+                    agent_name="RemoteHRAssistantAgent",
+                    requires=[],
+                    produces=["employee.info"],
+                ),
+                SimpleNamespace(
+                    user_id="share",
+                    agent_name="RemoteDocumentGeneratorAgent",
+                    requires=[],
+                    produces=[],
+                ),
+                SimpleNamespace(
+                    user_id="share",
+                    agent_name="RemoteEmailDispatchAgent",
+                    requires=["email.dispatch.request"],
+                    produces=["email.dispatch.receipt"],
+                    input_schema_refs={
+                        "email.dispatch.request": "email.dispatch.request@v1"
+                    },
+                ),
+            ]
+
+    monkeypatch.setattr(
+        coor_task,
+        "agent_manager",
+        SimpleNamespace(agent_registry=Registry()),
+    )
+    steps = [
+        {"step_id": "hr", "agent_name": "RemoteHRAssistantAgent"},
+        {
+            "step_id": "document",
+            "agent_name": "RemoteDocumentGeneratorAgent",
+            "depends_on": ["hr"],
+        },
+        {
+            "step_id": "email",
+            "agent_name": "RemoteEmailDispatchAgent",
+            "depends_on": ["document"],
+            "inputs": [
+                {
+                    "parameter_name": "email.dispatch.request",
+                    "source_artifacts": [
+                        {"source_step": "hr", "source_output": "employee.info"}
+                    ],
+                    "assembly": {"schema_ref": "email.dispatch.request@v1"},
+                }
+            ],
+        },
+    ]
+
+    is_valid, errors = asyncio.run(
+        coor_task._validate_plan_data_flow(steps, "admin")
+    )
+
+    assert is_valid is True
+    assert errors == []
+    assert steps[1]["expected_outputs"] == ["document.file"]
+    assert steps[2]["inputs"][0]["source_artifacts"] == [
+        {"source_step": "document", "source_output": "document.file"}
+    ]
+
+
 def test_data_flow_validation_canonicalizes_unique_output_alias(monkeypatch):
     import src.workflow.coor_task as coor_task
 

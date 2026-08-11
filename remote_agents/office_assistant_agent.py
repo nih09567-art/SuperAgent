@@ -134,6 +134,21 @@ def _leave_record_payload(result: Any, arguments: Dict[str, Any]) -> Dict[str, A
     }
 
 
+def _travel_record_payload(result: Any, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """Project a governed travel query into the shared structured schema."""
+
+    raw_records = result.get("records", []) if isinstance(result, dict) else []
+    records = [dict(item) for item in raw_records if isinstance(item, dict)]
+    return {
+        "status": "success",
+        "employee_id": str(arguments.get("employee_id") or "").strip(),
+        "employee_name": str(arguments.get("employee_name") or "").strip(),
+        "records": records,
+        "matched_count": len(records),
+        "queried_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 class RemoteOfficeAssistantAgent(BaseRemoteAgent):
     """
     Office Assistant Agent that handles:
@@ -167,12 +182,19 @@ Important notes:
                     DataContractRef(
                         name="employee.info",
                         schema_ref="employee.info@v1",
+                        required=False,
                     )
                 ],
                 produces=[
                     DataContractRef(
                         name="employee.leave_records",
                         schema_ref="employee.leave_records@v1",
+                        required=False,
+                    ),
+                    DataContractRef(
+                        name="employee.travel_records",
+                        schema_ref="structured_agent_result@v1",
+                        required=False,
                     )
                 ],
             ),
@@ -228,7 +250,7 @@ Important notes:
                 f"[{self.name}] Tool: {tool_name}, Params: {json.dumps(params, ensure_ascii=False)}"
             )
 
-            if tool_name == "query_leave_record":
+            if tool_name in {"query_leave_record", "query_travel_record"}:
                 params = _bind_trusted_employee_identity(params, messages)
                 logger.info(
                     f"[{self.name}] Bound trusted employee identity: "
@@ -256,6 +278,24 @@ Important notes:
                 return self.result_envelope(
                     outputs={
                         "employee.leave_records": _leave_record_payload(result, params)
+                    }
+                )
+
+            if tool_name == "query_travel_record":
+                if (
+                    not isinstance(result, dict)
+                    or str(result.get("status") or "").lower() != "success"
+                ):
+                    error = self.execution_error(
+                        RuntimeError(
+                            str((result or {}).get("error") or "travel query failed")
+                        ),
+                        tool_name=tool_name,
+                    )
+                    return self.result_envelope(error=error)
+                return self.result_envelope(
+                    outputs={
+                        "employee.travel_records": _travel_record_payload(result, params)
                     }
                 )
 

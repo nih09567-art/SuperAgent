@@ -138,11 +138,24 @@ class RemoteEmailDispatchAgent(BaseRemoteAgent):
             "simulated",
         }:
             message = str((result or {}).get("error") or "email dispatch failed")
+            safe_to_retry = bool((result or {}).get("safe_to_retry"))
+            error_details = {"tool": tool_name}
+            if safe_to_retry:
+                error_details.update(
+                    {
+                        "safe_to_retry": True,
+                        "side_effect_started": False,
+                        "failure_phase": str(
+                            (result or {}).get("failure_phase") or "validation"
+                        ),
+                    }
+                )
             return self.result_envelope(
                 error=AgentResultError(
                     code="EMAIL_DISPATCH_FAILED",
                     message=message,
-                    retryable=bool((result or {}).get("safe_to_retry")),
+                    retryable=safe_to_retry,
+                    details=error_details,
                 )
             )
 

@@ -158,6 +158,131 @@ def test_travel_and_calendar_choose_read_or_write_resource():
     assert [item.tool_name for item in calendar_write] == ["create_calendar_event_tool"]
 
 
+def test_calendar_query_resolves_relative_time_into_trusted_date_range():
+    from datetime import date
+
+    from src.security.remote_tool_gate import _calendar_query_range
+
+    assert _calendar_query_range("下周", today=date(2026, 8, 10)) == {
+        "start_date": "2026-08-17",
+        "end_date": "2026-08-23",
+    }
+
+
+def test_calendar_query_uses_platform_dates_instead_of_model_dates(monkeypatch):
+    import asyncio
+    import httpx
+
+    from remote_agents.base_agent import (
+        BaseRemoteAgent,
+        bind_authorized_remote_tools,
+        reset_authorized_remote_tools,
+    )
+
+    forwarded = []
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"result": {"status": "success"}}
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, *_args, **kwargs):
+            forwarded.append(kwargs["json"]["arguments"])
+            return FakeResponse()
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **_kwargs: FakeClient())
+    token = bind_authorized_remote_tools(
+        {
+            "authorized_remote_tools": [
+                {
+                    "tool_name": "get_calendar_events_tool",
+                    "arguments": {
+                        "start_date": "2026-08-17",
+                        "end_date": "2026-08-23",
+                    },
+                }
+            ]
+        }
+    )
+    try:
+        asyncio.run(
+            BaseRemoteAgent.call_tool(
+                object(),
+                "get_calendar_events_tool",
+                {"start_date": "2026-08-10", "end_date": "2026-08-16"},
+            )
+        )
+    finally:
+        reset_authorized_remote_tools(token)
+
+    assert forwarded == [
+        {"start_date": "2026-08-17", "end_date": "2026-08-23"}
+    ]
+
+
+def test_meeting_authorization_binds_people_and_allows_only_approved_week():
+    from remote_agents import base_agent
+
+    expected = {
+        "recipients": ["王经理", "李娜"],
+        "start_date": "2026-08-17",
+        "end_date": "2026-08-23",
+    }
+    actual = {
+        "action": "create",
+        "meeting": {
+            "date": "2026-08-17",
+            "time": "10:00",
+            "participants": ["王经理", "李娜"],
+        },
+    }
+
+    assert base_agent._arguments_match_authorization(
+        "remote_meeting_scheduling_tool", expected, actual
+    )
+    assert not base_agent._arguments_match_authorization(
+        "remote_meeting_scheduling_tool",
+        expected,
+        {
+            "action": "create",
+            "meeting": {
+                "date": "2026-08-24",
+                "time": "10:00",
+                "participants": ["王经理", "李娜"],
+            },
+        },
+    )
+
+
+def test_meeting_manifest_resolves_semantic_participants():
+    resolved = required_remote_tool_authorizations(
+        agent_name="RemoteMeetingManagerAgent",
+        intents=["meeting_arrangement"],
+        task_profile={
+            "entities": {
+                "recipient": "参会人",
+                "people": ["王经理", "李娜"],
+                "time": "下周",
+            }
+        },
+        operation_mode="write",
+    )
+
+    arguments = resolved[0].arguments
+    assert arguments["recipients"] == ["王经理", "李娜"]
+    assert "recipient" not in arguments
+    assert arguments["start_date"] <= arguments["end_date"]
+
+
 def test_communication_step_authorizes_contact_lookup_and_send():
     resolved = required_remote_tool_authorizations(
         agent_name="RemoteCommunicationAgent",
@@ -405,6 +530,13 @@ def test_trusted_recipient_accepts_non_routable_demo_hr_mailbox():
     ]
     assert resolve_trusted_recipient_addresses("人事部门") == [
         "hr@example.test"
+    ]
+    assert resolve_trusted_recipient_addresses("HR") == ["hr@example.test"]
+
+
+def test_trusted_recipient_resolves_compliance_business_alias():
+    assert resolve_trusted_recipient_addresses("合规负责人") == [
+        "compliance@example.test"
     ]
 
 

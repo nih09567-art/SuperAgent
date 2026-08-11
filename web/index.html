@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>CoorAgent Web Studio</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260809-task-history-1" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260810-task-history-scroll-1" />
     <script src="/static/mermaid.min.js"></script>
   </head>
   <body>
@@ -41,18 +41,18 @@
       <main class="layout">
         <aside class="sidebar">
           <button class="tab active" data-tab="chat">Chat</button>
-          <button class="tab" data-tab="run">任务执行</button>
+          <button class="tab" data-tab="run">Workflow</button>
           <button class="tab" data-tab="agents">Agents</button>
           <button class="tab" data-tab="tools">Tools</button>
-          <button class="tab" data-tab="workflows">工作流库</button>
-          <button class="tab" data-tab="tasks">任务历史</button>
+          <button class="tab" data-tab="workflows">Workflow Library</button>
+          <button class="tab" data-tab="tasks">Task History</button>
           <button class="tab" data-tab="security">🛡️ Security</button>
         </aside>
 
         <section class="content">
           <section class="panel" id="panel-run">
             <div class="panel-header">
-              <h2>Workflow</h2>
+              <h2>工作流执行</h2>
               <p>发起任务并实时查看输出。</p>
             </div>
             <div class="panel-body run-single-column">
@@ -94,8 +94,8 @@
                         <label for="deepThinking">Deep Thinking</label>
                       </div>
                       <div class="checkbox">
-                        <input type="checkbox" id="searchBefore" />
-                        <label for="searchBefore">Search Before Planning</label>
+                        <input type="checkbox" id="searchBeforePlanning" />
+                        <label for="searchBeforePlanning">Search Before Planning</label>
                       </div>
                       <div class="checkbox">
                         <input type="checkbox" id="debugMode" />
@@ -157,112 +157,134 @@
                 ></div>
               </div>
 
-              <div class="summary-card permission-summary-card" id="permissionSummaryCard" style="display:none">
-                <div class="summary-header">
-                  <h3>🔐 权限摘要</h3>
-                  <button id="togglePermissionSummaryBtn" class="ghost sec-collapse-button" type="button"
-                    aria-expanded="false" aria-controls="permissionSummaryContent">
-                    <span class="sec-collapse-label">展开</span>
-                    <span class="sec-collapse-icon" aria-hidden="true">⌄</span>
-                  </button>
-                </div>
-                <div id="permissionSummaryContent" hidden>
-                  <div id="permissionSummary" class="security-perm-summary"></div>
-                </div>
-              </div>
-
-              <div class="summary-card main-agent-decision-card" id="mainAgentDecisionCard" style="display:none">
-                <div class="summary-header">
-                  <h3>主 Agent 决策台</h3>
-                  <span id="routingDecisionBadge" class="tag">等待路由</span>
-                </div>
-                <div class="decision-history-toolbar" aria-label="历史决策选择">
-                  <label>
-                    <span>对话窗口</span>
-                    <select id="decisionConversationSelect" aria-label="选择对话窗口"></select>
-                  </label>
-                  <label>
-                    <span>决策轮次</span>
-                    <select id="decisionRoundSelect" aria-label="选择决策轮次"></select>
-                  </label>
-                </div>
-                <div id="decisionHistoryMeta" class="decision-history-meta"></div>
-                <div id="taskProfileView" class="decision-profile"></div>
-                <div id="decisionTopAgentSummary" class="decision-top-agent"></div>
-                <div id="decisionDetailTabs" class="decision-detail-tabs" aria-label="主 Agent 决策详情"></div>
-                <div id="decisionDetailPanel" class="decision-detail-panel" aria-live="polite"></div>
-                <div class="decision-columns" hidden>
-                  <div>
-                    <div class="label">合法候选与得分</div>
-                    <div id="routingCandidatesView" class="decision-list"></div>
+              <div class="run-workspace-grid">
+                <main class="run-primary-column">
+                  <div class="summary-card main-agent-decision-card" id="mainAgentDecisionCard">
+                    <div class="summary-header">
+                      <div class="run-section-heading">
+                        <h3>主 Agent 决策台</h3>
+                        <p>选择对话后查看任务画像、候选 Agent 与路由依据。</p>
+                      </div>
+                      <span id="routingDecisionBadge" class="tag" hidden>等待路由</span>
+                    </div>
+                    <div class="decision-history-toolbar" aria-label="历史决策选择">
+                      <label>
+                        <span>对话窗口</span>
+                        <select id="decisionConversationSelect" aria-label="选择对话窗口"></select>
+                      </label>
+                      <label>
+                        <span>决策轮次</span>
+                        <select id="decisionRoundSelect" aria-label="选择决策轮次"></select>
+                      </label>
+                    </div>
+                    <div id="mainAgentDecisionContent" class="main-agent-decision-content" hidden>
+                      <div id="decisionHistoryMeta" class="decision-history-meta"></div>
+                      <div id="taskProfileView" class="decision-profile"></div>
+                      <div id="decisionTopAgentSummary" class="decision-top-agent"></div>
+                      <div id="decisionDetailTabs" class="decision-detail-tabs" aria-label="主 Agent 决策详情"></div>
+                      <div id="decisionDetailPanel" class="decision-detail-panel" aria-live="polite"></div>
+                      <div class="decision-columns" hidden>
+                        <div>
+                          <div class="label">合法候选与得分</div>
+                          <div id="routingCandidatesView" class="decision-list"></div>
+                        </div>
+                        <div>
+                          <div class="label">被排除 Agent 与原因</div>
+                          <div id="routingExcludedView" class="decision-list"></div>
+                        </div>
+                      </div>
+                    </div>
                   </div>
-                  <div>
-                    <div class="label">被排除 Agent 与原因</div>
-                    <div id="routingExcludedView" class="decision-list"></div>
+
+                  <div class="summary-card plan-editor-card">
+                    <div class="summary-header run-section-heading">
+                      <div>
+                        <h3>计划与反馈</h3>
+                        <p>检查计划后确认执行，也可以继续调整或重新规划。</p>
+                      </div>
+                    </div>
+                    <div id="planValidationHint" class="summary-hint hidden">请检查计划内容</div>
+                    <div id="planEditorList" class="plan-editor-list" data-empty-text="计划生成后将在这里显示"></div>
+                    <div class="plan-editor-actions">
+                      <button id="confirmExecute" class="primary">确认执行</button>
+                      <button id="nlPlanEdit" class="ghost">自然语言改写</button>
+                      <button id="retryPlan" class="ghost">重新规划</button>
+                    </div>
                   </div>
-                </div>
-              </div>
 
-              <div class="summary-card plan-editor-card">
-                <div class="summary-header">
-                  <h3>计划反馈</h3>
-                </div>
-                <div class="plan-editor-actions">
-                  <button id="nlPlanEdit" class="primary">自然语言改写</button>
-                  <button id="confirmExecute" class="ghost">确认执行</button>
-                  <button id="retryPlan" class="ghost">重试规划</button>
-                </div>
-                <div id="planValidationHint" class="summary-hint hidden">Validation hint</div>
-                <div id="planEditorList" class="plan-editor-list"></div>
-              </div>
-
-              <div class="output-card">
-                <div class="output-header">
-                  <h3>流式输出</h3>
-                  <div class="output-actions">
-                    <button id="autoScrollBtn" class="ghost">Auto-scroll: On</button>
-                    <button id="exportTxtBtn" class="ghost">Export .txt</button>
-                    <button id="clearOutput" class="ghost">Clear</button>
+                  <div class="output-card run-output-card">
+                    <div class="output-header">
+                      <div class="run-section-heading">
+                        <h3>流式输出</h3>
+                        <p>实时查看规划与执行过程。</p>
+                      </div>
+                      <div class="output-actions">
+                        <button id="autoScrollBtn" class="ghost">自动滚动：开</button>
+                        <button id="exportTxtBtn" class="ghost">导出日志</button>
+                        <button id="clearOutput" class="ghost">清空</button>
+                      </div>
+                    </div>
+                    <div class="output-panels">
+                      <section class="output-panel">
+                        <div class="output-panel-title">规划日志</div>
+                        <div
+                          id="planningOutput"
+                          class="output-body"
+                          data-empty-text="等待生成规划日志"
+                          role="log"
+                          aria-live="polite"
+                          aria-relevant="additions"
+                        ></div>
+                      </section>
+                      <section class="output-panel">
+                        <div class="output-panel-title">执行日志</div>
+                        <div
+                          id="executionOutput"
+                          class="output-body"
+                          data-empty-text="确认计划后将在这里显示执行日志"
+                          role="log"
+                          aria-live="polite"
+                          aria-relevant="additions"
+                        ></div>
+                      </section>
+                    </div>
                   </div>
-                </div>
-                <div class="output-panels">
-                  <section class="output-panel">
-                    <div class="output-panel-title">规划日志</div>
-                    <div
-                      id="planningOutput"
-                      class="output-body"
-                      role="log"
-                      aria-live="polite"
-                      aria-relevant="additions"
-                    ></div>
-                  </section>
-                  <section class="output-panel">
-                    <div class="output-panel-title">执行日志</div>
-                    <div
-                      id="executionOutput"
-                      class="output-body"
-                      role="log"
-                      aria-live="polite"
-                      aria-relevant="additions"
-                    ></div>
-                  </section>
-                </div>
-              </div>
+                </main>
 
-              <div class="summary-card">
-                <div class="summary-header">
-                  <h3>执行摘要</h3>
-                </div>
-                <div class="summary-flow">
-                  <div class="label">Live Flow</div>
-                  <div id="summaryFlow" class="flow-track"></div>
-                  <div id="summaryHint" class="summary-hint hidden">Workflow completed.</div>
-                </div>
-                <div class="summary-plan">
-                  <div class="label">Plan Preview</div>
-                  <div id="planSummary" class="plan-summary"></div>
-                  <div id="planHint" class="summary-hint hidden">No plan available.</div>
-                </div>
+                <aside class="run-side-column" aria-label="工作流状态">
+                  <div class="summary-card permission-summary-card" id="permissionSummaryCard" style="display:none">
+                    <div class="summary-header">
+                      <h3>🔐 权限摘要</h3>
+                      <button id="togglePermissionSummaryBtn" class="ghost sec-collapse-button" type="button"
+                        aria-expanded="false" aria-controls="permissionSummaryContent">
+                        <span class="sec-collapse-label">展开</span>
+                        <span class="sec-collapse-icon" aria-hidden="true">⌄</span>
+                      </button>
+                    </div>
+                    <div id="permissionSummaryContent" hidden>
+                      <div id="permissionSummary" class="security-perm-summary"></div>
+                    </div>
+                  </div>
+
+                  <div class="summary-card execution-summary-card">
+                    <div class="summary-header">
+                      <div class="run-section-heading">
+                        <h3>执行摘要</h3>
+                        <p>步骤进度与计划概览。</p>
+                      </div>
+                    </div>
+                    <div class="summary-flow">
+                      <div class="label">实时流程</div>
+                      <div id="summaryFlow" class="flow-track" data-empty-text="等待任务开始"></div>
+                      <div id="summaryHint" class="summary-hint hidden">工作流已完成。</div>
+                    </div>
+                    <div class="summary-plan">
+                      <div class="label">计划预览</div>
+                      <div id="planSummary" class="plan-summary" data-empty-text="暂未生成计划"></div>
+                      <div id="planHint" class="summary-hint hidden">暂无可用计划。</div>
+                    </div>
+                  </div>
+                </aside>
               </div>
             </div>
           </section>
@@ -307,40 +329,51 @@
 
           <section class="panel" id="panel-agents">
             <div class="panel-header">
-              <h2>Agents</h2>
-              <p>默认 + 用户自定义代理。</p>
+              <h2>Agent 中心</h2>
+              <p>浏览、筛选并选择参与任务协作的 Agent。</p>
             </div>
             <div class="panel-body agents-body">
-              <div class="panel-actions agents-toolbar">
-                <div class="agents-search">
-                  <input id="agentsSearch" type="text" placeholder="Search agent name..." />
+              <div class="panel-actions resource-toolbar agents-toolbar">
+                <div class="resource-toolbar-main">
+                  <label class="resource-search agents-search" for="agentsSearch">
+                    <span class="resource-search-icon" aria-hidden="true">⌕</span>
+                    <input id="agentsSearch" type="search" placeholder="搜索 Agent 名称、别名或描述" />
+                  </label>
+                  <button id="refreshAgents" class="primary">刷新</button>
                 </div>
-                <div class="agents-filters">
-                  <select id="agentsFilter">
-                    <option value="all">All Agents</option>
-                    <option value="default">Default</option>
-                    <option value="user">User</option>
-                    <option value="remote">Remote</option>
-                  </select>
-                  <select id="agentsSort">
-                    <option value="name">Sort: Name</option>
-                    <option value="health">Sort: Health</option>
-                  </select>
-                </div>
-                <div class="agents-meta">
-                  <span id="coorCount" class="coor-count">已选: 0</span>
-                  <button id="clearCoorBtn" class="ghost">Clear</button>
-                  <button id="healthCheckSelected" class="ghost">Health Check</button>
-                  <button id="refreshAgents" class="primary">Refresh</button>
+                <div class="resource-toolbar-secondary">
+                  <div class="agents-filters">
+                    <select id="agentsFilter" aria-label="筛选 Agent 类型">
+                      <option value="all">全部 Agent</option>
+                      <option value="default">共享 Agent</option>
+                      <option value="user">用户 Agent</option>
+                      <option value="remote">远程 Agent</option>
+                    </select>
+                    <select id="agentsSort" aria-label="Agent 排序方式">
+                      <option value="name">按名称排序</option>
+                      <option value="health">按健康状态排序</option>
+                    </select>
+                  </div>
+                  <div class="agents-meta">
+                    <span id="coorCount" class="coor-count">已选 0 个</span>
+                    <button id="clearCoorBtn" class="ghost">清除选择</button>
+                    <button id="healthCheckSelected" class="ghost">检查所选</button>
+                  </div>
                 </div>
               </div>
               <div class="agents-layout">
-                <div>
+                <div class="resource-list-pane">
+                  <div class="resource-list-header">
+                    <h3>Agent 列表</h3>
+                    <span id="agentsVisibleCount">正在加载...</span>
+                  </div>
                   <div id="agentsList" class="card-grid" aria-live="polite"></div>
                 </div>
                 <aside class="agent-detail" id="agentDetail">
-                  <div class="agent-detail-empty">
-                    选择一个 Agent 查看详情
+                  <div class="resource-detail-empty agent-detail-empty">
+                    <span class="resource-detail-empty-icon" aria-hidden="true">A</span>
+                    <strong>未选择 Agent</strong>
+                    <span>点击左侧卡片查看能力、工具和运行状态。</span>
                   </div>
                 </aside>
               </div>
@@ -349,51 +382,65 @@
 
           <section class="panel" id="panel-tools">
             <div class="panel-header">
-              <h2>Tools</h2>
-              <p>全局工具列表。</p>
+              <h2>工具目录</h2>
+              <p>查看内置工具、MCP 工具及其参数说明。</p>
             </div>
             <div class="panel-body tools-body">
-              <div class="panel-actions tools-toolbar">
-                <div class="tools-search">
-                  <input id="toolsSearch" type="text" placeholder="Search tool name or description... (Press / to focus)" />
+              <div class="panel-actions resource-toolbar tools-toolbar">
+                <div class="resource-toolbar-main">
+                  <label class="resource-search tools-search" for="toolsSearch">
+                    <span class="resource-search-icon" aria-hidden="true">⌕</span>
+                    <input id="toolsSearch" type="search" placeholder="搜索工具名称或描述" />
+                    <kbd>/</kbd>
+                  </label>
+                  <button id="refreshTools" class="primary">刷新</button>
                 </div>
-                <div class="tools-filters">
-                  <select id="toolsSourceFilter">
-                    <option value="all">All sources</option>
-                    <option value="builtin">Builtin</option>
-                    <option value="mcp">MCP</option>
-                  </select>
-                  <select id="toolsScopeFilter">
-                    <option value="all">All scopes</option>
-                    <option value="global">Global</option>
-                    <option value="agent">Agent</option>
-                  </select>
-                  <select id="toolsSort">
-                    <option value="name">Sort: name</option>
-                    <option value="last_used">Sort: last used</option>
-                  </select>
-                </div>
-                <div class="tools-meta">
-                  <span id="toolsCountTotal" class="meta-pill">Total: 0</span>
-                  <span id="toolsCountBuiltin" class="meta-pill">Builtin: 0</span>
-                  <span id="toolsCountMcp" class="meta-pill">MCP: 0</span>
-                  <button id="refreshTools" class="primary">Refresh</button>
+                <div class="resource-toolbar-secondary">
+                  <div class="tools-filters">
+                    <select id="toolsSourceFilter" aria-label="筛选工具来源">
+                      <option value="all">全部来源</option>
+                      <option value="builtin">内置工具</option>
+                      <option value="mcp">MCP 工具</option>
+                    </select>
+                    <select id="toolsScopeFilter" aria-label="筛选工具范围">
+                      <option value="all">全部范围</option>
+                      <option value="global">全局</option>
+                      <option value="agent">Agent</option>
+                    </select>
+                    <select id="toolsSort" aria-label="工具排序方式">
+                      <option value="name">按名称排序</option>
+                      <option value="last_used">按最近使用排序</option>
+                    </select>
+                  </div>
+                  <div class="tools-meta">
+                    <span id="toolsCountTotal" class="meta-pill">总计 0</span>
+                    <span id="toolsCountBuiltin" class="meta-pill">内置 0</span>
+                    <span id="toolsCountMcp" class="meta-pill">MCP 0</span>
+                  </div>
                 </div>
               </div>
               <div class="tools-layout">
-                <div>
+                <div class="resource-list-pane">
+                  <div class="resource-list-header">
+                    <h3>工具列表</h3>
+                    <span id="toolsVisibleCount">正在加载...</span>
+                  </div>
                   <div id="toolsList" class="card-grid" aria-live="polite"></div>
                 </div>
                 <aside class="tool-detail" id="toolDetail">
-                  <div class="tool-detail-empty">选择一个 Tool 查看详情</div>
+                  <div class="resource-detail-empty tool-detail-empty">
+                    <span class="resource-detail-empty-icon" aria-hidden="true">T</span>
+                    <strong>未选择工具</strong>
+                    <span>点击左侧卡片查看说明、使用情况和参数结构。</span>
+                  </div>
                 </aside>
               </div>
               <div class="detail-card mcp-card">
                 <div class="mcp-header">
-                  <h3>MCP Servers</h3>
-                  <button id="mcpToggle" class="ghost mcp-toggle">▼</button>
+                  <h3>MCP 服务</h3>
+                  <button id="mcpToggle" class="ghost mcp-toggle collapsed" aria-expanded="false">›</button>
                 </div>
-                <div id="mcpContent" class="mcp-content">
+                <div id="mcpContent" class="mcp-content collapsed">
                   <div id="mcpSummary" class="meta-row"></div>
                   <div id="mcpList" class="list"></div>
                 </div>
@@ -527,6 +574,7 @@
               <div class="tasks-left">
                 <div class="panel-actions">
                   <button id="refreshTasks" class="primary">刷新</button>
+                  <span id="tasksListCount" class="tasks-list-count">最近记录</span>
                 </div>
                 <div id="tasksList" class="list" aria-live="polite"></div>
               </div>
@@ -633,12 +681,12 @@
                     <div class="sec-section-header">
                       <h3>可用 Agent</h3>
                       <button id="toggleUserAgentsBtn" class="ghost sec-collapse-button" type="button"
-                        aria-expanded="true" aria-controls="userAgentsList">
-                        <span class="sec-collapse-label">收起</span>
-                        <span class="sec-collapse-icon" aria-hidden="true">⌃</span>
+                        aria-expanded="false" aria-controls="userAgentsList">
+                        <span class="sec-collapse-label">展开</span>
+                        <span class="sec-collapse-icon" aria-hidden="true">⌄</span>
                       </button>
                     </div>
-                    <div id="userAgentsList" class="sec-agents"></div>
+                    <div id="userAgentsList" class="sec-agents" hidden></div>
                   </div>
                 </div>
                 <div class="security-right">
@@ -700,14 +748,14 @@
                   </div>
                   <div class="detail-card">
                     <button id="toggleAdvancedSecurityBtn" class="sec-advanced-toggle" type="button"
-                      aria-expanded="false" aria-controls="advancedSecurityContent">
+                      aria-expanded="true" aria-controls="advancedSecurityContent">
                       <span>高级/开发者信息</span>
                       <span class="sec-advanced-toggle-meta">
-                        <span class="sec-collapse-label">展开</span>
-                        <span class="sec-collapse-icon" aria-hidden="true">⌄</span>
+                        <span class="sec-collapse-label">收起</span>
+                        <span class="sec-collapse-icon" aria-hidden="true">⌃</span>
                       </span>
                     </button>
-                    <div id="advancedSecurityContent" class="sec-advanced-content" hidden>
+                    <div id="advancedSecurityContent" class="sec-advanced-content">
                       <h4>安全策略</h4>
                       <div id="policyList" class="sec-policies"></div>
                     </div>
@@ -720,7 +768,7 @@
       </main>
     </div>
 
-    <script src="/static/app.js?v=20260809-task-history-1"></script>
-    <script src="/static/security.js?v=20260809-user-agents-collapse-1"></script>
+    <script src="/static/app.js?v=20260810-task-history-scroll-1"></script>
+    <script src="/static/security.js?v=20260810-security-defaults-1"></script>
   </body>
 </html>

@@ -27,7 +27,7 @@ const createConfirmationRequestId = () => {
 
 const userIdInput = document.getElementById("userId");
 const deepThinkingInput = document.getElementById("deepThinking");
-const searchBeforeInput = document.getElementById("searchBefore");
+const searchBeforePlanningInput = document.getElementById("searchBeforePlanning");
 const debugInput = document.getElementById("debugMode");
 const workflowIdInput = document.getElementById("workflowId");
 const messageInput = document.getElementById("message");
@@ -65,10 +65,12 @@ const agentsSearchInput = document.getElementById("agentsSearch");
 const agentsFilterSelect = document.getElementById("agentsFilter");
 const agentsSortSelect = document.getElementById("agentsSort");
 const coorCount = document.getElementById("coorCount");
+const agentsVisibleCount = document.getElementById("agentsVisibleCount");
 const clearCoorBtn = document.getElementById("clearCoorBtn");
 const healthCheckSelectedBtn = document.getElementById("healthCheckSelected");
 const agentDetail = document.getElementById("agentDetail");
 const toolsList = document.getElementById("toolsList");
+const toolsVisibleCount = document.getElementById("toolsVisibleCount");
 const toolDetail = document.getElementById("toolDetail");
 const mcpList = document.getElementById("mcpList");
 const mcpSummary = document.getElementById("mcpSummary");
@@ -112,6 +114,7 @@ const applyPlanNlBtn = document.getElementById("applyPlanNl");
 const planNlInput = document.getElementById("planNlInput");
 const planNlHint = document.getElementById("planNlHint");
 const mainAgentDecisionCard = document.getElementById("mainAgentDecisionCard");
+const mainAgentDecisionContent = document.getElementById("mainAgentDecisionContent");
 const routingDecisionBadge = document.getElementById("routingDecisionBadge");
 const taskProfileView = document.getElementById("taskProfileView");
 const routingCandidatesView = document.getElementById("routingCandidatesView");
@@ -197,7 +200,14 @@ const initializeChatPanelLayout = () => {
   historyClear.className = "ghost chat-history-clear";
   historyClear.type = "button";
   historyClear.textContent = "清空";
-  historyToolbar.append(historyMeta, historyClear);
+  const historyActions = document.createElement("div");
+  historyActions.className = "chat-history-actions";
+  const historyNew = document.createElement("button");
+  historyNew.className = "chat-history-new";
+  historyNew.type = "button";
+  historyNew.textContent = "+ 新对话";
+  historyActions.append(historyNew, historyClear);
+  historyToolbar.append(historyMeta, historyActions);
   const historyView = document.createElement("div");
   historyView.id = "chatHistoryView";
   historyView.className = "conversation-history-list";
@@ -209,6 +219,19 @@ const initializeChatPanelLayout = () => {
   conversationView.id = "chatConversationView";
   conversationView.className = "chat-conversation chat-conversation-view";
   conversationView.setAttribute("aria-live", "polite");
+  const emptyState = document.createElement("section");
+  emptyState.className = "chat-empty-state";
+  emptyState.setAttribute("aria-label", "开始新对话");
+  emptyState.innerHTML = `
+    <div class="chat-empty-mark" aria-hidden="true">SA</div>
+    <h3>今天想完成什么？</h3>
+    <p>直接描述目标，系统会规划步骤并选择合适的 Agent。</p>
+    <div class="chat-suggestion-grid" aria-label="示例任务">
+      <button type="button" data-chat-prompt="查询员工李娜的基本信息">查询员工基本信息<span>查找人员资料与任职信息</span></button>
+      <button type="button" data-chat-prompt="为员工李娜生成收入证明">生成收入证明<span>调用文档能力生成证明文件</span></button>
+      <button type="button" data-chat-prompt="查询员工张三的工资">查询员工工资<span>读取薪资信息并汇总结果</span></button>
+      <button type="button" data-chat-prompt="查询今天的天气">查询天气<span>获取当前天气与简要预报</span></button>
+    </div>`;
   const composer = document.createElement("div");
   composer.className = "chat-composer chat-mirror-composer";
   const newButton = document.createElement("button");
@@ -221,7 +244,7 @@ const initializeChatPanelLayout = () => {
   const chatMessage = document.createElement("textarea");
   chatMessage.id = "chatMessage";
   chatMessage.rows = 1;
-  chatMessage.placeholder = "输入消息...";
+  chatMessage.placeholder = "描述任务，Enter 发送，Shift + Enter 换行";
   const chatStop = document.createElement("button");
   chatStop.id = "chatStopBtn";
   chatStop.className = "chat-submit chat-stop";
@@ -237,7 +260,7 @@ const initializeChatPanelLayout = () => {
   chatRun.setAttribute("aria-label", "Send message");
   chatRun.innerHTML = '<span aria-hidden="true">&#8593;</span>';
   composer.append(newButton, chatMessage, chatStop, chatRun);
-  workspaceView.append(conversationView, composer);
+  workspaceView.append(emptyState, conversationView, composer);
   workspaceSlot.appendChild(workspaceView);
 
   const stripCloneIds = (root) => {
@@ -275,6 +298,7 @@ const initializeChatPanelLayout = () => {
     );
     conversationView.replaceChildren(...conversationClones);
     conversationView.scrollTop = conversationView.scrollHeight;
+    emptyState.hidden = conversationClones.length > 0;
     const historyClones = Array.from(conversationHistoryList.childNodes).map((node) =>
       stripCloneIds(node.cloneNode(true))
     );
@@ -338,6 +362,16 @@ const initializeChatPanelLayout = () => {
     resizeMirrorMessage();
     schedule();
   });
+  historyNew.addEventListener("click", () => newButton.click());
+  emptyState.querySelectorAll("[data-chat-prompt]").forEach((suggestion) => {
+    suggestion.addEventListener("click", () => {
+      chatMessage.value = suggestion.dataset.chatPrompt || "";
+      messageInput.value = chatMessage.value;
+      messageInput.dispatchEvent(new Event("input", { bubbles: true }));
+      resizeMirrorMessage();
+      chatMessage.focus();
+    });
+  });
   historyClear.addEventListener("click", () => clearChatHistoryBtn.click());
   historyView.addEventListener("click", (event) => {
     const item = event.target.closest(".conversation-history-item");
@@ -381,9 +415,15 @@ const initializeChatPanelLayout = () => {
     if (!button) return;
     const actions = [
       "chat-plan-confirm", "chat-plan-modify", "chat-plan-revision-apply", "chat-plan-revision-cancel",
+      "travel-confirm-button",
     ];
     const action = actions.find((className) => button.classList.contains(className));
-    if (action) chatConversation.querySelector(`#answer .${action}`)?.click();
+    if (action === "travel-confirm-button") {
+      const sourceButton = chatConversation.querySelector("#answer .travel-confirm-button");
+      void confirmTravelPlan(sourceButton);
+    } else if (action) {
+      chatConversation.querySelector(`#answer .${action}`)?.click();
+    }
     schedule();
   });
 
@@ -452,6 +492,8 @@ let activeConversationTranscript = [];
 let activeConversationId = null;
 let activeConversationCreatedAt = null;
 let activePendingPlan = null;
+let activeTravelScenario = null;
+let travelRequestInProgress = false;
 let runningConversationId = null;
 let viewedConversationId = null;
 let runningConversationNodes = null;
@@ -691,9 +733,24 @@ const setChatPlanActionsDisabled = (disabled) => {
 };
 
 async function confirmChatPlanExecution() {
+  if (activePendingPlan?.status === "recovery_review_required") {
+    switchTab("tasks");
+    await fetchTasks();
+    if (activePendingPlan.taskId) {
+      await selectTask({
+        task_id: activePendingPlan.taskId,
+        workflow_id: activePendingPlan.workflowId,
+      });
+    }
+    return;
+  }
+  if (String(activePendingPlan?.status || "").startsWith("reconciliation_")) {
+    switchTab("security");
+    await window.SecurityModule?.loadSecurityReconciliations?.();
+    return;
+  }
   if (
     ["recovery_pending", "recovery_unknown"].includes(activePendingPlan?.status)
-    || String(activePendingPlan?.status || "").startsWith("reconciliation_")
   ) {
     await resolvePendingExecution(activePendingPlan);
     return;
@@ -882,7 +939,7 @@ const showCurrentChatTurn = (message) => {
   const avatar = document.createElement("div");
   avatar.className = "chat-assistant-avatar";
   avatar.setAttribute("aria-hidden", "true");
-  avatar.textContent = "CA";
+  avatar.textContent = "SA";
   const assistantContent = document.createElement("div");
   assistantContent.className = "chat-assistant-content";
   const assistantName = document.createElement("div");
@@ -920,6 +977,178 @@ const showAssistantText = (message) => {
   currentChatLifecycle = null;
   scrollChatToLatest();
 };
+
+const TRAVEL_FIELD_LABELS = {
+  employee_name: "员工",
+  origin: "出发地",
+  destination: "目的地",
+  start_date: "出发日期",
+  end_date: "返回日期",
+  purpose: "事由",
+  project_or_cost_center: "项目或成本中心",
+  transport_preference: "交通偏好",
+  accommodation_standard: "住宿标准",
+};
+
+const cloneTravelData = (value) => {
+  if (!value || typeof value !== "object") return null;
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch (error) {
+    console.warn("Failed to clone employee travel data:", error);
+    return null;
+  }
+};
+
+const normalizeTravelScenario = (value) => {
+  const normalized = cloneTravelData(value);
+  if (!normalized || !["collecting", "pending_confirmation"].includes(normalized.mode)) return null;
+  normalized.draft = normalized.draft && typeof normalized.draft === "object"
+    ? normalized.draft
+    : {};
+  return normalized;
+};
+
+const formatTravelMoney = (value) => `¥${Number(value || 0).toLocaleString("zh-CN", {
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+})}`;
+
+const appendTravelDetailTable = (container, draft) => {
+  const table = document.createElement("table");
+  table.className = "travel-detail-table";
+  const body = document.createElement("tbody");
+  Object.entries(TRAVEL_FIELD_LABELS).forEach(([field, label]) => {
+    const row = document.createElement("tr");
+    const header = document.createElement("th");
+    const value = document.createElement("td");
+    header.scope = "row";
+    header.textContent = label;
+    value.textContent = String(draft?.[field] || "-");
+    row.append(header, value);
+    body.appendChild(row);
+  });
+  table.appendChild(body);
+  const wrapper = document.createElement("div");
+  wrapper.className = "travel-table-wrapper";
+  wrapper.appendChild(table);
+  container.appendChild(wrapper);
+};
+
+const appendTravelBudget = (container, budget) => {
+  if (!budget) return;
+  const section = document.createElement("section");
+  section.className = "travel-budget";
+  const title = document.createElement("h4");
+  title.textContent = "预算预估";
+  const items = document.createElement("div");
+  items.className = "travel-budget-grid";
+  [
+    ["交通费", budget.transport],
+    ["住宿费", budget.accommodation],
+    ["补贴", budget.allowance],
+    ["预计总额", budget.total],
+  ].forEach(([label, value], index) => {
+    const item = document.createElement("div");
+    if (index === 3) item.classList.add("total");
+    const itemLabel = document.createElement("span");
+    const itemValue = document.createElement("strong");
+    itemLabel.textContent = label;
+    itemValue.textContent = formatTravelMoney(value);
+    item.append(itemLabel, itemValue);
+    items.appendChild(item);
+  });
+  section.append(title, items);
+  if (budget.note) {
+    const note = document.createElement("p");
+    note.className = "travel-budget-note";
+    note.textContent = budget.note;
+    section.appendChild(note);
+  }
+  container.appendChild(section);
+};
+
+const appendTravelRecords = (container, records) => {
+  if (!Array.isArray(records) || !records.length) return;
+  const wrapper = document.createElement("div");
+  wrapper.className = "travel-table-wrapper";
+  const table = document.createElement("table");
+  table.className = "travel-records-table";
+  const head = document.createElement("thead");
+  const headerRow = document.createElement("tr");
+  ["申请编号", "员工", "行程", "日期", "预算总额", "状态"].forEach((label) => {
+    const cell = document.createElement("th");
+    cell.scope = "col";
+    cell.textContent = label;
+    headerRow.appendChild(cell);
+  });
+  head.appendChild(headerRow);
+  const body = document.createElement("tbody");
+  records.forEach((record) => {
+    const row = document.createElement("tr");
+    [
+      record.request_id,
+      record.employee_name,
+      `${record.origin || "-"} → ${record.destination || "-"}`,
+      `${record.start_date || "-"} 至 ${record.end_date || "-"}`,
+      formatTravelMoney(record.budget?.total),
+      record.status,
+    ].forEach((value) => {
+      const cell = document.createElement("td");
+      cell.textContent = String(value || "-");
+      row.appendChild(cell);
+    });
+    body.appendChild(row);
+  });
+  table.append(head, body);
+  wrapper.appendChild(table);
+  container.appendChild(wrapper);
+};
+
+const renderTravelResponse = (payload, interactive = true) => {
+  if (!answerOutput || !payload) return;
+  answerOutput.replaceChildren();
+  answerOutput.classList.remove("is-empty");
+  answerOutput.removeAttribute("data-empty-text");
+  currentChatLifecycle = null;
+
+  const root = document.createElement("div");
+  root.className = "travel-response";
+  const message = document.createElement("p");
+  message.className = "travel-response-message";
+  message.textContent = String(payload.message || "");
+  root.appendChild(message);
+
+  if (payload.kind === "plan") {
+    const title = document.createElement("h3");
+    title.textContent = "员工差旅计划";
+    root.insertBefore(title, message);
+    appendTravelDetailTable(root, payload.draft || payload.state?.draft || {});
+    appendTravelBudget(root, payload.budget || payload.state?.budget);
+    if (interactive) {
+      const actions = document.createElement("div");
+      actions.className = "travel-actions";
+      const confirmButton = document.createElement("button");
+      confirmButton.type = "button";
+      confirmButton.className = "travel-confirm-button";
+      confirmButton.textContent = "确认执行";
+      confirmButton.disabled = false;
+      confirmButton.addEventListener("click", () => confirmTravelPlan(confirmButton));
+      actions.appendChild(confirmButton);
+      root.appendChild(actions);
+    }
+  } else if (payload.kind === "records") {
+    appendTravelRecords(root, payload.records || []);
+  }
+
+  answerOutput.appendChild(root);
+  scrollChatToLatest();
+};
+
+const isTravelScenarioRequest = (message) => Boolean(
+  activeTravelScenario
+  || /差旅|出差|\bTR-\d{8}-[A-Z0-9]{6}\b/i.test(String(message || ""))
+);
 
 const parseClarification = (content) => {
   const match = String(content || "").match(/^\s*(?:\[?CLARIFY\]?)\s*[:：]\s*([\s\S]+)$/i);
@@ -1006,6 +1235,9 @@ const createConversationMessageId = (role = "message") => {
 };
 
 const applyConversationMessageMetadata = (message, metadata = {}) => {
+  if (metadata.travelPayload) {
+    message.travelPayload = cloneTravelData(metadata.travelPayload);
+  }
   if (Array.isArray(metadata.results) && metadata.results.length) {
     message.results = metadata.results
       .filter((result) => result && String(result.content || "").trim())
@@ -1321,8 +1553,8 @@ const resolvePendingExecution = async (pendingPlan = activePendingPlan) => {
   if (!normalized || normalized.interruptedFrom !== "executing") return false;
   if (!normalized.taskId) {
     return applyPendingExecutionRecoveryState(conversationId, normalized, {
-      status: "recovery_unknown",
-      recoveryMessage: "该记录没有保存 Task ID，无法确认原任务是否产生过业务副作用。请先在 Task History 中人工核对，系统已禁止直接重新执行。",
+      status: "recovery_review_required",
+      recoveryMessage: "该记录没有保存任务 ID。请先在任务历史中人工审核，确认执行边界后再恢复任务。",
     });
   }
 
@@ -1345,9 +1577,9 @@ const resolvePendingExecution = async (pendingPlan = activePendingPlan) => {
     );
     if (!identityMatches) {
       return applyPendingExecutionRecoveryState(conversationId, normalized, {
-        status: "recovery_blocked",
+        status: "recovery_review_required",
         serverStatus: String(task.status || "unknown"),
-        recoveryMessage: "服务端任务身份与当前会话的工作流、执行尝试或计划哈希不一致。为避免重复副作用，已禁止执行，请人工核对 Task History。",
+        recoveryMessage: "服务端任务身份与当前会话记录不一致。请在任务历史中人工审核任务身份与执行记录，再决定恢复位置。",
       });
     }
 
@@ -1378,7 +1610,7 @@ const resolvePendingExecution = async (pendingPlan = activePendingPlan) => {
       return applyPendingExecutionRecoveryState(conversationId, normalized, {
         status: "recovery_completed",
         serverStatus,
-        recoveryMessage: "原任务已在服务端完成。为防止重复业务操作，本计划不能再次执行。",
+        recoveryMessage: "原任务已在服务端完成，可在任务历史中查看执行结果。",
       });
     }
     if (serverStatus === "APPROVAL_REQUIRED") {
@@ -1474,14 +1706,14 @@ const resolvePendingExecution = async (pendingPlan = activePendingPlan) => {
       });
     }
     return applyPendingExecutionRecoveryState(conversationId, normalized, {
-      status: "recovery_blocked",
+      status: "recovery_review_required",
       serverStatus,
-      recoveryMessage: `原任务服务端状态为 ${serverStatus}。失败或断连不代表外部副作用已回滚，请先人工核对 Task History，系统已禁止直接重新执行。`,
+      recoveryMessage: `原任务服务端状态为 ${serverStatus}。请在任务历史中人工审核已完成步骤和外部操作，再从合适的检查点恢复执行。`,
     });
   } catch (error) {
     return applyPendingExecutionRecoveryState(conversationId, normalized, {
-      status: "recovery_unknown",
-      recoveryMessage: `暂时无法确认原任务状态：${error.message || error}。系统不会在状态未知时重新执行。`,
+      status: "recovery_review_required",
+      recoveryMessage: `暂时无法确认原任务状态：${error.message || error}。请人工审核任务记录，确认状态后再恢复执行。`,
     });
   }
 };
@@ -1591,6 +1823,7 @@ const normalizeStoredConversation = (conversation) => {
       : [],
     decisions,
     pendingPlan: normalizePendingPlan(conversation.pendingPlan),
+    travelScenario: normalizeTravelScenario(conversation.travelScenario),
     messages,
   };
 };
@@ -1667,6 +1900,7 @@ const saveActiveConversation = () => {
       eventData: cloneDecisionEventData(decision.eventData),
     })),
     pendingPlan: normalizePendingPlan(activePendingPlan),
+    travelScenario: normalizeTravelScenario(activeTravelScenario),
     messages: activeConversationTranscript.map((message) => ({ ...message })),
   });
   persistChatHistory(userId, conversations);
@@ -1756,6 +1990,10 @@ const parseHistoricalAgentResults = (content) => {
 
 const renderLoadedAssistantMessage = (message) => {
   const content = String(message?.content || "");
+  if (message?.travelPayload) {
+    renderTravelResponse(message.travelPayload, false);
+    return;
+  }
   const results = Array.isArray(message?.results) && message.results.length
     ? message.results
     : parseHistoricalAgentResults(content);
@@ -1841,7 +2079,11 @@ const renderPendingPlanForCurrentAnswer = (pendingPlan, interactive = true) => {
   const recoveryStatus = String(normalized.status || "").startsWith("recovery_");
   const approvalStatus = String(normalized.status || "").startsWith("approval_");
   const reconciliationStatus = String(normalized.status || "").startsWith("reconciliation_");
-  const recoveryCanCheck = ["recovery_pending", "recovery_unknown"].includes(normalized.status)
+  const recoveryCanCheck = [
+    "recovery_pending",
+    "recovery_unknown",
+    "recovery_review_required",
+  ].includes(normalized.status)
     || (reconciliationStatus && normalized.status !== "reconciliation_terminated");
   const confirmLabels = {
     executing: "执行中...",
@@ -1849,7 +2091,7 @@ const renderPendingPlanForCurrentAnswer = (pendingPlan, interactive = true) => {
     recovery_pending: "检查任务状态",
     recovery_unknown: "重新检查状态",
     recovery_completed: "任务已完成",
-    recovery_blocked: "已禁止重复执行",
+    recovery_review_required: "前往人工审核",
     approval_pending: "等待人工审批",
     approval_approved: "审批已通过",
     reconciliation_pending: "等待人工核对",
@@ -1987,6 +2229,8 @@ const loadConversation = (conversation) => {
 
   if (isConversationRuntimeActive()) {
     viewedConversationId = normalized.id;
+    selectedDecisionConversationId = normalized.id;
+    selectedDecisionId = normalized.decisions.at(-1)?.id || null;
     if (normalized.id === runningConversationId) {
       restoreRunningConversationView();
     } else {
@@ -2037,6 +2281,7 @@ const loadConversation = (conversation) => {
     : [];
   const recoveredPlan = recoverInterruptedPendingPlan(normalized.pendingPlan);
   activePendingPlan = recoveredPlan.pendingPlan;
+  activeTravelScenario = normalizeTravelScenario(normalized.travelScenario);
   if (recoveredPlan.recovered) {
     persistRecoveredPendingPlan(activeConversationUserId, normalized.id, activePendingPlan);
   }
@@ -2048,6 +2293,12 @@ const loadConversation = (conversation) => {
   resetSummary();
   resetPlan();
   renderLoadedConversation(activeConversationTranscript);
+  if (activeTravelScenario?.mode === "pending_confirmation") {
+    const latestTravelPayload = [...activeConversationTranscript]
+      .reverse()
+      .find((message) => message.travelPayload)?.travelPayload;
+    if (latestTravelPayload?.kind === "plan") renderTravelResponse(latestTravelPayload, true);
+  }
   if (activePendingPlan) {
     planSteps = activePendingPlan.steps.map((step) => normalizeStep(step));
     renderPlanSummary(planSteps);
@@ -2168,6 +2419,7 @@ const resetActiveConversation = (userId = userIdInput.value.trim()) => {
   viewedConversationId = null;
   activeConversationCreatedAt = null;
   activePendingPlan = null;
+  activeTravelScenario = null;
   activeConversationTaskIds = new Set();
   instructionHistory = [];
   originalUserQuery = "";
@@ -2241,7 +2493,6 @@ const loadReadiness = async () => {
     const components = data.components || {};
     const modelsReady = Boolean(components.models?.configured);
     const agentsReady = Boolean(components.agents?.ready);
-    const searchReady = Boolean(components.search?.configured);
     const mcpConfigured = Boolean(components.mcp?.configured);
     const mcpLoaded = Boolean(components.mcp?.loaded);
     const mcpServerCount = Number(components.mcp?.server_count || 0);
@@ -2257,7 +2508,6 @@ const loadReadiness = async () => {
         agentsReady ? `Agent ${components.agents?.count || 0} 个` : "Agent 未就绪",
         agentsReady,
       ),
-      readinessChip(searchReady ? "规划搜索可用" : "规划搜索未配置", searchReady),
       readinessChip(
         mcpConfigured
           ? `MCP 服务 ${mcpServerCount} 个 · 已加载工具 ${mcpToolCount} 个`
@@ -2272,16 +2522,8 @@ const loadReadiness = async () => {
       readinessHint.textContent = components.agents?.error || "Agent 初始化失败，请查看服务端日志。";
     } else if (mcpConfigured && !mcpLoaded) {
       readinessHint.textContent = "MCP 服务已配置，但尚未加载到工具；请检查 Office MCP 和 Excel MCP 服务。";
-    } else if (!searchReady) {
-      readinessHint.textContent = "核心工作流可运行；未配置 Tavily，已自动关闭规划前搜索。";
     } else {
       readinessHint.textContent = "页面、模型和 Agent 已就绪；MCP 状态按具体服务配置独立判断。";
-    }
-
-    if (searchBeforeInput && !searchReady) {
-      searchBeforeInput.checked = false;
-      searchBeforeInput.disabled = true;
-      searchBeforeInput.title = components.search?.reason || "规划前搜索未配置";
     }
     runBtn.disabled = !runtimeCanRun;
   } catch (error) {
@@ -2305,7 +2547,8 @@ const resetSummary = () => {
 };
 
 const resetPlan = () => {
-  if (mainAgentDecisionCard) mainAgentDecisionCard.style.display = "none";
+  if (mainAgentDecisionContent) mainAgentDecisionContent.hidden = true;
+  if (routingDecisionBadge) routingDecisionBadge.hidden = true;
   activeDecisionDetailTab = null;
   if (decisionTopAgentSummary) decisionTopAgentSummary.innerHTML = "";
   if (decisionDetailTabs) decisionDetailTabs.innerHTML = "";
@@ -2374,8 +2617,8 @@ const updateConfirmExecuteState = () => {
     const hasWorkflowId = workflowIdInput && workflowIdInput.value.trim();
     confirmExecuteBtn.disabled = recoveryLocked || executionInProgress || !(hasPlan && hasWorkflowId);
     confirmExecuteBtn.textContent = recoveryLocked
-      ? "Recovery required"
-      : (executionInProgress ? "Executing..." : "Confirm execution");
+      ? "需要恢复执行"
+      : (executionInProgress ? "执行中..." : "确认执行");
   }
   if (nlPlanEditBtn) {
     nlPlanEditBtn.disabled = recoveryLocked || executionInProgress;
@@ -2425,7 +2668,7 @@ const getOutputContainer = (phase = "planning") => (phase === "executing" ? exec
 const getOutputBlocks = (phase = "planning") => (phase === "executing" ? executionOutputBlocks : planningOutputBlocks);
 
 const updateAutoScrollBtn = () => {
-  autoScrollBtn.textContent = autoScrollEnabled ? "Auto-scroll: On" : "Auto-scroll: Off";
+  autoScrollBtn.textContent = autoScrollEnabled ? "自动滚动：开" : "自动滚动：关";
   autoScrollBtn.classList.toggle("active", autoScrollEnabled);
 };
 
@@ -2726,7 +2969,7 @@ const runPlannerUpdate = async (instruction, appendHistory = true, runtime = nul
     ],
     debug: debugInput.checked,
     deep_thinking_mode: deepThinkingInput.checked,
-    search_before_planning: searchBeforeInput.checked,
+    search_before_planning: searchBeforePlanningInput?.checked ?? false,
     coor_agents: selectedCoorAgents.size ? Array.from(selectedCoorAgents) : null,
     workflow_id: workflowIdInput.value.trim() || null,
   };
@@ -3733,7 +3976,10 @@ const findConversationByTaskId = (userId, taskId, workflowId = "") => {
 };
 
 const hideDecisionConsole = () => {
-  if (mainAgentDecisionCard) mainAgentDecisionCard.style.display = "none";
+  if (mainAgentDecisionContent) mainAgentDecisionContent.hidden = true;
+  if (routingDecisionBadge) routingDecisionBadge.hidden = true;
+  if (taskProfileView) taskProfileView.replaceChildren();
+  if (decisionTopAgentSummary) decisionTopAgentSummary.replaceChildren();
   if (decisionDetailTabs) decisionDetailTabs.replaceChildren();
   if (decisionDetailPanel) {
     decisionDetailPanel.classList.remove("open");
@@ -3832,10 +4078,7 @@ const renderDecisionHistoryControls = ({
     return null;
   }
 
-  const selectedConversation = conversations.find((item) => item.id === conversationId)
-    || (activeConversationId
-      ? conversations.find((item) => item.id === activeConversationId)
-      : null);
+  const selectedConversation = conversations.find((item) => item.id === conversationId);
   if (!selectedConversation) {
     decisionConversationSelect.innerHTML = [
       '<option value="">请选择对话</option>',
@@ -3926,6 +4169,47 @@ const renderDecisionDetailControls = (sections) => {
     </div>`;
 };
 
+const ROUTING_REASON_LABELS_ZH = Object.freeze({
+  AUTHORIZED: "当前用户已授权",
+  AGENT_ONLINE: "Agent 在线",
+  COMPOSITE_SUBTASK_ACTION: "可承担复合任务中的子步骤",
+  INTENT_MATCH: "意图匹配",
+  CAPABILITY_MATCH: "能力匹配",
+  SCENARIO_MATCH: "场景匹配",
+  PERMISSION_DENIED: "权限不足",
+  AGENT_UNAVAILABLE: "Agent 当前不在线",
+  ACTION_UNSUPPORTED: "不支持任务动作",
+  RISK_CEILING_EXCEEDED: "超出风险承受上限",
+  CAPABILITY_MISMATCH: "能力不匹配",
+  MISSING_REQUIRED_FIELDS: "缺少必要字段",
+  INTENT_CLARIFICATION_REQUIRED: "需要澄清任务意图",
+  COMPOSITE_ROUTE_COVERED: "复合任务已完整覆盖",
+  HIGH_CONFIDENCE_ROUTE: "高置信度匹配",
+  CAPABLE_ROUTE: "已找到可执行 Agent",
+  NO_CAPABLE_AGENT: "未找到可执行 Agent",
+  CONTRACT_OUTPUT_CLOSURE: "输出契约已闭环",
+  HONOR_PREFERRED_RESOURCE: "使用计划指定的 Agent",
+  ROUTING_TIMEOUT_TRUSTED_PLAN_FALLBACK: "路由超时，使用可信计划",
+});
+
+const ROUTING_DECISION_LABELS_ZH = Object.freeze({
+  DISPATCH: "已分派",
+  CLARIFY: "待澄清",
+  REJECT: "已拒绝",
+  NO_CAPABLE_AGENT: "无可执行 Agent",
+  UNKNOWN: "未知",
+});
+
+const localizeRoutingReasonCode = (reasonCode) => {
+  const raw = String(reasonCode || "");
+  return ROUTING_REASON_LABELS_ZH[raw.toUpperCase()] || raw;
+};
+
+const localizeRoutingDecision = (decision) => {
+  const raw = String(decision || "UNKNOWN");
+  return ROUTING_DECISION_LABELS_ZH[raw.toUpperCase()] || raw;
+};
+
 const renderRoutingDecision = (eventData, historyContext = null) => {
   if (!mainAgentDecisionCard) return;
   const profile = eventData?.task_profile || {};
@@ -3953,8 +4237,10 @@ const renderRoutingDecision = (eventData, historyContext = null) => {
     return value || "-";
   };
   const formatEntityValue = (value) => Array.isArray(value) ? value.join(", ") : String(value ?? "");
-  mainAgentDecisionCard.style.display = "";
-  routingDecisionBadge.textContent = `${decision} · ${Math.round((route.confidence || 0) * 100)}%`;
+  if (mainAgentDecisionContent) mainAgentDecisionContent.hidden = false;
+  routingDecisionBadge.hidden = false;
+  routingDecisionBadge.textContent = `${localizeRoutingDecision(decision)} · ${Math.round((route.confidence || 0) * 100)}%`;
+  routingDecisionBadge.title = decision;
   routingDecisionBadge.className = `tag ${decision === "DISPATCH" ? "accent" : "warn"}`;
   if (decisionHistoryMeta) {
     const historyDecision = historyContext?.decision;
@@ -4053,7 +4339,7 @@ const renderRoutingDecision = (eventData, historyContext = null) => {
         <div class="decision-item">
           <strong>${escapeHtml(item.agent_id || "-")}</strong>
           <span class="decision-score">${Math.round((item.score || 0) * 100)}%</span>
-          <div class="decision-reason">${escapeHtml((item.reason_codes || []).join(" · "))}</div>
+          <div class="decision-reason" title="${escapeHtml((item.reason_codes || []).join(" · "))}">${escapeHtml((item.reason_codes || []).map(localizeRoutingReasonCode).join(" · "))}</div>
         </div>`).join("")
     : '<div class="decision-item decision-reason">没有合法候选 Agent</div>';
 
@@ -4062,7 +4348,7 @@ const renderRoutingDecision = (eventData, historyContext = null) => {
     ? visibleExcluded.map((item) => `
         <div class="decision-item">
           <strong>${escapeHtml(item.agent_id || "-")}</strong>
-          <div class="decision-reason">${escapeHtml(item.reason_code || "")}：${escapeHtml(item.reason || "")}</div>
+          <div class="decision-reason" title="${escapeHtml(item.reason_code || "")}">${escapeHtml(localizeRoutingReasonCode(item.reason_code))}：${escapeHtml(item.reason || "")}</div>
         </div>`).join("")
         + (excluded.length > visibleExcluded.length
           ? `<div class="decision-reason">另有 ${excluded.length - visibleExcluded.length} 个排除项</div>`
@@ -4084,9 +4370,9 @@ const renderRoutingDecision = (eventData, historyContext = null) => {
     <div class="decision-profile-item decision-profile-wide">
       <small>路由决策</small>
       <div class="decision-tags">
-        <span>${escapeHtml(decision)}</span>
+        <span title="${escapeHtml(decision)}">${escapeHtml(localizeRoutingDecision(decision))}</span>
         <span>路由置信度：${Math.round((route.confidence || 0) * 100)}%</span>
-        ${(route.reason_codes || []).map((item) => `<span>${escapeHtml(item)}</span>`).join("")}
+        ${(route.reason_codes || []).map((item) => `<span title="${escapeHtml(item)}">${escapeHtml(localizeRoutingReasonCode(item))}</span>`).join("")}
       </div>
     </div>`;
 
@@ -5008,7 +5294,111 @@ const handleEvent = (eventName, payload) => {
   }
 };
 
+const runTravelTurn = async (userId, message) => {
+  if (travelRequestInProgress) return;
+  if (activeConversationUserId !== userId) resetActiveConversation(userId);
+  activeConversationUserId = userId;
+  activePendingPlan = null;
+  appendActiveConversationMessage("user", message);
+  showCurrentChatTurn(message);
+  messageInput.value = "";
+  resizeMessageInput();
+
+  travelRequestInProgress = true;
+  runBtn.disabled = true;
+  userIdInput.disabled = true;
+  if (newConversationBtn) newConversationBtn.disabled = true;
+  setStatus("处理中", true);
+  try {
+    const response = await fetch("/api/travel/turn", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        user_id: userId,
+        conversation_id: activeConversationId,
+        message,
+        state: activeTravelScenario || {},
+      }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
+    activeTravelScenario = normalizeTravelScenario(data.state);
+    renderTravelResponse(data, true);
+    appendActiveConversationMessage("assistant", data.message || "差旅请求已处理。", {
+      travelPayload: data,
+    });
+    setStatus(data.kind === "plan" ? "等待确认" : "已完成", true);
+    if (data.kind === "clarification") messageInput.focus();
+  } catch (error) {
+    const failure = `差旅请求处理失败：${error.message || error}`;
+    showAssistantText(failure);
+    appendActiveConversationMessage("assistant", failure);
+    setStatus("处理失败", false);
+  } finally {
+    travelRequestInProgress = false;
+    runBtn.disabled = false;
+    userIdInput.disabled = false;
+    if (newConversationBtn) newConversationBtn.disabled = false;
+  }
+};
+
+const confirmTravelPlan = async (button) => {
+  const scenario = normalizeTravelScenario(activeTravelScenario);
+  const userId = activeConversationUserId || userIdInput.value.trim();
+  if (travelRequestInProgress || scenario?.mode !== "pending_confirmation" || !userId) return;
+  travelRequestInProgress = true;
+  if (button) {
+    button.disabled = true;
+    button.textContent = "执行中...";
+  }
+  setStatus("正在创建差旅申请", true);
+  try {
+    const response = await fetch("/api/travel/confirm", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        user_id: userId,
+        plan_id: scenario.plan_id,
+        draft: scenario.draft,
+      }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
+    activeTravelScenario = null;
+    renderTravelResponse(data, false);
+    replaceLatestAssistantConversationMessage(data.message || "差旅申请已创建。", {
+      travelPayload: data,
+      outcomeStatus: "succeeded",
+    });
+    setStatus("差旅申请已创建", true);
+  } catch (error) {
+    if (button) {
+      button.disabled = false;
+      button.textContent = "确认执行";
+    }
+    setStatus("创建失败", false);
+    window.alert(`差旅申请未创建：${error.message || error}`);
+  } finally {
+    travelRequestInProgress = false;
+  }
+};
+
 const runWorkflow = async () => {
+  if (runBtn.disabled || executionInProgress || currentAbortController || travelRequestInProgress) return;
+  const candidateUserId = userIdInput.value.trim();
+  const candidateMessage = messageInput.value.trim();
+  if (isTravelScenarioRequest(candidateMessage)) {
+    if (!candidateUserId) {
+      setStatus("User ID required", false);
+      return;
+    }
+    if (!candidateMessage) {
+      setStatus("Message required", false);
+      return;
+    }
+    await runTravelTurn(candidateUserId, candidateMessage);
+    return;
+  }
   if (!runtimeCanRun) {
     setStatus("Environment not ready", false);
     readinessBanner?.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -5114,7 +5504,7 @@ const runWorkflow = async () => {
     messages: activeConversationMessages.map((item) => ({ ...item })),
     debug: debugInput.checked,
     deep_thinking_mode: deepThinkingInput.checked,
-    search_before_planning: searchBeforeInput.checked,
+    search_before_planning: searchBeforePlanningInput?.checked ?? false,
     coor_agents: selectedCoorAgents.size ? Array.from(selectedCoorAgents) : null,
     workflow_id: clarificationWorkflowId,
     session_id: activeConversationId,
@@ -5350,7 +5740,7 @@ const runExecution = async () => {
     ],
     debug: debugInput.checked,
     deep_thinking_mode: deepThinkingInput.checked,
-    search_before_planning: searchBeforeInput.checked,
+    search_before_planning: searchBeforePlanningInput?.checked ?? false,
     coor_agents: selectedCoorAgents.size ? Array.from(selectedCoorAgents) : null,
     workflow_id: workflowId,
     session_id: activeConversationId,
@@ -5450,8 +5840,8 @@ const runExecution = async () => {
         status: "recovery_unknown",
         recoveryMessage: runtime.recoveryMessage || (
           runtime.stopRequested
-            ? "停止请求已发送，但外部业务副作用是否完成尚未确认。请检查服务端任务状态，系统已禁止直接重新执行。"
-            : "执行连接在收到可信终态前结束。请检查服务端任务状态，系统不会自动重新执行。"
+            ? "停止请求已发送，但外部业务操作状态尚未确认。请先人工审核任务记录，再恢复未完成步骤。"
+            : "执行连接在收到可信终态前结束。请先人工审核服务端任务状态，再选择检查点恢复执行。"
         ),
         serverStatus: "",
       };
@@ -5483,8 +5873,8 @@ const runExecution = async () => {
     } else if (!terminalSucceeded) {
       activePendingPlan = {
         ...executionIdentityState,
-        status: "recovery_blocked",
-        recoveryMessage: `原任务已返回 ${terminalStatus || "UNKNOWN"}。失败、拒绝或需核对状态不代表外部副作用已回滚，系统已禁止直接重新执行。`,
+        status: "recovery_review_required",
+        recoveryMessage: `原任务已返回 ${terminalStatus || "UNKNOWN"}。请人工审核已完成步骤和外部操作状态，再从任务历史选择检查点恢复执行。`,
         serverStatus: terminalStatus || "UNKNOWN",
       };
       saveActiveConversation();
@@ -5622,7 +6012,7 @@ const setListState = (container, text, variant) => {
 
 const updateCoorCount = () => {
   if (!coorCount) return;
-  coorCount.textContent = `Selected ${selectedCoorAgents.size}`;
+  coorCount.textContent = `已选 ${selectedCoorAgents.size} 个`;
   if (clearCoorBtn) {
     clearCoorBtn.disabled = selectedCoorAgents.size === 0;
   }
@@ -5646,8 +6036,8 @@ const debounce = (func, wait) => {
 const getHealthStatus = (agentName) => {
   const health = agentHealth[agentName];
   if (!health) return { status: "unknown", color: "#999" };
-  if (health.status === "healthy") return { status: "healthy", color: "#4be3ac" };
-  if (health.status === "unhealthy") return { status: "unhealthy", color: "#ff6a6a" };
+  if (["healthy", "ok"].includes(health.status)) return { status: "healthy", color: "#4be3ac" };
+  if (["unhealthy", "fail"].includes(health.status)) return { status: "unhealthy", color: "#ff6a6a" };
   return { status: "unknown", color: "#999" };
 };
 
@@ -5696,19 +6086,45 @@ const createTag = (text, variant = "") => {
   return tag;
 };
 
+const healthStatusLabel = (status) => ({
+  ok: "正常",
+  healthy: "正常",
+  fail: "异常",
+  unhealthy: "异常",
+  unknown: "未知",
+})[String(status || "").toLowerCase()] || String(status || "未知");
+
+const toolScopeLabel = (scope) => ({
+  global: "全局",
+  agent: "Agent",
+})[String(scope || "").toLowerCase()] || String(scope || "未知");
+
+const toolSourceLabel = (tool) => {
+  if (tool?.is_mcp) return "MCP";
+  if (tool?.server === "builtin") return "内置";
+  return String(tool?.server || "未知");
+};
+
 const setAgentDetailEmpty = (text) => {
   if (!agentDetail) return;
   agentDetail.textContent = "";
   const empty = document.createElement("div");
-  empty.className = "agent-detail-empty";
-  empty.textContent = text;
+  empty.className = "resource-detail-empty agent-detail-empty";
+  const icon = document.createElement("span");
+  icon.className = "resource-detail-empty-icon";
+  icon.textContent = "A";
+  const title = document.createElement("strong");
+  title.textContent = text;
+  const hint = document.createElement("span");
+  hint.textContent = "点击左侧卡片查看能力、工具和运行状态。";
+  empty.append(icon, title, hint);
   agentDetail.appendChild(empty);
 };
 
 const renderAgentDetail = (agent) => {
   if (!agentDetail) return;
   if (!agent) {
-    setAgentDetailEmpty("Select an agent to view details.");
+    setAgentDetailEmpty("未选择 Agent");
     return;
   }
 
@@ -5718,27 +6134,27 @@ const renderAgentDetail = (agent) => {
 
   const sub = document.createElement("div");
   sub.className = "agent-sub";
-  const userLabel = agent.user_id === "share" ? "default" : "user";
-  const sourceLabel = agent.source ? ` | ${agent.source}` : "";
+  const userLabel = agent.user_id === "share" ? "共享 Agent" : "用户 Agent";
+  const sourceLabel = agent.source ? ` · 来源：${agent.source}` : "";
   const nick = agent.nick_name ? `${agent.nick_name} | ` : "";
   sub.textContent = `${nick}${userLabel}${sourceLabel}`;
 
   const tagRow = document.createElement("div");
   tagRow.className = "tag-row";
   if (agent.llm_type) {
-    tagRow.appendChild(createTag(`llm: ${agent.llm_type}`, "accent"));
+    tagRow.appendChild(createTag(`模型：${agent.llm_type}`, "accent"));
   }
   if (agent.source) {
-    tagRow.appendChild(createTag(`source: ${agent.source}`, agent.source === "remote" ? "warn" : ""));
+    tagRow.appendChild(createTag(`来源：${agent.source}`, agent.source === "remote" ? "warn" : ""));
   }
 
   const descTitle = document.createElement("h4");
-  descTitle.textContent = "Description";
+  descTitle.textContent = "功能说明";
   const desc = document.createElement("p");
-  desc.textContent = agent.description || "No description";
+  desc.textContent = agent.description || "暂无说明";
 
   const toolsTitle = document.createElement("h4");
-  toolsTitle.textContent = "Tools";
+  toolsTitle.textContent = "可用工具";
   const toolsRow = document.createElement("div");
   toolsRow.className = "tag-row";
   const tools = Array.isArray(agent.selected_tools) ? agent.selected_tools : [];
@@ -5749,44 +6165,44 @@ const renderAgentDetail = (agent) => {
     });
   } else {
     const emptyTools = document.createElement("p");
-    emptyTools.textContent = "None";
+    emptyTools.textContent = "无";
     toolsRow.appendChild(emptyTools);
   }
 
   const healthTitle = document.createElement("h4");
-  healthTitle.textContent = "Health";
+  healthTitle.textContent = "健康状态";
   const health = agentHealth[agent.agent_name] || {};
   const healthRow = document.createElement("p");
   const healthParts = [];
-  if (health.status) healthParts.push(`status: ${health.status}`);
+  if (health.status) healthParts.push(`状态：${healthStatusLabel(health.status)}`);
   if (health.latency_ms !== null && health.latency_ms !== undefined) {
-    healthParts.push(`latency: ${health.latency_ms}ms`);
+    healthParts.push(`延迟：${health.latency_ms}ms`);
   }
-  if (health.error) healthParts.push(`error: ${health.error}`);
-  healthRow.textContent = healthParts.length ? healthParts.join(" | ") : "n/a";
+  if (health.error) healthParts.push(`错误：${health.error}`);
+  healthRow.textContent = healthParts.length ? healthParts.join(" · ") : "暂无数据";
 
   const statsTitle = document.createElement("h4");
-  statsTitle.textContent = "Usage";
+  statsTitle.textContent = "使用情况";
   const stats = agentStats[agent.agent_name] || {};
   const statsRow = document.createElement("p");
   const statsParts = [];
-  if (stats.runs !== undefined) statsParts.push(`runs: ${stats.runs}`);
-  if (stats.last_used) statsParts.push(`last: ${stats.last_used}`);
-  statsRow.textContent = statsParts.length ? statsParts.join(" | ") : "n/a";
+  if (stats.runs !== undefined) statsParts.push(`运行次数：${stats.runs}`);
+  if (stats.last_used) statsParts.push(`最近使用：${stats.last_used}`);
+  statsRow.textContent = statsParts.length ? statsParts.join(" · ") : "暂无数据";
 
   const endpointTitle = document.createElement("h4");
-  endpointTitle.textContent = "Endpoint";
+  endpointTitle.textContent = "服务端点";
   const endpoint = document.createElement("p");
-  endpoint.textContent = agent.endpoint || "n/a";
+  endpoint.textContent = agent.endpoint || "暂无";
 
   const mcpTitle = document.createElement("h4");
-  mcpTitle.textContent = "MCP Config";
+  mcpTitle.textContent = "MCP 配置";
   const mcpPre = document.createElement("pre");
   mcpPre.className = "code-block compact";
   mcpPre.textContent = JSON.stringify(agent.mcp_config || agent.mcp_servers || null, null, 2);
 
   const promptTitle = document.createElement("h4");
-  promptTitle.textContent = "Prompt";
+  promptTitle.textContent = "提示词";
   const promptPre = document.createElement("pre");
   promptPre.className = "code-block compact";
   promptPre.textContent = agent.prompt || "";
@@ -5814,8 +6230,15 @@ const setToolDetailEmpty = (text) => {
   if (!toolDetail) return;
   toolDetail.textContent = "";
   const empty = document.createElement("div");
-  empty.className = "tool-detail-empty";
-  empty.textContent = text;
+  empty.className = "resource-detail-empty tool-detail-empty";
+  const icon = document.createElement("span");
+  icon.className = "resource-detail-empty-icon";
+  icon.textContent = "T";
+  const title = document.createElement("strong");
+  title.textContent = text;
+  const hint = document.createElement("span");
+  hint.textContent = "点击左侧卡片查看说明、使用情况和参数结构。";
+  empty.append(icon, title, hint);
   toolDetail.appendChild(empty);
 };
 
@@ -5842,7 +6265,7 @@ const renderSchemaTable = (schema) => {
 
   const thead = document.createElement("thead");
   const headRow = document.createElement("tr");
-  ["Field", "Type", "Required", "Description"].forEach((label) => {
+  ["字段", "类型", "必填", "说明"].forEach((label) => {
     const th = document.createElement("th");
     th.textContent = label;
     headRow.appendChild(th);
@@ -5901,7 +6324,7 @@ const renderSchemaTable = (schema) => {
     typeCell.textContent = formatSchemaType(value);
 
     const reqCell = document.createElement("td");
-    reqCell.textContent = isRequired ? "Yes" : "No";
+    reqCell.textContent = isRequired ? "是" : "否";
     if (isRequired) {
       reqCell.style.fontWeight = "bold";
       reqCell.style.color = "#1b8f6b";
@@ -5942,7 +6365,7 @@ const renderSchemaTable = (schema) => {
 const renderToolDetail = (tool) => {
   if (!toolDetail) return;
   if (!tool) {
-    setToolDetailEmpty("Select a tool to view details.");
+    setToolDetailEmpty("未选择工具");
     return;
   }
 
@@ -5953,7 +6376,7 @@ const renderToolDetail = (tool) => {
 
   const icon = document.createElement("span");
   icon.className = "tool-detail-icon";
-  icon.textContent = tool.is_mcp ? "[mcp]" : "[tool]";
+  icon.textContent = tool.is_mcp ? "MCP" : "内置";
 
   const title = document.createElement("h3");
   title.textContent = tool.name || "tool";
@@ -5963,16 +6386,16 @@ const renderToolDetail = (tool) => {
 
   const sub = document.createElement("div");
   sub.className = "agent-sub";
-  const scope = tool.scope || tool.identifier?.scope || "n/a";
-  const server = tool.server || tool.identifier?.server || "n/a";
-  sub.textContent = `scope: ${scope} | server: ${server}`;
+  const scope = tool.scope || tool.identifier?.scope || "unknown";
+  const server = tool.server || tool.identifier?.server || "unknown";
+  sub.textContent = `范围：${toolScopeLabel(scope)} · 服务：${server === "builtin" ? "内置" : server}`;
 
   const tagRow = document.createElement("div");
   tagRow.className = "tag-row";
   if (tool.is_mcp) {
-    tagRow.appendChild(createTag("mcp", "warn"));
+    tagRow.appendChild(createTag("MCP", "warn"));
   } else {
-    tagRow.appendChild(createTag("builtin", "accent"));
+    tagRow.appendChild(createTag("内置", "accent"));
   }
   if (tool.version) {
     tagRow.appendChild(createTag(`v${tool.version}`));
@@ -5984,36 +6407,36 @@ const renderToolDetail = (tool) => {
   }
 
   const descTitle = document.createElement("h4");
-  descTitle.textContent = "Description";
+  descTitle.textContent = "功能说明";
   const desc = document.createElement("p");
-  desc.textContent = tool.description || "No description";
+  desc.textContent = tool.description || "暂无说明";
 
   const usageTitle = document.createElement("h4");
-  usageTitle.textContent = "Usage";
+  usageTitle.textContent = "使用情况";
   const usageRow = document.createElement("p");
   const stats = toolStats[tool.name] || {};
   const parts = [];
-  if (stats.workflows !== undefined) parts.push(`workflows: ${stats.workflows}`);
-  if (stats.last_used) parts.push(`last: ${stats.last_used}`);
-  usageRow.textContent = parts.length ? parts.join(" | ") : "n/a";
+  if (stats.workflows !== undefined) parts.push(`工作流：${stats.workflows}`);
+  if (stats.last_used) parts.push(`最近使用：${stats.last_used}`);
+  usageRow.textContent = parts.length ? parts.join(" · ") : "暂无数据";
 
   const schemaTitle = document.createElement("h4");
-  schemaTitle.textContent = "Args Schema";
+  schemaTitle.textContent = "参数结构";
   const schemaActions = document.createElement("div");
   schemaActions.className = "panel-actions";
   const copyBtn = document.createElement("button");
   copyBtn.className = "ghost";
-  copyBtn.textContent = "Copy schema";
+  copyBtn.textContent = "复制参数结构";
   copyBtn.addEventListener("click", () => {
     if (!tool.args_schema) return;
     const text = JSON.stringify(tool.args_schema, null, 2);
-    navigator.clipboard.writeText(text).then(() => flashButton(copyBtn, "Copied"));
+    navigator.clipboard.writeText(text).then(() => flashButton(copyBtn, "已复制"));
   });
   schemaActions.appendChild(copyBtn);
 
   const schemaContent = tool.args_schema ? renderSchemaTable(tool.args_schema) : null;
   const schemaEmpty = document.createElement("p");
-  schemaEmpty.textContent = tool.args_schema ? "" : "No schema available.";
+  schemaEmpty.textContent = tool.args_schema ? "" : "暂无参数结构。";
 
   toolDetail.appendChild(header);
   toolDetail.appendChild(sub);
@@ -6028,7 +6451,7 @@ const renderToolDetail = (tool) => {
     if (schemaContent) {
       toolDetail.appendChild(schemaContent);
     } else {
-      schemaEmpty.textContent = "Schema format unsupported.";
+      schemaEmpty.textContent = "暂不支持该参数结构格式。";
       toolDetail.appendChild(schemaEmpty);
     }
   } else {
@@ -6086,9 +6509,9 @@ const updateToolsCounts = (tools) => {
   const total = tools.length;
   const builtin = tools.filter((tool) => tool.server === "builtin").length;
   const mcp = tools.filter((tool) => tool.is_mcp).length;
-  toolsCountTotal.textContent = `Total: ${total}`;
-  toolsCountBuiltin.textContent = `Builtin: ${builtin}`;
-  toolsCountMcp.textContent = `MCP: ${mcp}`;
+  toolsCountTotal.textContent = `总计 ${total}`;
+  toolsCountBuiltin.textContent = `内置 ${builtin}`;
+  toolsCountMcp.textContent = `MCP ${mcp}`;
 };
 
 const applyToolsFilters = (tools) => {
@@ -6125,12 +6548,14 @@ const applyToolsFilters = (tools) => {
 let renderTools = () => {
   if (!toolsList) return;
   if (!latestTools.length) {
-    setListState(toolsList, "No tools found.", "empty");
+    if (toolsVisibleCount) toolsVisibleCount.textContent = "显示 0 个";
+    setListState(toolsList, "暂无工具。", "empty");
     return;
   }
   const filtered = applyToolsFilters(latestTools);
+  if (toolsVisibleCount) toolsVisibleCount.textContent = `显示 ${filtered.length} 个`;
   if (!filtered.length) {
-    setListState(toolsList, "No tools match current filter.", "empty");
+    setListState(toolsList, "没有符合当前条件的工具。", "empty");
     return;
   }
 
@@ -6139,6 +6564,9 @@ let renderTools = () => {
     const card = document.createElement("div");
     card.className = "card tool-card";
     card.dataset.toolName = tool.name;
+    card.setAttribute("role", "button");
+    card.tabIndex = 0;
+    card.title = `查看 ${tool.name} 详情`;
     if (tool.name === selectedToolName) {
       card.classList.add("active");
     }
@@ -6148,7 +6576,7 @@ let renderTools = () => {
 
     const icon = document.createElement("span");
     icon.className = "tool-icon";
-    icon.textContent = tool.is_mcp ? "[mcp]" : "[tool]";
+    icon.textContent = tool.is_mcp ? "MCP" : "内置";
 
     const title = document.createElement("h4");
     title.textContent = tool.name;
@@ -6161,14 +6589,14 @@ let renderTools = () => {
 
     const tagRow = document.createElement("div");
     tagRow.className = "tag-row";
-    tagRow.appendChild(createTag(tool.scope || "global"));
-    tagRow.appendChild(createTag(tool.server || "builtin", tool.is_mcp ? "warn" : "accent"));
+    tagRow.appendChild(createTag(toolScopeLabel(tool.scope || "global")));
+    tagRow.appendChild(createTag(toolSourceLabel(tool), tool.is_mcp ? "warn" : "accent"));
 
     // Add params count info
     if (tool.params_count) {
       const paramsText = tool.params_count.required > 0
-        ? `${tool.params_count.required}/${tool.params_count.total} params`
-        : `${tool.params_count.total} params`;
+        ? `参数 ${tool.params_count.required}/${tool.params_count.total} 必填`
+        : `参数 ${tool.params_count.total}`;
       tagRow.appendChild(createTag(paramsText, ""));
     }
 
@@ -6176,9 +6604,9 @@ let renderTools = () => {
     const meta = document.createElement("div");
     meta.className = "tool-meta";
     const metaParts = [];
-    if (stats.workflows !== undefined) metaParts.push(`workflows: ${stats.workflows}`);
-    if (stats.last_used) metaParts.push(`last: ${formatDate(stats.last_used)}`);
-    meta.textContent = metaParts.length ? metaParts.join(" | ") : "workflows: 0";
+    if (stats.workflows !== undefined) metaParts.push(`工作流 ${stats.workflows}`);
+    if (stats.last_used) metaParts.push(`最近 ${formatDate(stats.last_used)}`);
+    meta.textContent = metaParts.length ? metaParts.join(" · ") : "工作流 0";
 
     card.appendChild(header);
     card.appendChild(desc);
@@ -6186,6 +6614,12 @@ let renderTools = () => {
     card.appendChild(meta);
 
     card.addEventListener("click", () => selectTool(tool));
+    card.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        selectTool(tool);
+      }
+    });
     toolsList.appendChild(card);
   });
 };
@@ -6195,7 +6629,7 @@ const selectTool = async (tool) => {
   document.querySelectorAll(".tool-card").forEach((card) => {
     card.classList.toggle("active", card.dataset.toolName === tool.name);
   });
-  setToolDetailEmpty("Loading...");
+  setToolDetailEmpty("正在加载工具详情...");
   try {
     const res = await fetch(`/api/tools/${encodeURIComponent(tool.name)}`);
     if (!res.ok) {
@@ -6204,7 +6638,7 @@ const selectTool = async (tool) => {
     const detail = await res.json();
     renderToolDetail(detail);
   } catch (err) {
-    setToolDetailEmpty("Failed to load tool detail.");
+    setToolDetailEmpty("工具详情加载失败");
   }
 };
 
@@ -6250,10 +6684,11 @@ const applyAgentFilter = (agents) => {
 
 let renderAgents = (agents) => {
   const filtered = applyAgentFilter(agents);
+  if (agentsVisibleCount) agentsVisibleCount.textContent = `显示 ${filtered.length} 个`;
   if (!filtered.length) {
     const emptyMsg = agentSearchQuery
-      ? `No agents found for "${agentSearchQuery}"`
-      : "No agents match current filter.";
+      ? `没有找到包含“${agentSearchQuery}”的 Agent。`
+      : "没有符合当前条件的 Agent。";
     setListState(agentsList, emptyMsg, "empty");
     return;
   }
@@ -6262,8 +6697,15 @@ let renderAgents = (agents) => {
   filtered.forEach((agent) => {
     const card = document.createElement("div");
     card.className = "card agent-card";
+    card.dataset.agentName = agent.agent_name || "";
+    card.setAttribute("role", "button");
+    card.tabIndex = 0;
+    card.title = `查看 ${agent.agent_name || "Agent"} 详情`;
     if (selectedCoorAgents.has(agent.agent_name)) {
       card.classList.add("selected");
+    }
+    if (agent.agent_name === selectedAgentName) {
+      card.classList.add("active");
     }
 
     const head = document.createElement("div");
@@ -6278,11 +6720,11 @@ let renderAgents = (agents) => {
 
     const sub = document.createElement("div");
     sub.className = "agent-sub";
-    const userLabel = agent.user_id === "share" ? "default" : "user";
-  const sourceLabel = agent.source ? ` | ${agent.source}` : "";
-  const nick = agent.nick_name ? `${agent.nick_name} | ` : "";
+    const userLabel = agent.user_id === "share" ? "共享" : "用户";
+    const sourceLabel = agent.source ? ` · ${agent.source}` : "";
+    const nick = agent.nick_name ? `${agent.nick_name} · ` : "";
     const toolCount = Array.isArray(agent.selected_tools) ? agent.selected_tools.length : 0;
-    const toolLabel = toolCount > 0 ? ` | ${toolCount} tools` : "";
+    const toolLabel = toolCount > 0 ? ` · ${toolCount} 个工具` : "";
     sub.textContent = `${nick}${userLabel}${sourceLabel}${toolLabel}`;
 
     titleWrap.appendChild(title);
@@ -6291,7 +6733,9 @@ let renderAgents = (agents) => {
     const selectBtn = document.createElement("button");
     selectBtn.className = "select-toggle";
     const isSelected = selectedCoorAgents.has(agent.agent_name);
-    selectBtn.textContent = isSelected ? "[x]" : "+";
+    selectBtn.textContent = isSelected ? "✓" : "+";
+    selectBtn.title = isSelected ? "从协作 Agent 中移除" : "加入协作 Agent";
+    selectBtn.setAttribute("aria-label", `${isSelected ? "移除" : "选择"} ${agent.agent_name}`);
     if (isSelected) selectBtn.classList.add("active");
     selectBtn.addEventListener("click", (event) => {
       event.stopPropagation();
@@ -6317,25 +6761,25 @@ let renderAgents = (agents) => {
     const tags = document.createElement("div");
     tags.className = "tag-row";
     if (agent.llm_type) {
-      tags.appendChild(createTag(`llm: ${agent.llm_type}`, "accent"));
+      tags.appendChild(createTag(`模型：${agent.llm_type}`, "accent"));
     }
     if (agent.source) {
-      tags.appendChild(createTag(`source: ${agent.source}`, agent.source === "remote" ? "warn" : ""));
+      tags.appendChild(createTag(`来源：${agent.source}`, agent.source === "remote" ? "warn" : ""));
     }
 
     const health = agentHealth[agent.agent_name];
     if (health && health.status) {
       const variant = health.status === "ok" ? "accent" : health.status === "fail" ? "warn" : "";
-      tags.appendChild(createTag(`health: ${health.status}`, variant));
+      tags.appendChild(createTag(`健康：${healthStatusLabel(health.status)}`, variant));
     }
 
     const stats = agentStats[agent.agent_name];
     if (stats) {
       if (stats.runs !== undefined) {
-        tags.appendChild(createTag(`runs: ${stats.runs}`, "accent"));
+        tags.appendChild(createTag(`运行：${stats.runs}`, "accent"));
       }
       if (stats.last_used) {
-        tags.appendChild(createTag(`last: ${formatDate(stats.last_used)}`));
+        tags.appendChild(createTag(`最近：${formatDate(stats.last_used)}`));
       }
     }
 
@@ -6352,7 +6796,20 @@ let renderAgents = (agents) => {
 
     card.addEventListener("click", () => {
       selectedAgentName = agent.agent_name;
+      document.querySelectorAll(".agent-card").forEach((item) => {
+        item.classList.toggle("active", item.dataset.agentName === selectedAgentName);
+      });
       renderAgentDetail(agent);
+    });
+    card.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        selectedAgentName = agent.agent_name;
+        document.querySelectorAll(".agent-card").forEach((item) => {
+          item.classList.toggle("active", item.dataset.agentName === selectedAgentName);
+        });
+        renderAgentDetail(agent);
+      }
     });
 
     agentsList.appendChild(card);
@@ -6362,7 +6819,8 @@ let renderAgents = (agents) => {
 };
 
 const fetchAgents = async () => {
-  setListState(agentsList, "Loading...", "loading");
+  if (agentsVisibleCount) agentsVisibleCount.textContent = "正在加载...";
+  setListState(agentsList, "正在加载 Agent...", "loading");
   try {
     const userId = userIdInput.value.trim();
     const match = getMatchValue();
@@ -6396,21 +6854,24 @@ const fetchAgents = async () => {
     const combined = [...defaults, ...users];
     latestAgents = combined;
     if (!combined.length) {
-      setListState(agentsList, "No agents found.", "empty");
-      setAgentDetailEmpty("No agent details available.");
+      if (agentsVisibleCount) agentsVisibleCount.textContent = "显示 0 个";
+      setListState(agentsList, "暂无 Agent。", "empty");
+      setAgentDetailEmpty("暂无 Agent 详情");
       return;
     }
 
     renderAgents(combined);
   } catch (err) {
-    setListState(agentsList, "Failed to load agents.", "error");
-    setAgentDetailEmpty("Failed to load agents.");
+    if (agentsVisibleCount) agentsVisibleCount.textContent = "加载失败";
+    setListState(agentsList, "Agent 加载失败。", "error");
+    setAgentDetailEmpty("Agent 加载失败");
   }
 };
 
 const fetchTools = async () => {
-  setListState(toolsList, "Loading...", "loading");
-  setToolDetailEmpty("Select a tool to view details.");
+  if (toolsVisibleCount) toolsVisibleCount.textContent = "正在加载...";
+  setListState(toolsList, "正在加载工具...", "loading");
+  setToolDetailEmpty("未选择工具");
   try {
     const userId = userIdInput ? userIdInput.value.trim() : "";
     const statsUrl = buildToolsStatsUrl(userId);
@@ -6429,7 +6890,8 @@ const fetchTools = async () => {
     }
     latestTools = await toolsRes.json();
     if (!Array.isArray(latestTools) || !latestTools.length) {
-      setListState(toolsList, "No tools found.", "empty");
+      if (toolsVisibleCount) toolsVisibleCount.textContent = "显示 0 个";
+      setListState(toolsList, "暂无工具。", "empty");
       return;
     }
 
@@ -6450,7 +6912,8 @@ const fetchTools = async () => {
     renderTools();
     renderMcpConfig();
   } catch (err) {
-    setListState(toolsList, "Failed to load tools.", "error");
+    if (toolsVisibleCount) toolsVisibleCount.textContent = "加载失败";
+    setListState(toolsList, "工具加载失败。", "error");
   }
 };
 
@@ -6851,10 +7314,7 @@ const renderWorkflowOverview = (detail, tasks = []) => {
     ["最近运行", latestRun
       ? `${runStatus.label} · ${formatWorkflowDateTime(latestRun.created_at)}`
       : "暂无运行记录"],
-    ["规划设置", [
-      detail?.deep_thinking_mode ? "Deep Thinking" : "标准规划",
-      detail?.search_before_planning ? "规划前搜索" : null,
-    ].filter(Boolean).join(" · ")],
+    ["规划设置", detail?.deep_thinking_mode ? "Deep Thinking" : "标准规划"],
   ];
   factEntries.forEach(([label, value]) => {
     const wrapper = document.createElement("div");
@@ -7444,7 +7904,7 @@ const toggleAutoScroll = () => {
 
 const exportOutputTxt = () => {
   if (!planningOutputBlocks.size && !executionOutputBlocks.size) {
-    flashButton(exportTxtBtn, "Empty");
+    flashButton(exportTxtBtn, "暂无内容");
     return;
   }
 
@@ -7476,11 +7936,11 @@ const exportOutputTxt = () => {
 const runSelectedHealthCheck = async () => {
   const names = Array.from(selectedCoorAgents);
   if (!names.length) {
-    flashButton(healthCheckSelectedBtn, "Select agents first");
+    flashButton(healthCheckSelectedBtn, "请先选择 Agent");
     return;
   }
   const prevText = healthCheckSelectedBtn.textContent;
-  healthCheckSelectedBtn.textContent = "Checking...";
+  healthCheckSelectedBtn.textContent = "检查中...";
   healthCheckSelectedBtn.disabled = true;
   const userId = userIdInput.value.trim();
   try {
@@ -7500,14 +7960,14 @@ const runSelectedHealthCheck = async () => {
         if (active) renderAgentDetail(active);
       }
     }
-    healthCheckSelectedBtn.textContent = "[ok] Done";
+    healthCheckSelectedBtn.textContent = "检查完成";
     setTimeout(() => {
       healthCheckSelectedBtn.textContent = prevText;
       healthCheckSelectedBtn.disabled = false;
     }, 1500);
   } catch (err) {
     console.error("Health check failed:", err);
-    healthCheckSelectedBtn.textContent = "[x] Failed";
+    healthCheckSelectedBtn.textContent = "检查失败";
     setTimeout(() => {
       healthCheckSelectedBtn.textContent = prevText;
       healthCheckSelectedBtn.disabled = false;
@@ -7670,7 +8130,8 @@ if (mcpToggle && mcpContent) {
   mcpToggle.addEventListener("click", () => {
     const isCollapsed = mcpContent.classList.toggle("collapsed");
     mcpToggle.classList.toggle("collapsed", isCollapsed);
-    mcpToggle.textContent = isCollapsed ? ">" : "v";
+    mcpToggle.textContent = isCollapsed ? "›" : "⌄";
+    mcpToggle.setAttribute("aria-expanded", String(!isCollapsed));
   });
 }
 
@@ -7793,14 +8254,16 @@ loadReadiness();
 resizeMessageInput();
 renderChatHistory();
 updateCoorCount();
-setAgentDetailEmpty("Select an agent to view details.");
+setAgentDetailEmpty("未选择 Agent");
 
 // ============================================================
 // Tasks panel
 // ============================================================
 const refreshTasksBtn = document.getElementById("refreshTasks");
 const tasksList = document.getElementById("tasksList");
+const tasksListCount = document.getElementById("tasksListCount");
 const taskDetailEmpty = document.getElementById("taskDetailEmpty");
+const TASK_HISTORY_DISPLAY_LIMIT = 20;
 const checkpointPanel = document.getElementById("checkpointPanel");
 const checkpointTaskIdBadge = document.getElementById("checkpointTaskId");
 const checkpointsList = document.getElementById("checkpointsList");
@@ -7960,7 +8423,8 @@ const fetchTasks = async () => {
   try {
     const res = await fetch("/api/tasks");
     if (!res.ok) throw new Error("请求失败");
-    const tasks = await res.json();
+    const tasks = (await res.json()).slice(0, TASK_HISTORY_DISPLAY_LIMIT);
+    if (tasksListCount) tasksListCount.textContent = `最近 ${tasks.length} 条`;
     if (!tasks.length) {
       setListState(tasksList, "暂无任务记录。", "empty");
       return;
@@ -8315,7 +8779,7 @@ const resumeTask = async ({ inChat = false } = {}) => {
     workmode: "launch",
     debug: false,
     deep_thinking_mode: true,
-    search_before_planning: false,
+    search_before_planning: searchBeforePlanningInput?.checked ?? false,
     coor_agents: null,
   };
 

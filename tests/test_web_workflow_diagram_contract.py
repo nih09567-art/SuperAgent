@@ -19,7 +19,7 @@ def test_workflow_diagram_uses_planning_steps_for_execution_stage():
 def test_workflow_diagram_assets_share_the_latest_cache_version():
     index = INDEX_HTML.read_text(encoding="utf-8")
     standalone = DIAGRAM_HTML.read_text(encoding="utf-8")
-    version = "20260809-task-history-1"
+    version = "20260810-task-history-scroll-1"
 
     assert f"/static/styles.css?v={version}" in index
     assert f"/static/app.js?v={version}" in index

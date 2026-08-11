@@ -44,6 +44,10 @@ _INTENT_REQUIRED_BUSINESS_DATA: dict[str, tuple[str, ...]] = {
     "knowledge_lookup": ("policy.info",),
     "risk_analysis": ("risk.records",),
     "weather_query": ("weather.forecast",),
+    "travel_service": ("employee.travel_records",),
+    "information_research": ("research.markdown",),
+    "schedule_management": ("calendar.result",),
+    "meeting_arrangement": ("meeting.result",),
 }
 _INTENT_DELIVERABLES: dict[str, tuple[str, ...]] = {
     "report_generation": ("report.markdown",),
@@ -377,6 +381,43 @@ def _enrich_inferred_dependencies(
         elif item.source in {"semantic", "rule+semantic"} and existing.source == "rule":
             deduplicated[existing_index] = item
     result.intents = deduplicated
+    return result
+
+
+def _remove_advisory_reminder_intent(
+    query: str,
+    result: IntentRecognitionResult,
+) -> IntentRecognitionResult:
+    """Do not turn an advisory answer into a calendar/todo operation.
+
+    Semantic providers occasionally classify ``给出提醒`` as
+    ``schedule_management`` even though the request only asks the travel
+    result to include advice.  Keep the intent whenever the user explicitly
+    asks to query or mutate a schedule, todo, or reminder.
+    """
+
+    text = str(query or "").strip()
+    explicit_schedule_action = re.search(
+        r"(?:查询|查看|看看|检查|安排|创建|添加|新建|更新|修改|取消)"
+        r"[^，。；;]{0,10}(?:日程|待办|提醒)"
+        r"|(?:设置|创建|添加|新建)(?:一个|一条)?提醒"
+        r"|提醒我",
+        text,
+    )
+    if explicit_schedule_action:
+        return result
+
+    advisory_request = re.search(
+        r"(?:给出|提供|生成)(?:出行|差旅|行程)?(?:提醒|建议|提示)"
+        r"|(?:出行|差旅|行程)(?:提醒|建议|提示)",
+        text,
+    )
+    if not advisory_request:
+        return result
+
+    result.intents = [
+        item for item in result.intents if item.name != "schedule_management"
+    ]
     return result
 
 
@@ -832,6 +873,7 @@ async def profile_task(
         entities = _merge_entities(extract_entities(user_query), recognition.entities)
     entities = _apply_entity_overrides(entities, entity_overrides)
     recognition.entities = entities
+    recognition = _remove_advisory_reminder_intent(resolved_query, recognition)
     recognition = _enrich_inferred_dependencies(recognition, entities)
     recognition = _annotate_rule_conditions(user_query, recognition)
     executable = _order_candidates_for_execution(

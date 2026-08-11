@@ -130,6 +130,33 @@ class RemoteAgentResponse:
                     nested_result.get("operation_status")
                     or nested_result.get("status")
                 )
+        nested_error = (
+            result_payload.get("error")
+            if isinstance(result_payload, dict)
+            else None
+        )
+        raw_error = self.error or nested_error
+        if isinstance(raw_error, dict):
+            error_text = str(
+                raw_error.get("message")
+                or raw_error.get("code")
+                or "Remote Agent reported an error"
+            )
+            metadata.setdefault("remote_error_code", str(raw_error.get("code") or ""))
+            metadata.setdefault("remote_retryable", bool(raw_error.get("retryable")))
+            error_details = raw_error.get("details")
+            if isinstance(error_details, dict):
+                for key in (
+                    "safe_to_retry",
+                    "side_effect_started",
+                    "failure_phase",
+                ):
+                    if key in error_details:
+                        metadata.setdefault(key, error_details[key])
+        elif raw_error not in (None, ""):
+            error_text = str(raw_error)
+        else:
+            error_text = ""
         if nested_status is not None:
             metadata.setdefault("nested_status", str(nested_status))
         failure_statuses = {"failed", "failure", "error", "rejected", "cancelled", "canceled", "timeout"}
@@ -141,7 +168,7 @@ class RemoteAgentResponse:
             )
         return ExecuteResult(
             status=ExecutionStatus.FAILED,
-            error=self.error or (
+            error=error_text or (
                 f"Remote business result reported status: {nested_status}"
                 if nested_status is not None
                 else "Unknown error"

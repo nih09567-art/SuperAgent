@@ -44,7 +44,8 @@ def test_office_query_returns_governed_leave_record_output(monkeypatch) -> None:
     agent = RemoteOfficeAssistantAgent()
     assert agent.contract is not None
     assert agent.contract.output_schema_refs == {
-        "employee.leave_records": "employee.leave_records@v1"
+        "employee.leave_records": "employee.leave_records@v1",
+        "employee.travel_records": "structured_agent_result@v1",
     }
 
     async def fake_call_tool(
@@ -85,6 +86,53 @@ def test_office_query_returns_governed_leave_record_output(monkeypatch) -> None:
     assert payload["records"][0]["days"] == 3
     assert payload["records"][0]["approval_status"] == "已审批"
     assert "employee_name" not in payload["records"][0]
+
+
+def test_office_travel_query_allows_admin_scoped_query_without_employee(
+    monkeypatch,
+) -> None:
+    agent = RemoteOfficeAssistantAgent()
+    captured: dict[str, Any] = {}
+
+    async def fake_call_tool(
+        *, tool_name: str, arguments: dict[str, Any], **_: Any
+    ) -> dict[str, Any]:
+        captured.update(arguments)
+        assert tool_name == "query_travel_record"
+        return {
+            "status": "success",
+            "records": [
+                {
+                    "record_id": "TRAVEL_001",
+                    "destination": "北京",
+                    "start_date": "2026-08-11",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(agent, "call_tool", fake_call_tool)
+    result = asyncio.run(
+        agent.execute(
+            tools=[{"name": "query_travel_record"}],
+            messages=_messages(
+                {
+                    "task_profile": {
+                        "entities": {"location": "北京"},
+                        "subtasks": [{"intent": "travel_service"}],
+                    }
+                }
+            ),
+            context={},
+            parameter_extractor=EmptyOfficeExtractor(),
+        )
+    )
+
+    assert captured == {}
+    assert result["status"] == "success"
+    payload = result["outputs"]["employee.travel_records"]
+    assert payload["status"] == "success"
+    assert payload["matched_count"] == 1
+    assert payload["records"][0]["destination"] == "北京"
 
 
 def test_office_query_binds_employee_from_resolved_artifact_when_extractor_is_empty(
@@ -312,3 +360,56 @@ def test_scheduler_assembles_strict_email_request_from_report_artifact() -> None
         "idempotency_key",
     }
     assert refs == [report_ref]
+
+
+def test_scheduler_assembles_non_empty_email_body_from_document_artifact() -> None:
+    scheduler = TaskScheduler(execute_step=lambda **_: None)
+    document_ref = scheduler.store.put(
+        Artifact(
+            logical_name="document.file",
+            schema_ref="document_generation_result@v1",
+            payload={
+                "status": "success",
+                "file_path": "E:/Program/SuperAgent/output/income_proof_李娜.docx",
+                "file_name": "income_proof_李娜.docx",
+            },
+            schema_valid=True,
+        )
+    )
+    scheduler._outputs = {"document": {"document.file": document_ref}}
+    step = TaskStep(
+        step_id="email",
+        agent_contract=AgentContract(
+            requires=[
+                DataContractRef(
+                    name="email.dispatch.request",
+                    schema_ref="email.dispatch.request@v1",
+                )
+            ],
+            produces=[
+                DataContractRef(
+                    name="email.dispatch.receipt",
+                    schema_ref="email.dispatch.receipt@v1",
+                )
+            ],
+        ),
+        input_bindings=[
+            {
+                "parameter_name": "email.dispatch.request",
+                "source_artifacts": [
+                    {"source_step": "document", "source_output": "document.file"}
+                ],
+                "assembly": {"schema_ref": "email.dispatch.request@v1"},
+            }
+        ],
+    )
+
+    resolved, _sensitivities, refs = scheduler._resolve_inputs(
+        step,
+        {"task_profile": {"entities": {"recipient": "王经理"}}},
+    )
+
+    request = resolved["email.dispatch.request"]
+    assert request["body"] == "已生成并提交文档：income_proof_李娜.docx"
+    assert request["source_report_artifact_id"] == document_ref.artifact_id
+    assert refs == [document_ref]

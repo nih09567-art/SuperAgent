@@ -76,6 +76,57 @@ def test_remote_agent_uses_json_contract_and_bearer_auth():
     asyncio.run(scenario())
 
 
+def test_nested_remote_validation_error_is_text_and_preserves_safe_retry_facts():
+    async def scenario():
+        executor = RemoteExecutor(max_retries=1)
+
+        async def fake_send_request(endpoint, data, headers, retries=None):
+            return {
+                "status": "success",
+                "result": {
+                    "status": "error",
+                    "error": {
+                        "code": "EMAIL_DISPATCH_FAILED",
+                        "message": "body is required",
+                        "retryable": True,
+                        "details": {
+                            "safe_to_retry": True,
+                            "side_effect_started": False,
+                            "failure_phase": "validation",
+                        },
+                    },
+                },
+            }
+
+        executor._send_request = fake_send_request
+        agent = SimpleNamespace(
+            source="remote",
+            agent_name="RemoteEmailDispatchAgent",
+            endpoint="https://agents.example.test/send",
+            prompt="Send the message.",
+            selected_tools=[],
+        )
+        return await executor.execute(
+            agent,
+            [{"role": "user", "content": "send"}],
+            ExecutionContext(
+                user_id="admin",
+                workflow_id="wf-1",
+                workflow_mode="production",
+                metadata={"operation_mode": "send"},
+            ),
+        )
+
+    result = asyncio.run(scenario())
+
+    assert result.status == ExecutionStatus.FAILED
+    assert result.error == "body is required"
+    assert result.metadata["remote_error_code"] == "EMAIL_DISPATCH_FAILED"
+    assert result.metadata["safe_to_retry"] is True
+    assert result.metadata["side_effect_started"] is False
+    assert result.metadata["failure_phase"] == "validation"
+
+
 def test_remote_tool_uses_tool_arguments_contract_and_bearer_auth():
     async def scenario():
         captured = {}

@@ -155,6 +155,21 @@ def test_web_treats_reconciliation_as_paused_and_refreshable():
     assert 'resumeTerminalStatus === "NEEDS_RECONCILIATION"' in resume_source
 
 
+def test_failed_execution_routes_to_manual_review_instead_of_prohibition_copy():
+    source = _source()
+
+    assert 'status: "recovery_review_required"' in source
+    assert 'recovery_review_required: "前往人工审核"' in source
+    assert 'switchTab("tasks")' in source
+    assert "人工审核已完成步骤和外部操作状态" in source
+    for prohibited_copy in (
+        "系统已禁止直接重新执行",
+        "已禁止重复执行",
+        "系统不会在状态未知时重新执行",
+    ):
+        assert prohibited_copy not in source
+
+
 def test_web_prefers_structured_failure_and_keeps_legacy_error_fallback():
     source = _source()
 
@@ -217,7 +232,7 @@ def test_web_routes_reconciliation_to_security_queue():
         assert f'data-decision="{decision}"' in security_source
 
 
-def test_security_details_use_expected_collapsed_visibility():
+def test_security_details_use_expected_default_visibility():
     index = INDEX_HTML.read_text(encoding="utf-8")
     security_source = (
         Path(__file__).resolve().parents[1] / "web" / "security.js"
@@ -228,10 +243,10 @@ def test_security_details_use_expected_collapsed_visibility():
     assert 'aria-controls="toolAccessGrid"' in index
     assert 'id="toolAccessGrid" class="sec-tool-grid" hidden' in index
     assert 'id="toggleAdvancedSecurityBtn"' in index
-    assert 'id="advancedSecurityContent" class="sec-advanced-content" hidden' in index
+    assert 'id="advancedSecurityContent" class="sec-advanced-content">' in index
     assert "高级/开发者信息" in index
     assert 'bindSecurityCollapseButton("toggleToolAccessBtn", "toolAccessGrid", true)' in security_source
-    assert '"advancedSecurityContent",\n        true' in security_source
+    assert '"advancedSecurityContent",\n        false' in security_source
     assert 'setSecurityCollapse(\n        "toggleAdvancedSecurityBtn"' in security_source
     assert "if (card) card.hidden = true" in security_source
     assert "if (card) card.hidden = false" in security_source

@@ -33,7 +33,16 @@
       "position": "演示收件组",
       "department": "人力资源部",
       "email": "hr@example.test",
-      "phone": ""
+      "phone": "",
+      "aliases": ["HR", "人力资源部", "人事部"]
+    },
+    {
+      "name": "合规部门",
+      "position": "合规负责人",
+      "department": "风险合规部",
+      "email": "compliance@example.test",
+      "phone": "",
+      "aliases": ["合规负责人", "合规", "风险合规负责人"]
     }
   ]
 }

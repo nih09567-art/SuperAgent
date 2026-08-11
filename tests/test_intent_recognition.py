@@ -313,6 +313,33 @@ def test_optional_semantic_questions_do_not_block_concrete_compound_task() -> No
     }
 
 
+def test_public_research_report_requires_research_artifact() -> None:
+    provider = FakeSemanticProvider(
+        _payload(
+            "information_research",
+            [
+                _candidate(
+                    "information_research",
+                    0.95,
+                    text_span="搜索李娜的公开信息",
+                ),
+                _candidate("report_generation", 0.92, text_span="整理成简短报告"),
+            ],
+        )
+    )
+    profile = _run(
+        profile_task(
+            "搜索李娜的公开信息，整理成一份简短报告",
+            task_id="public-research-report",
+            recognition_mode="hybrid",
+            semantic_provider=provider,
+        )
+    )
+
+    assert profile.required_business_data == ["research.markdown"]
+    assert profile.expected_deliverables == ["report.markdown"]
+
+
 def test_semantic_questions_still_block_generic_single_intent_task() -> None:
     provider = FakeSemanticProvider(
         _payload(
@@ -394,6 +421,48 @@ def test_schedule_meeting_entities_do_not_treat_quantifier_as_person() -> None:
     assert entities["time"] == "下周"
     assert entities["recipient"] == "参会人"
     assert "一次" not in entities["people"]
+
+
+def test_schedule_meeting_notification_profiles_all_contract_targets() -> None:
+    provider = FakeSemanticProvider(
+        _payload(
+            "meeting_arrangement",
+            [
+                _candidate(
+                    "schedule_management",
+                    0.91,
+                    text_span="查询王经理下周的日程",
+                ),
+                _candidate(
+                    "meeting_arrangement",
+                    0.96,
+                    text_span="安排一次和李娜的会议",
+                ),
+                _candidate(
+                    "message_or_email_send",
+                    0.90,
+                    text_span="通知参会人",
+                ),
+            ],
+            entities={
+                "people": ["王经理", "李娜"],
+                "employee_name": "王经理",
+                "time": "下周",
+                "recipient": "参会人",
+            },
+        )
+    )
+    profile = _run(
+        profile_task(
+            "查询王经理下周的日程，安排一次和李娜的会议，并通知参会人",
+            task_id="schedule-meeting-notification",
+            recognition_mode="hybrid",
+            semantic_provider=provider,
+        )
+    )
+
+    assert profile.required_business_data == ["calendar.result", "meeting.result"]
+    assert profile.expected_deliverables == ["email.dispatch.receipt"]
 
 
 def test_leave_query_subject_does_not_include_colloquial_prefixes() -> None:
@@ -683,6 +752,10 @@ def test_named_travel_query_infers_employee_id_lookup() -> None:
     assert profile.sub_intents == ["employee_information_query", "travel_service"]
     assert profile.intent_nodes[0]["provenance"] == "inferred"
     assert profile.subtasks[1]["depends_on"] == ["subtask_1"]
+    assert profile.required_business_data == [
+        "employee.info",
+        "employee.travel_records",
+    ]
     assert profile.needs_clarification is False
 
 
@@ -860,6 +933,7 @@ def test_travel_reminder_depends_on_preceding_weather_result() -> None:
             [
                 _candidate("weather_query", 0.96, text_span="查询北京明天天气"),
                 _candidate("travel_service", 0.94, text_span="结合出差行程给出提醒"),
+                _candidate("schedule_management", 0.93, text_span="给出提醒"),
             ],
             entities={"location": "北京", "time": "明天"},
         )
@@ -878,3 +952,7 @@ def test_travel_reminder_depends_on_preceding_weather_result() -> None:
         "travel_service",
     ]
     assert profile.subtasks[1]["depends_on"] == ["subtask_1"]
+    assert profile.required_business_data == [
+        "weather.forecast",
+        "employee.travel_records",
+    ]
