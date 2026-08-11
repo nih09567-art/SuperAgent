@@ -244,6 +244,32 @@ def _attempt_intervals(events: Any) -> list[dict[str, Any]]:
     )
 
 
+def _safe_batches(events: Any) -> list[dict[str, Any]]:
+    if not isinstance(events, list):
+        return []
+    batches: list[dict[str, Any]] = []
+    for event in events:
+        if not isinstance(event, Mapping):
+            continue
+        step_ids = event.get("step_ids")
+        if not isinstance(step_ids, list):
+            step_ids = []
+        batches.append(
+            {
+                "sequence": int(event.get("sequence") or len(batches) + 1),
+                "batch_id": str(event.get("batch_id") or ""),
+                "step_ids": [str(step_id) for step_id in step_ids if str(step_id)],
+                "scheduled_at": event.get("scheduled_at"),
+                "scheduled_monotonic_ns": (
+                    int(event.get("scheduled_monotonic_ns"))
+                    if event.get("scheduled_monotonic_ns") is not None
+                    else None
+                ),
+            }
+        )
+    return sorted(batches, key=lambda item: item["sequence"])
+
+
 def _safe_artifacts(raw: Any) -> list[dict[str, Any]]:
     if not isinstance(raw, list):
         return []
@@ -400,6 +426,9 @@ def build_orchestration_view(
     intervals = _attempt_intervals(
         getattr(task_log, "orchestration_attempts", []) or []
     )
+    batches = _safe_batches(
+        getattr(task_log, "orchestration_batches", []) or []
+    )
     for interval in intervals:
         if interval.get("status") == "RUNNING":
             step_results.setdefault(interval["step_id"], {})["status"] = "RUNNING"
@@ -447,6 +476,7 @@ def build_orchestration_view(
         "runtime": {
             "workflow_status": str(getattr(task_log, "status", "UNKNOWN")),
             "step_states": step_results,
+            "batches": batches,
             "attempts": intervals,
         },
         "tool_decisions": _safe_tool_decisions(

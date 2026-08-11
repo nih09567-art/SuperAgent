@@ -282,6 +282,7 @@ class TaskScheduler:
         commit_step_result: Optional[StepHook] = None,
         on_attempt_start: Optional[StepHook] = None,
         on_attempt_end: Optional[StepHook] = None,
+        on_batch_scheduled: Optional[StepHook] = None,
         should_pause: Optional[Callable[[], bool]] = None,
     ) -> "WorkflowResult":
         """Execute ``graph`` and return a :class:`WorkflowResult`.
@@ -400,6 +401,11 @@ class TaskScheduler:
                 break
 
             batch = self._select_batch(runnable, smap)
+            if on_batch_scheduled is not None:
+                try:
+                    await on_batch_scheduled(step_ids=list(batch))
+                except Exception:  # noqa: BLE001 - observability is best effort
+                    logger.exception("scheduler: batch scheduling hook failed")
             coros = [
                 self._run_step(
                     smap[sid],

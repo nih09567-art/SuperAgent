@@ -1298,6 +1298,19 @@ async def run_scheduler_workflow(
             },
         )
 
+    async def on_batch_scheduled(*, step_ids):
+        if task_logger is None or not hasattr(
+            task_logger, "record_orchestration_batch"
+        ):
+            return
+        try:
+            task_logger.record_orchestration_batch(
+                step_ids=list(step_ids),
+                monotonic_ns=time.monotonic_ns(),
+            )
+        except Exception:  # noqa: BLE001 - observability cannot fail a batch
+            logger.exception("scheduler: could not persist batch schedule boundary")
+
     async def on_retry(
         *,
         step,
@@ -2135,6 +2148,7 @@ async def run_scheduler_workflow(
                     commit_step_result=commit_step_result,
                     on_attempt_start=on_attempt_start,
                     on_attempt_end=on_attempt_end,
+                    on_batch_scheduled=on_batch_scheduled,
                     should_pause=lambda: control_store.pause_requested(task_id),
                 )
             )

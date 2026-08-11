@@ -116,6 +116,19 @@ def test_independent_reads_run_in_parallel():
     assert fake.peak >= 2  # ran concurrently
 
 
+def test_batch_schedule_hook_reports_actual_selected_frontiers():
+    fake = FakeExecutor(sleep=0)
+    scheduled: list[list[str]] = []
+
+    async def on_batch_scheduled(*, step_ids):
+        scheduled.append(step_ids)
+
+    graph = _graph(_step("hr"), _step("kb"), _step("report", ["hr", "kb"]))
+    _run(fake, graph, on_batch_scheduled=on_batch_scheduled)
+
+    assert scheduled == [["hr", "kb"], ["report"]]
+
+
 def test_writes_sharing_lock_are_serialized():
     fake = FakeExecutor()
     g = _graph(

@@ -13,8 +13,9 @@
   const summary = document.getElementById("orchestrationSummary");
   const graph = document.getElementById("orchestrationGraph");
   const inspector = document.getElementById("orchestrationNodeInspector");
+  const graphCard = document.getElementById("orchestrationGraphCard");
+  const fullscreenButton = document.getElementById("orchestrationGraphFullscreen");
   const timeline = document.getElementById("orchestrationTimeline");
-  const toolEvidence = document.getElementById("orchestrationToolEvidence");
   const artifactEvidence = document.getElementById("orchestrationArtifactEvidence");
   const governance = document.getElementById("orchestrationGovernance");
   const checkpoints = document.getElementById("orchestrationCheckpoints");
@@ -80,6 +81,7 @@
 
   const renderRuns = () => {
     const items = filteredRuns();
+    const previousScrollTop = list.scrollTop;
     list.replaceChildren();
     if (!items.length) {
       setEmptyState(list, runs.length ? "没有符合筛选条件的运行。" : "暂无编排运行记录。");
@@ -112,12 +114,23 @@
       });
       list.appendChild(card);
     });
+    list.scrollTop = previousScrollTop;
+  };
+
+  const syncSelectedRunStatus = (view) => {
+    const task = view?.task || {};
+    const taskId = text(task.task_id || selectedTaskId);
+    const status = text(task.status);
+    const index = runs.findIndex((run) => run.task_id === taskId);
+    if (index < 0 || !status || upper(runs[index].status) === upper(status)) return;
+    runs[index] = { ...runs[index], status };
+    renderRuns();
   };
 
   const loadRuns = async ({ preserveSelection = true } = {}) => {
     setEmptyState(list, "正在加载编排运行...");
     try {
-      const response = await fetch("/api/tasks");
+      const response = await fetch("/api/tasks?execution_phase=execution");
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       runs = await response.json();
       if (!Array.isArray(runs)) runs = [];
@@ -163,7 +176,6 @@
       [new Set((view.graph?.steps || []).map((step) => step.agent_name).filter(Boolean)).size, "执行 Agent"],
       [parallelWidth(attempts) || "未记录", "实际最大并行"],
       [view.artifacts?.nodes?.length || 0, "Artifact"],
-      [Object.keys(view.tool_decisions || {}).length, "工具审计步骤"],
     ];
     summary.replaceChildren();
     values.forEach(([value, label]) => {
@@ -183,13 +195,20 @@
 
   const renderInspector = (step) => {
     if (!step || !currentView) {
+      inspector.classList.remove("open");
+      inspector.setAttribute("aria-hidden", "true");
       inspector.innerHTML = "<p>点击 Agent 节点查看详情。</p>";
       return;
     }
     const state = currentView.runtime?.step_states?.[step.step_id] || {};
-    const tool = currentView.tool_decisions?.[step.step_id] || {};
     const artifacts = (currentView.artifacts?.nodes || []).filter((item) => item.producer_step_id === step.step_id);
     inspector.replaceChildren();
+    const closeButton = document.createElement("button");
+    closeButton.type = "button";
+    closeButton.className = "orchestration-inspector-close";
+    closeButton.setAttribute("aria-label", "关闭节点详情");
+    closeButton.textContent = "×";
+    closeButton.addEventListener("click", () => renderInspector(null));
     const heading = document.createElement("h4");
     heading.textContent = step.title || step.step_id;
     const status = badge(statusLabel(state.status || "PENDING"), statusClass(state.status || "PENDING"));
@@ -200,8 +219,6 @@
       ["依赖", step.depends_on?.join(", ") || "无"],
       ["操作模式", step.operation_mode || "-"],
       ["风险", step.risk_level || "-"],
-      ["推荐工具", tool.recommended_mcp_tool || tool.selected_tool || "未记录"],
-      ["实际工具", tool.actual_legacy_tool || tool.actual_tool_names?.join(", ") || "未记录"],
       ["Artifact", artifacts.map((item) => item.logical_name || item.output_name).join(", ") || "无"],
     ].forEach(([key, value]) => {
       const dt = document.createElement("dt");
@@ -210,7 +227,16 @@
       dd.textContent = value;
       dl.append(dt, dd);
     });
-    inspector.append(heading, status, dl);
+    inspector.append(closeButton, heading, status, dl);
+    inspector.classList.add("open");
+    inspector.setAttribute("aria-hidden", "false");
+  };
+
+  const setGraphFullscreen = (enabled) => {
+    graphCard?.classList.toggle("orchestration-graph-card-fullscreen", enabled);
+    document.body.classList.toggle("orchestration-fullscreen-open", enabled);
+    fullscreenButton?.setAttribute("aria-pressed", String(enabled));
+    if (fullscreenButton) fullscreenButton.textContent = enabled ? "退出全屏" : "全屏查看";
   };
 
   const renderGraph = async () => {
@@ -286,37 +312,116 @@
 
   const renderTimeline = (view) => {
     const attempts = view.runtime?.attempts || [];
+    const batches = view.runtime?.batches || [];
     timeline.replaceChildren();
-    const completed = attempts.filter((item) => Number(item.started_monotonic_ns) && Number(item.finished_monotonic_ns));
-    if (!attempts.length) {
-      setEmptyState(timeline, "该次运行未记录 attempt 时间证据，不能仅根据 DAG 宣称实际并行。");
+    if (!attempts.length && !batches.length) {
       return;
     }
-    const starts = completed.map((item) => Number(item.started_monotonic_ns));
-    const finishes = completed.map((item) => Number(item.finished_monotonic_ns));
-    const minimum = starts.length ? Math.min(...starts) : 0;
-    const maximum = finishes.length ? Math.max(...finishes) : minimum + 1;
-    const span = Math.max(1, maximum - minimum);
+
+    const notice = document.createElement("p");
+    notice.className = "orchestration-timeline-notice";
+    notice.textContent = "同一 Batch 表示并发调度，不代表远程 Agent 同时开始；蓝色条表示实际调用。";
+    timeline.appendChild(notice);
+
+    const canvas = document.createElement("div");
+    canvas.className = "orchestration-timeline-canvas";
+    timeline.appendChild(canvas);
+
+    const stepMap = new Map((view.graph?.steps || []).map((step) => [step.step_id, step]));
+    const timePoints = [];
     attempts.forEach((item) => {
+      const start = Number(item.started_monotonic_ns || 0);
+      const finish = Number(item.finished_monotonic_ns || 0);
+      if (start) timePoints.push(start);
+      if (finish) timePoints.push(finish);
+    });
+    batches.forEach((batch) => {
+      const scheduled = Number(batch.scheduled_monotonic_ns || 0);
+      if (scheduled) timePoints.push(scheduled);
+    });
+    const minimum = timePoints.length ? Math.min(...timePoints) : 0;
+    const maximum = timePoints.length ? Math.max(...timePoints) : minimum + 1;
+    const span = Math.max(1, maximum - minimum);
+    const position = (value) => `${Math.max(0, Math.min(100, ((value - minimum) / span) * 100))}%`;
+
+    const appendRow = (root, stepId, item, batch, duplicateIndex = 0) => {
       const row = document.createElement("div");
       row.className = "orchestration-timeline-row";
+      const identity = document.createElement("div");
+      identity.className = "orchestration-timeline-identity";
       const label = document.createElement("strong");
-      label.textContent = item.executed_agent || item.step_id;
+      const step = stepMap.get(stepId) || {};
+      const agentName = item?.executed_agent || item?.planned_agent || step.agent_name || stepId;
+      label.textContent = duplicateIndex ? `${agentName} · 尝试 ${duplicateIndex + 1}` : agentName;
+      label.title = stepId;
+      identity.appendChild(label);
+      if (batch) {
+        const batchLabel = document.createElement("span");
+        batchLabel.className = "orchestration-timeline-batch-label";
+        batchLabel.textContent = `B${batch.sequence}${(batch.step_ids || []).length > 1 ? " · 并行" : ""}`;
+        const memberNames = (batch.step_ids || [])
+          .map((memberStepId) => stepMap.get(memberStepId)?.agent_name || memberStepId)
+          .join("、") || "未记录";
+        batchLabel.title = `Batch ${batch.sequence}；调度时刻：${formatTime(batch.scheduled_at)}；节点：${memberNames}`;
+        identity.appendChild(batchLabel);
+      }
       const track = document.createElement("div");
       track.className = "orchestration-timeline-track";
-      const bar = document.createElement("div");
-      bar.className = "orchestration-timeline-bar";
-      const start = Number(item.started_monotonic_ns || minimum);
-      const finish = Number(item.finished_monotonic_ns || start);
-      bar.style.left = `${Math.max(0, ((start - minimum) / span) * 100)}%`;
-      bar.style.width = `${Math.max(1, ((finish - start) / span) * 100)}%`;
-      bar.title = `${formatTime(item.started_at)} → ${formatTime(item.finished_at)}`;
-      track.appendChild(bar);
+      const scheduled = Number(batch?.scheduled_monotonic_ns || 0);
+      if (scheduled) {
+        const marker = document.createElement("span");
+        marker.className = "orchestration-timeline-dispatch-marker";
+        marker.style.left = `clamp(4px, ${position(scheduled)}, calc(100% - 4px))`;
+        marker.title = `Batch ${batch.sequence} 调度：${formatTime(batch.scheduled_at)}`;
+        track.appendChild(marker);
+      }
+      if (item) {
+        const bar = document.createElement("div");
+        bar.className = "orchestration-timeline-bar";
+        const start = Number(item.started_monotonic_ns || minimum);
+        const finish = Number(item.finished_monotonic_ns || start);
+        bar.style.left = position(start);
+        bar.style.width = `${Math.max(1, ((finish - start) / span) * 100)}%`;
+        bar.title = `${formatTime(item.started_at)} → ${formatTime(item.finished_at)}`;
+        track.appendChild(bar);
+      }
       const duration = document.createElement("span");
-      duration.textContent = item.duration_ms == null ? statusLabel(item.status) : `${item.duration_ms} ms`;
-      row.append(label, track, duration);
-      timeline.appendChild(row);
+      duration.textContent = !item ? "未记录调用" : item.duration_ms == null ? statusLabel(item.status) : `${item.duration_ms} ms`;
+      row.append(identity, track, duration);
+      root.appendChild(row);
+    };
+
+    const batchAssignments = new Map(batches.map((batch) => [batch.batch_id || String(batch.sequence), []]));
+    const unassigned = [];
+    attempts.forEach((item) => {
+      const started = Number(item.started_monotonic_ns || 0);
+      let selectedBatch = null;
+      batches.forEach((batch) => {
+        const scheduled = Number(batch.scheduled_monotonic_ns || 0);
+        if (!(batch.step_ids || []).includes(item.step_id)) return;
+        if (started && scheduled && scheduled > started) return;
+        if (!selectedBatch || scheduled >= Number(selectedBatch.scheduled_monotonic_ns || 0)) selectedBatch = batch;
+      });
+      if (!selectedBatch) {
+        unassigned.push(item);
+        return;
+      }
+      batchAssignments.get(selectedBatch.batch_id || String(selectedBatch.sequence)).push(item);
     });
+
+    batches.forEach((batch) => {
+      const stepIds = batch.step_ids || [];
+      const assigned = batchAssignments.get(batch.batch_id || String(batch.sequence)) || [];
+      stepIds.forEach((stepId) => {
+        const stepAttempts = assigned.filter((item) => item.step_id === stepId);
+        if (!stepAttempts.length) appendRow(canvas, stepId, null, batch);
+        else stepAttempts.forEach((item, index) => appendRow(canvas, stepId, item, batch, index));
+      });
+    });
+
+    if (unassigned.length || (!batches.length && attempts.length)) {
+      (batches.length ? unassigned : attempts).forEach((item) => appendRow(canvas, item.step_id, item, null));
+    }
   };
 
   const evidenceItem = (headingText, statusValue, rows) => {
@@ -334,31 +439,6 @@
       item.appendChild(row);
     });
     return item;
-  };
-
-  const renderTools = (view) => {
-    const decisions = Object.entries(view.tool_decisions || {});
-    toolEvidence.replaceChildren();
-    if (!decisions.length) {
-      setEmptyState(toolEvidence, "该次运行没有记录工具选择审计。");
-      return;
-    }
-    const notice = document.createElement("p");
-    notice.className = "orchestration-empty-state";
-    notice.textContent = "审计推荐不等于授权工具，也不代表选择器替换了本次生产执行工具。";
-    const items = document.createElement("div");
-    items.className = "orchestration-evidence-list";
-    decisions.forEach(([stepId, decision]) => {
-      const top = (decision.candidates || []).slice(0, 3).map((candidate) => `${candidate.tool_key || candidate.name} (${candidate.score ?? "-"})`).join("；");
-      items.appendChild(evidenceItem(stepId, decision.mode || "audit", [
-        ["候选过滤", `${decision.candidate_count_before_filter ?? "-"} → ${decision.candidate_count_after_filter ?? "-"}`],
-        ["推荐 MCP", decision.recommended_mcp_tool || decision.selected_tool],
-        ["实际工具", decision.actual_legacy_tool || (decision.actual_tool_names || []).join(", ")],
-        ["Top-K", top || "未记录"],
-        ["推荐与实际一致", decision.recommendation_matches_actual === true ? "是" : decision.recommendation_matches_actual === false ? "否" : "未记录"],
-      ]));
-    });
-    toolEvidence.append(notice, items);
   };
 
   const renderArtifacts = (view) => {
@@ -424,12 +504,12 @@
 
   const renderView = async (view) => {
     currentView = view;
+    syncSelectedRunStatus(view);
     empty.hidden = true;
     selectedRoot.hidden = false;
     renderHeader(view);
     renderSummary(view);
     renderTimeline(view);
-    renderTools(view);
     renderArtifacts(view);
     renderGovernance(view);
     renderCheckpoints(view);
@@ -468,7 +548,6 @@
     if (!["RUNNING", "RESERVED"].includes(upper(status)) || !selectedTaskId) return;
     pollTimer = setTimeout(async () => {
       await loadView(selectedTaskId);
-      await loadRuns();
     }, 2000);
   };
 
@@ -506,6 +585,15 @@
       document.querySelectorAll("[data-graph-layer]").forEach((item) => item.classList.toggle("active", item === button));
       await renderGraph();
     });
+  });
+
+  fullscreenButton?.addEventListener("click", () => {
+    setGraphFullscreen(!graphCard?.classList.contains("orchestration-graph-card-fullscreen"));
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    if (inspector?.classList.contains("open")) renderInspector(null);
+    else if (graphCard?.classList.contains("orchestration-graph-card-fullscreen")) setGraphFullscreen(false);
   });
 
   panelTab.addEventListener("click", () => loadRuns());

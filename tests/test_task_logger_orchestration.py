@@ -7,6 +7,7 @@ def test_task_logger_persists_orchestration_projection(tmp_path, monkeypatch):
     logger.set_task_graph_snapshot(
         {"spec": {"task_id": "task-orch"}, "steps": [{"step_id": "hr"}]}
     )
+    logger.record_orchestration_batch(step_ids=["hr"], monotonic_ns=90)
     logger.record_orchestration_attempt(
         step_id="hr",
         attempt=1,
@@ -34,6 +35,8 @@ def test_task_logger_persists_orchestration_projection(tmp_path, monkeypatch):
 
     assert loaded is not None
     assert loaded.task_graph["steps"][0]["step_id"] == "hr"
+    assert loaded.orchestration_batches[0]["step_ids"] == ["hr"]
+    assert loaded.orchestration_batches[0]["scheduled_monotonic_ns"] == 90
     assert loaded.orchestration_attempts[0]["event"] == "start"
     assert loaded.tool_selection_decisions["hr"]["mode"] == "audit"
     assert "arguments" not in loaded.tool_selection_decisions["hr"]

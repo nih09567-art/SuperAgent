@@ -804,6 +804,11 @@ def test_custom_router_redispatch_has_trusted_context_and_attempt_lifecycle(
         def __init__(self):
             self.starts = []
             self.ends = []
+            self.batches = []
+
+        def record_orchestration_batch(self, *, step_ids, monotonic_ns):
+            assert monotonic_ns > 0
+            self.batches.append(list(step_ids))
 
         def log_agent_start(self, **kwargs):
             self.starts.append(kwargs)
@@ -889,6 +894,7 @@ def test_custom_router_redispatch_has_trusted_context_and_attempt_lifecycle(
 
     events = asyncio.run(_run())
 
+    assert task_logger.batches == [["lookup"]]
     assert calls == ["PrimaryAgent", "PrimaryAgent", "BackupAgent"]
     assert routing.calls == [
         {"PrimaryAgent", "BackupAgent"},

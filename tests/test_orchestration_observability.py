@@ -36,6 +36,16 @@ def _task_log():
                 },
             ],
         },
+        orchestration_batches=[
+            {
+                "sequence": 1,
+                "batch_id": "batch_1",
+                "step_ids": ["hr", "kb"],
+                "scheduled_at": "t0",
+                "scheduled_monotonic_ns": 90,
+                "unsafe": "hidden",
+            }
+        ],
         orchestration_attempts=[
             {"sequence": 1, "step_id": "hr", "attempt": 1, "phase": "primary", "event": "start", "monotonic_ns": 100, "timestamp": "t1"},
             {"sequence": 2, "step_id": "kb", "attempt": 1, "phase": "primary", "event": "start", "monotonic_ns": 110, "timestamp": "t2"},
@@ -73,6 +83,15 @@ def test_orchestration_view_preserves_parallel_graph_and_fan_in_without_payloads
     assert {edge["source"] for edge in view["graph"]["dependency_edges"]} == {"hr", "kb"}
     assert len(view["graph"]["artifact_edges"]) == 2
     assert len(view["runtime"]["attempts"]) == 2
+    assert view["runtime"]["batches"] == [
+        {
+            "sequence": 1,
+            "batch_id": "batch_1",
+            "step_ids": ["hr", "kb"],
+            "scheduled_at": "t0",
+            "scheduled_monotonic_ns": 90,
+        }
+    ]
     assert view["runtime"]["attempts"][0]["duration_ms"] == 0.0
     assert view["planning"]["validation"]["status"] == "VERIFIED_FOR_EXECUTION"
 

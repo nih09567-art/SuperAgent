@@ -117,6 +117,7 @@ class TaskLogger:
         self.planning_steps: List[Dict[str, Any]] = []
         self.task_profile: Dict[str, Any] = {}
         self.task_graph: Dict[str, Any] = {}
+        self.orchestration_batches: List[Dict[str, Any]] = []
         self.orchestration_attempts: List[Dict[str, Any]] = []
         self.tool_selection_decisions: Dict[str, Dict[str, Any]] = {}
         self.artifact_lineage: List[Dict[str, Any]] = []
@@ -589,6 +590,28 @@ class TaskLogger:
         )
         self._flush()
 
+    def record_orchestration_batch(
+        self,
+        *,
+        step_ids: List[str],
+        monotonic_ns: int,
+    ) -> None:
+        """Persist the instant a runnable batch enters concurrent scheduling."""
+
+        sequence = len(self.orchestration_batches) + 1
+        self.orchestration_batches.append(
+            {
+                "sequence": sequence,
+                "batch_id": f"batch_{sequence}",
+                "step_ids": [
+                    str(step_id) for step_id in step_ids if str(step_id)
+                ],
+                "scheduled_at": datetime.now(timezone.utc).isoformat(),
+                "scheduled_monotonic_ns": int(monotonic_ns),
+            }
+        )
+        self._flush()
+
     def record_tool_selection_decision(
         self, step_id: str, decision: Dict[str, Any]
     ) -> None:
@@ -714,6 +737,7 @@ class TaskLogger:
             "planning_steps": self.planning_steps,
             "task_profile": self.task_profile,
             "task_graph": self.task_graph,
+            "orchestration_batches": self.orchestration_batches,
             "orchestration_attempts": self.orchestration_attempts,
             "tool_selection_decisions": self.tool_selection_decisions,
             "artifact_lineage": self.artifact_lineage,
@@ -771,6 +795,7 @@ class TaskLogger:
             inst.planning_steps = data.get("planning_steps", [])
             inst.task_profile = data.get("task_profile", {})
             inst.task_graph = data.get("task_graph", {})
+            inst.orchestration_batches = data.get("orchestration_batches", [])
             inst.orchestration_attempts = data.get("orchestration_attempts", [])
             inst.tool_selection_decisions = data.get("tool_selection_decisions", {})
             inst.artifact_lineage = data.get("artifact_lineage", [])
