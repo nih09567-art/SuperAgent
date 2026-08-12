@@ -537,6 +537,14 @@ class TaskLogger:
         self.execution_phase = execution_phase
         self._flush()
 
+    def mark_recovery_required(self, error: str) -> None:
+        """Persist a non-terminal crash-recovery state without claiming failure."""
+
+        self.status = "RECOVERY_REQUIRED"
+        self.finished_at = None
+        self.error = str(error or "worker interrupted")
+        self._flush()
+
     def set_workflow_snapshot(
         self,
         planning_steps: List[Dict[str, Any]],

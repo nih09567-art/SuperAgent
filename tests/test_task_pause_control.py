@@ -45,6 +45,26 @@ def test_task_control_pause_resume_lifecycle_is_persistent():
     assert resumed["resumed_at"]
 
 
+def test_recovery_required_control_can_resume_but_cannot_be_paused():
+    store = TaskControlStore()
+    store.ensure_running("task-recovery", workflow_id="u1:wf", user_id="u1")
+    recovery = store.mark_recovery_required(
+        "task-recovery",
+        checkpoint_step=0,
+        resume_step=1,
+        completed_steps=[],
+        requires_review=False,
+        uncertain_side_effect_steps=[],
+        reason="worker_lease_expired",
+    )
+
+    assert recovery["state"] == "RECOVERY_REQUIRED"
+    assert store.ensure_running("task-recovery")["state"] == "RECOVERY_REQUIRED"
+    with pytest.raises(ValueError, match="requires recovery"):
+        store.request_pause("task-recovery", user_id="u1")
+    assert store.resume("task-recovery", user_id="u1")["state"] == "RUNNING"
+
+
 def test_pause_api_is_idempotent_and_enforces_task_owner():
     task = TaskLogger("task-api-pause", "u1:wf", "pause me")
     task.execution_user_id = "u1"

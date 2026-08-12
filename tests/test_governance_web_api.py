@@ -696,16 +696,20 @@ def test_resume_api_restores_reconciliation_when_stream_raises(
     )
     _patch_resume_dependencies(monkeypatch, [RuntimeError("resume failed")])
 
-    with pytest.raises(Exception, match="resume failed"):
-        _client().post(
-            "/api/tasks/resume",
-            json={
-                "task_id": reconciliation.task_id,
-                "resume_step": reconciliation.resume_step,
-                "user_id": "admin",
-            },
-        )
+    response = _client().post(
+        "/api/tasks/resume",
+        json={
+            "task_id": reconciliation.task_id,
+            "resume_step": reconciliation.resume_step,
+            "user_id": "admin",
+        },
+    )
 
+    # Detached execution translates a producer exception into a durable FAILED
+    # event instead of leaking the worker exception through the SSE subscriber.
+    assert response.status_code == 200
+    assert "resume failed" in response.text
+    assert '"status": "FAILED"' in response.text
     restored = store.get(reconciliation.reconciliation_id)
     assert restored.status == "confirmed_succeeded"
     assert restored.resolution["resume_succeeded"] is False

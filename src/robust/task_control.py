@@ -105,7 +105,11 @@ class TaskControlStore:
         path = self._path(task_id)
         with FileLock(path):
             current = self.get(task_id)
-            if current and current.get("state") in {"PAUSE_REQUESTED", "PAUSED"}:
+            if current and current.get("state") in {
+                "PAUSE_REQUESTED",
+                "PAUSED",
+                "RECOVERY_REQUIRED",
+            }:
                 return current
             now = _now()
             payload = {
@@ -137,6 +141,8 @@ class TaskControlStore:
             state = str(current.get("state") or "RUNNING").upper()
             if state == "PAUSED" or state == "PAUSE_REQUESTED":
                 return current
+            if state == "RECOVERY_REQUIRED":
+                raise ValueError("task requires recovery review or checkpoint resume")
             if state in TERMINAL_STATES:
                 raise ValueError(f"task cannot be paused in state={state}")
             now = _now()
@@ -187,7 +193,7 @@ class TaskControlStore:
             current = self.get(task_id)
             if current is None:
                 raise ValueError("task control record not found")
-            if str(current.get("state") or "").upper() != "PAUSED":
+            if str(current.get("state") or "").upper() not in {"PAUSED", "RECOVERY_REQUIRED"}:
                 raise ValueError(
                     f"task cannot resume in state={current.get('state') or 'UNKNOWN'}"
                 )
@@ -203,6 +209,36 @@ class TaskControlStore:
                 "resumed_at": now,
                 "updated_at": now,
                 "reason": "",
+            }
+            _atomic_write(path, payload)
+            return payload
+
+    def mark_recovery_required(
+        self,
+        task_id: str,
+        *,
+        checkpoint_step: int,
+        resume_step: int,
+        completed_steps: list[str],
+        requires_review: bool,
+        uncertain_side_effect_steps: list[str],
+        reason: str,
+    ) -> dict[str, Any]:
+        path = self._path(task_id)
+        with FileLock(path):
+            current = self.get(task_id) or {"task_id": task_id}
+            now = _now()
+            payload = {
+                **current,
+                "state": "RECOVERY_REQUIRED",
+                "checkpoint_step": int(checkpoint_step),
+                "resume_step": int(resume_step),
+                "completed_steps": list(completed_steps),
+                "requires_review": bool(requires_review),
+                "uncertain_side_effect_steps": list(uncertain_side_effect_steps),
+                "interrupted_at": now,
+                "updated_at": now,
+                "reason": str(reason)[:256],
             }
             _atomic_write(path, payload)
             return payload

@@ -22,6 +22,7 @@ from src.manager import agent_manager
 from src.manager.registry import ToolRegistry
 from src.manager.mcp import mcp_client_config, mcp_config_fingerprint
 from src.service.server import Server
+from src.service.detached_execution import DetachedExecutionRunner, TaskEventStore
 from src.utils.path_utils import get_project_root
 from src.workflow.cache import workflow_cache
 from src.robust.checkpoint import CheckpointManager
@@ -510,6 +511,7 @@ def _delete_task_runtime_records(task_id: str) -> dict[str, int]:
         "reconciliations": 0,
         "recovery_reviews": 0,
         "task_controls": 0,
+        "task_events": 0,
     }
 
     task_log = TaskLogger.load(normalized)
@@ -521,6 +523,7 @@ def _delete_task_runtime_records(task_id: str) -> dict[str, int]:
             pass
 
     counts["task_controls"] = TaskControlStore().delete(normalized)
+    counts["task_events"] = TaskEventStore().delete(normalized)
 
     checkpoint_manager = CheckpointManager()
     checkpoint_root = checkpoint_manager.base_dir.resolve()
@@ -809,6 +812,48 @@ def _build_health_fallback(endpoint: str) -> Optional[str]:
 
 def create_app() -> FastAPI:
     app = FastAPI(title="CoorAgent Web", version="0.1.0")
+    task_event_store = TaskEventStore()
+    detached_execution_runner = DetachedExecutionRunner(task_event_store)
+    app.state.task_event_store = task_event_store
+    app.state.detached_execution_runner = detached_execution_runner
+
+    def sweep_interrupted_workers() -> list[dict[str, Any]]:
+        recovered = detached_execution_runner.recover_expired_tasks()
+        for control in recovered:
+            if not control.get("requires_review"):
+                continue
+            task = TaskLogger.load(str(control.get("task_id") or ""))
+            if task is None:
+                continue
+            get_recovery_review_store().create(
+                user_id=task.execution_user_id,
+                workflow_id=task.workflow_id,
+                task_id=task.task_id,
+                terminal_status="RECOVERY_REQUIRED",
+                failed_steps=list(control.get("uncertain_side_effect_steps") or []),
+                failure_codes=["WORKER_INTERRUPTED_SIDE_EFFECT_UNKNOWN"],
+            )
+        return recovered
+
+    async def recovery_sweeper() -> None:
+        while True:
+            sweep_interrupted_workers()
+            await asyncio.sleep(1.0)
+
+    @app.on_event("startup")
+    async def start_recovery_sweeper() -> None:
+        sweep_interrupted_workers()
+        app.state.recovery_sweeper_task = asyncio.create_task(recovery_sweeper())
+
+    @app.on_event("shutdown")
+    async def stop_recovery_sweeper() -> None:
+        task = getattr(app.state, "recovery_sweeper_task", None)
+        if task is not None:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
     project_root = get_project_root()
     travel_service = EmployeeTravelService(
@@ -1186,6 +1231,52 @@ def create_app() -> FastAPI:
 
         server = Server()
 
+        async def detached_event_stream(
+            task_id: str,
+            *,
+            after_sequence: int = 0,
+        ) -> AsyncGenerator[str, None]:
+            """Replay persisted events without owning or cancelling execution."""
+
+            cursor = max(0, int(after_sequence or 0))
+            try:
+                while True:
+                    records = task_event_store.list_after(task_id, cursor)
+                    for record in records:
+                        cursor = max(cursor, int(record.get("sequence") or 0))
+                        if await request.is_disconnected():
+                            return
+                        yield _sse_format(record.get("event", "message"), record)
+                    meta = task_event_store.metadata(task_id)
+                    if bool(meta.get("producer_done")) and not records:
+                        return
+                    await asyncio.sleep(0.05)
+            except asyncio.CancelledError:
+                # Subscriber cancellation is intentionally not propagated to
+                # the detached producer.
+                return
+
+        if execution_task_id:
+            started = detached_execution_runner.start(
+                execution_task_id,
+                lambda: server._run_agent_workflow(body),
+                reset_events=True,
+            )
+            if not started:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "EXECUTION_ALREADY_RUNNING",
+                        "message": "The production task is already running.",
+                        "task_id": execution_task_id,
+                    },
+                )
+            return StreamingResponse(
+                detached_event_stream(execution_task_id),
+                media_type="text/event-stream",
+                headers=response_headers,
+            )
+
         async def event_stream() -> AsyncGenerator[str, None]:
             active_task_id: Optional[str] = execution_task_id
             disconnected = False
@@ -1217,6 +1308,58 @@ def create_app() -> FastAPI:
             event_stream(),
             media_type="text/event-stream",
             headers=response_headers,
+        )
+
+    @app.get("/api/tasks/{task_id}/events")
+    async def reconnect_task_events(
+        request: Request,
+        task_id: str,
+        after_sequence: int = 0,
+    ):
+        """Replay one production task's public SSE journal from a cursor."""
+
+        principal = _authenticated_principal(request)
+        task = TaskLogger.load(task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail="Task log not found")
+        owner = str(task.execution_user_id or "")
+        if owner and not hmac.compare_digest(owner, principal):
+            raise HTTPException(status_code=403, detail="Task owner mismatch")
+        if not task_event_store.exists(task_id):
+            raise HTTPException(status_code=404, detail="Task event journal not found")
+        event_meta = task_event_store.metadata(task_id)
+
+        async def replay() -> AsyncGenerator[str, None]:
+            cursor = max(0, int(after_sequence or 0))
+            try:
+                while True:
+                    records = task_event_store.list_after(task_id, cursor)
+                    for record in records:
+                        cursor = max(cursor, int(record.get("sequence") or 0))
+                        if await request.is_disconnected():
+                            return
+                        yield _sse_format(record.get("event", "message"), record)
+                    meta = task_event_store.metadata(task_id)
+                    if bool(meta.get("producer_done")) and not records:
+                        return
+                    await asyncio.sleep(0.05)
+            except asyncio.CancelledError:
+                return
+
+        return StreamingResponse(
+            replay(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Task-ID": task_id,
+                "X-Task-Event-Sequence": str(
+                    int(event_meta.get("last_sequence") or 0)
+                ),
+                "X-Task-Terminal-Status": str(
+                    event_meta.get("terminal_status") or ""
+                ),
+            },
         )
 
     @app.get("/api/memory/long-term")
@@ -1933,7 +2076,18 @@ def create_app() -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-        if control is not None and str(control.get("state") or "").upper() == "PAUSED":
+        control_state = str((control or {}).get("state") or "").upper()
+        if control_state == "RECOVERY_REQUIRED" and control.get("requires_review"):
+            review = get_recovery_review_store().find_active(task_id=body.task_id)
+            if review is None or review.status != "in_review":
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "Interrupted side-effect state requires an opened recovery "
+                        "review before checkpoint resume"
+                    ),
+                )
+        if control is not None and control_state in {"PAUSED", "RECOVERY_REQUIRED"}:
             try:
                 control_store.resume(body.task_id, user_id=body.user_id)
             except PermissionError as exc:
@@ -1954,9 +2108,7 @@ def create_app() -> FastAPI:
 
         server = Server()
 
-        async def event_stream() -> AsyncGenerator[str, None]:
-            active_task_id: Optional[str] = body.task_id
-            disconnected = False
+        async def resume_producer() -> AsyncGenerator[dict[str, Any], None]:
             resumed_workflow_succeeded = False
             resumed_workflow_reconciled = False
             resume_heartbeat_failed = False
@@ -2002,7 +2154,6 @@ def create_app() -> FastAPI:
                             "reconciliation resume lease could not be renewed"
                         )
                     event_data = event.get("data") or {}
-                    active_task_id = event_data.get("task_id") or active_task_id
                     if (
                         resumed_reconciliation
                         and event.get("event") == "end_of_workflow"
@@ -2014,13 +2165,7 @@ def create_app() -> FastAPI:
                         resumed_workflow_reconciled = (
                             terminal_status == "NEEDS_RECONCILIATION"
                         )
-                    if await request.is_disconnected():
-                        disconnected = True
-                        break
-                    event_type = event.get("event", "message")
-                    yield _sse_format(event_type, event)
-            except asyncio.CancelledError:
-                disconnected = True
+                    yield event
             finally:
                 if heartbeat_task is not None:
                     heartbeat_task.cancel()
@@ -2035,12 +2180,10 @@ def create_app() -> FastAPI:
                             resume_claim_id=resume_claim_id,
                             succeeded=(
                                 resumed_workflow_succeeded
-                                and not disconnected
                                 and not resume_heartbeat_failed
                             ),
                             superseded=(
                                 resumed_workflow_reconciled
-                                and not disconnected
                                 and not resume_heartbeat_failed
                             ),
                         )
@@ -2049,16 +2192,51 @@ def create_app() -> FastAPI:
                             "failed to finalize reconciliation resume %s",
                             resumed_reconciliation.reconciliation_id,
                         )
-                if disconnected:
-                    _finalize_disconnected_task(
-                        active_task_id,
-                        "client disconnected before resumed workflow completion",
-                    )
+
+        journal_exists = task_event_store.exists(body.task_id)
+        resume_after_sequence = int(
+            task_event_store.metadata(body.task_id).get("last_sequence") or 0
+        ) if journal_exists else 0
+        started = detached_execution_runner.start(
+            body.task_id,
+            resume_producer,
+            reset_events=not journal_exists,
+        )
+        if not started:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "EXECUTION_ALREADY_RUNNING",
+                    "message": "The task is already running.",
+                    "task_id": body.task_id,
+                },
+            )
+
+        async def resume_event_stream() -> AsyncGenerator[str, None]:
+            cursor = resume_after_sequence
+            try:
+                while True:
+                    records = task_event_store.list_after(body.task_id, cursor)
+                    for record in records:
+                        cursor = max(cursor, int(record.get("sequence") or 0))
+                        if await request.is_disconnected():
+                            return
+                        yield _sse_format(record.get("event", "message"), record)
+                    meta = task_event_store.metadata(body.task_id)
+                    if bool(meta.get("producer_done")) and not records:
+                        return
+                    await asyncio.sleep(0.05)
+            except asyncio.CancelledError:
+                return
 
         return StreamingResponse(
-            event_stream(),
+            resume_event_stream(),
             media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Task-ID": body.task_id,
+            },
         )
 
     @app.delete("/api/tasks/{task_id}")

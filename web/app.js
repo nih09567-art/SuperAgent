@@ -1419,6 +1419,7 @@ const normalizePendingPlan = (pendingPlan) => {
       .slice(0, CONVERSATION_MESSAGE_CHAR_LIMIT),
     serverStatus: String(pendingPlan.serverStatus || "").slice(0, 64),
     resumeStep: Math.max(0, Number(pendingPlan.resumeStep) || 0),
+    lastEventSequence: Math.max(0, Number(pendingPlan.lastEventSequence) || 0),
   };
 };
 
@@ -1612,18 +1613,22 @@ const resolvePendingExecution = async (pendingPlan = activePendingPlan) => {
       });
     }
     if (["RUNNING", "RESERVED"].includes(serverStatus)) {
-      return applyPendingExecutionRecoveryState(conversationId, normalized, {
+      const updated = applyPendingExecutionRecoveryState(conversationId, normalized, {
         status: "recovery_pending",
         serverStatus,
-        recoveryMessage: "原任务仍在服务端运行或等待启动。系统不会创建新的执行任务，可稍后再次检查状态。",
+        recoveryMessage: "原任务仍在服务端运行或等待启动，正在重新连接执行事件。",
       });
+      if (updated) void reconnectPendingExecution(activePendingPlan);
+      return updated;
     }
     if (["COMPLETED", "SUCCEEDED"].includes(serverStatus)) {
-      return applyPendingExecutionRecoveryState(conversationId, normalized, {
-        status: "recovery_completed",
+      const updated = applyPendingExecutionRecoveryState(conversationId, normalized, {
+        status: "recovery_pending",
         serverStatus,
-        recoveryMessage: "原任务已在服务端完成，可在任务历史中查看执行结果。",
+        recoveryMessage: "原任务已在服务端完成，正在补拉断线期间的执行事件和最终结果。",
       });
+      if (updated) void reconnectPendingExecution(activePendingPlan);
+      return updated;
     }
     if (serverStatus === "APPROVAL_REQUIRED") {
       let approvalStatus = "approval_pending";
@@ -1717,6 +1722,24 @@ const resolvePendingExecution = async (pendingPlan = activePendingPlan) => {
         recoveryMessage: reconciliationMessage,
       });
     }
+    if (serverStatus === "RECOVERY_REQUIRED") {
+      const control = task.task_control || {};
+      const resumeStep = Math.max(0, Number(control.resume_step) || 0);
+      if (control.requires_review || resumeStep < 1) {
+        return applyPendingExecutionRecoveryState(conversationId, normalized, {
+          status: "recovery_review_required",
+          serverStatus,
+          resumeStep,
+          recoveryMessage: "后端 Worker 异常中断，且存在未确认的副作用或缺少可信 Checkpoint。请先进行人工恢复审核。",
+        });
+      }
+      return applyPendingExecutionRecoveryState(conversationId, normalized, {
+        status: "paused",
+        serverStatus,
+        resumeStep,
+        recoveryMessage: "后端 Worker 异常中断，已定位到最近可信 Checkpoint。点击“恢复执行”可继续未完成步骤。",
+      });
+    }
     return applyPendingExecutionRecoveryState(conversationId, normalized, {
       status: "recovery_review_required",
       serverStatus,
@@ -1727,6 +1750,130 @@ const resolvePendingExecution = async (pendingPlan = activePendingPlan) => {
       status: "recovery_review_required",
       recoveryMessage: `暂时无法确认原任务状态：${error.message || error}。请人工审核任务记录，确认状态后再恢复执行。`,
     });
+  }
+};
+
+const reconnectPendingExecution = async (pendingPlan = activePendingPlan) => {
+  const normalized = normalizePendingPlan(pendingPlan);
+  if (
+    !normalized
+    || !normalized.taskId
+    || isConversationRuntimeActive()
+    || executionInProgress
+  ) return false;
+
+  const userId = activeConversationUserId || userIdInput.value.trim();
+  const runtime = beginConversationRuntime("reconnecting");
+  runtime.taskId = normalized.taskId;
+  runtime.attemptId = normalized.attemptId;
+  runtime.lastEventSequence = normalized.lastEventSequence;
+  currentRunContext = "executing";
+  executionInProgress = true;
+  currentRunHasError = false;
+  setChatPlanActionsDisabled(true);
+  setStatus("Reconnecting", true);
+  updateChatExecutionProgress("running", "正在重新连接服务端任务事件");
+
+  const controller = new AbortController();
+  attachConversationRuntimeController(runtime, controller);
+  let streamCompleted = false;
+  try {
+    const response = await fetch(
+      `/api/tasks/${encodeURIComponent(normalized.taskId)}/events?after_sequence=${runtime.lastEventSequence}`,
+      {
+        method: "GET",
+        headers: getWorkflowRequestHeaders(userId),
+        signal: controller.signal,
+      }
+    );
+    if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`);
+    const knownTerminalStatus = String(
+      response.headers.get("X-Task-Terminal-Status") || ""
+    ).toUpperCase();
+    if (knownTerminalStatus) {
+      runtime.terminalReceived = true;
+      runtime.terminalStatus = knownTerminalStatus;
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      buffer = parseSse(buffer, handleEvent);
+    }
+    streamCompleted = true;
+  } catch (error) {
+    if (error?.name !== "AbortError") {
+      currentRunHasError = true;
+      activePendingPlan = normalizePendingPlan({
+        ...activePendingPlan,
+        status: "recovery_unknown",
+        interruptedFrom: "executing",
+        lastEventSequence: runtime.lastEventSequence,
+        recoveryMessage: `任务事件重连失败：${error.message || error}。恢复网络后可再次连接。`,
+      });
+      saveActiveConversation();
+    }
+  } finally {
+    if (!isCurrentConversationRuntime(runtime)) return false;
+    const terminalStatus = String(runtime.terminalStatus || "").toUpperCase();
+    if (streamCompleted && runtime.terminalReceived) {
+      if (["SUCCEEDED", "COMPLETED"].includes(terminalStatus)) {
+        activePendingPlan = null;
+        captureAssistantConversationContext({ outcomeStatus: "succeeded" });
+        saveActiveConversation();
+      } else if (terminalStatus === "PAUSED") {
+        activePendingPlan = normalizePendingPlan({
+          ...normalized,
+          status: "paused",
+          resumeStep: runtime.resumeStep,
+          serverStatus: terminalStatus,
+          lastEventSequence: runtime.lastEventSequence,
+          recoveryMessage: "任务已在服务端安全点暂停，可从 Checkpoint 继续。",
+        });
+        saveActiveConversation();
+      } else {
+        activePendingPlan = normalizePendingPlan({
+          ...normalized,
+          status: "recovery_unknown",
+          serverStatus: terminalStatus,
+          lastEventSequence: runtime.lastEventSequence,
+          recoveryMessage: `任务已返回终态 ${terminalStatus || "UNKNOWN"}，正在核对恢复边界。`,
+        });
+        saveActiveConversation();
+      }
+    } else if (!activePendingPlan || activePendingPlan.status === "recovery_pending") {
+      activePendingPlan = normalizePendingPlan({
+        ...normalized,
+        status: "recovery_unknown",
+        lastEventSequence: runtime.lastEventSequence,
+        recoveryMessage: "任务事件连接再次中断；后台任务不受影响，恢复网络后可重新连接。",
+      });
+      saveActiveConversation();
+    }
+    currentRunContext = null;
+    executionInProgress = false;
+    runBtn.disabled = false;
+    stopBtn.disabled = true;
+    userIdInput.disabled = false;
+    if (newConversationBtn) newConversationBtn.disabled = false;
+    if (activePendingPlan) renderPendingPlanForCurrentAnswer(activePendingPlan, true);
+    updateConfirmExecuteState();
+    finishConversationRuntime(runtime);
+    if (
+      activePendingPlan
+      && streamCompleted
+      && (
+        !runtime.terminalReceived
+        || !["SUCCEEDED", "COMPLETED", "PAUSED"].includes(terminalStatus)
+      )
+    ) {
+      void resolvePendingExecution(activePendingPlan);
+    }
+    return true;
   }
 };
 
@@ -2101,7 +2248,7 @@ const renderPendingPlanForCurrentAnswer = (pendingPlan, interactive = true) => {
   const confirmLabels = {
     executing: "执行中...",
     recovery_checking: "正在恢复...",
-    recovery_pending: "检查任务状态",
+    recovery_pending: "重新连接执行",
     recovery_unknown: "重新检查状态",
     recovery_completed: "任务已完成",
     recovery_review_required: "前往人工审核",
@@ -2170,6 +2317,7 @@ const beginConversationRuntime = (kind = "workflow") => {
     recoveryReviewRequired: false,
     resumeStep: 0,
     recoveryRequired: false,
+    lastEventSequence: 0,
   };
   activeConversationRuntime = runtime;
   runningConversationId = activeConversationId;
@@ -4797,6 +4945,22 @@ const handleEvent = (eventName, payload) => {
   window.dispatchEvent(new CustomEvent("cooragent:sse", {
     detail: { eventName, payload },
   }));
+  const eventSequence = Math.max(0, Number(payload?.sequence) || 0);
+  if (
+    eventSequence
+    && currentRunContext === "executing"
+    && activeConversationRuntime
+    && eventSequence > activeConversationRuntime.lastEventSequence
+  ) {
+    activeConversationRuntime.lastEventSequence = eventSequence;
+    if (activePendingPlan) {
+      activePendingPlan = normalizePendingPlan({
+        ...activePendingPlan,
+        lastEventSequence: eventSequence,
+      });
+      saveActiveConversation();
+    }
+  }
   const eventTaskId = String(payload?.data?.task_id || "").trim();
   if (currentRunContext === "executing" && eventTaskId && activeConversationRuntime) {
     activeConversationRuntime.taskId = eventTaskId;
@@ -5811,9 +5975,11 @@ const runExecution = async () => {
     planHash: executionIdentity.planHash,
     recoveryMessage: "",
     serverStatus: "",
+    lastEventSequence: 0,
   };
   saveActiveConversation();
   const runtime = beginConversationRuntime("executing");
+  runtime.lastEventSequence = activePendingPlan.lastEventSequence;
 
   setStatus("Executing", true);
   clearOutputPhase("executing");
@@ -5947,6 +6113,7 @@ const runExecution = async () => {
       idempotencyKey: executionIdentity.idempotencyKey,
       confirmationRequestId: executionIdentity.confirmationRequestId,
       planHash: executionIdentity.planHash,
+      lastEventSequence: runtime.lastEventSequence,
     };
     const terminalConfirmed = executionStreamCompleted && runtime.terminalReceived;
     const terminalStatus = String(runtime.terminalStatus || "").toUpperCase();
@@ -8474,7 +8641,7 @@ const formatDateTime = (isoStr) => {
 const statusBadgeClass = (status) => {
   const normalized = String(status || "").toUpperCase();
   if (normalized === "COMPLETED" || normalized === "SUCCEEDED") return "badge-success";
-  if (["RUNNING", "PAUSED"].includes(normalized)) return "badge-info";
+  if (["RUNNING", "PAUSED", "RECOVERY_REQUIRED"].includes(normalized)) return "badge-info";
   if (["FAILED", "PARTIAL_FAILED", "REJECTED", "NEEDS_RECONCILIATION"].includes(normalized)) {
     return "badge-error";
   }
@@ -8505,6 +8672,7 @@ const taskStatusLabel = (status) => {
     RESERVED: "待确认",
     STOPPED: "已停止",
     PAUSED: "已暂停",
+    RECOVERY_REQUIRED: "待恢复",
     ABORTED: "已中止",
     SKIPPED: "已跳过",
     SUCCESS: "成功",
