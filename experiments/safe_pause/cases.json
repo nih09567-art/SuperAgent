@@ -1,0 +1,30 @@
+{
+  "dataset_id": "safe-pause-v1",
+  "description": "Active cooperative pause and resume cases for the scheduler safe-point mechanism.",
+  "rounds_per_scenario": 2,
+  "scenarios": [
+    {
+      "scenario_id": "serial_safe_point",
+      "steps": ["collect", "analyze", "report"],
+      "pause_during": "collect",
+      "expected_completed_at_pause": ["collect"],
+      "expected_not_started_at_pause": ["analyze", "report"]
+    },
+    {
+      "scenario_id": "parallel_batch_safe_point",
+      "steps": ["hr_read", "knowledge_read", "report"],
+      "pause_during": "hr_read",
+      "expected_completed_at_pause": ["hr_read", "knowledge_read"],
+      "expected_not_started_at_pause": ["report"]
+    },
+    {
+      "scenario_id": "side_effect_before_pause",
+      "steps": ["prepare", "send_notice"],
+      "pause_during": "prepare",
+      "expected_completed_at_pause": ["prepare"],
+      "expected_not_started_at_pause": ["send_notice"],
+      "replay_same_checkpoint": true,
+      "expected_side_effect_invocations": 1
+    }
+  ]
+}
