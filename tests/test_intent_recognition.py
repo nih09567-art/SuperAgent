@@ -531,6 +531,15 @@ def test_schedule_meeting_notification_profiles_all_contract_targets() -> None:
     assert profile.expected_deliverables == ["email.dispatch.receipt"]
 
 
+def test_send_to_labeled_email_extracts_recipient_deterministically() -> None:
+    query = "生成报告，发送给邮箱 hr@example.test"
+
+    entities = extract_entities(query)
+
+    assert entities["recipient"] == "hr@example.test"
+    assert "recipient" not in extract_entities("查询 hr@example.test 邮箱归属")
+
+
 def test_leave_query_subject_does_not_include_colloquial_prefixes() -> None:
     cases = {
         "查一下张三最近有没有请假": "张三",
@@ -544,6 +553,15 @@ def test_leave_query_subject_does_not_include_colloquial_prefixes() -> None:
         entities = extract_entities(query)
         assert entities["employee_name"] == expected_name
         assert entities["people"] == [expected_name]
+
+
+def test_colloquial_annual_leave_entitlement_extracts_employee_name() -> None:
+    query = "帮我看看王强能休几天年假"
+
+    entities = extract_entities(query)
+
+    assert entities["employee_name"] == "王强"
+    assert entities["people"] == ["王强"]
 
 
 def test_generic_leave_subjects_do_not_become_employee_names() -> None:

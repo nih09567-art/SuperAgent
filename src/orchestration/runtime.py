@@ -25,6 +25,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from contextlib import suppress
 from typing import Any, AsyncGenerator, Awaitable, Callable, Optional
 
@@ -48,6 +49,7 @@ from src.orchestration.providers import MainAgentRoutingProvider, RoutingProvide
 from src.orchestration.resolver import ArtifactResolver
 from src.orchestration.scheduler import TaskScheduler
 from src.orchestration.store import ArtifactStore, ArtifactStoreCorruption
+from src.robust.task_control import TaskControlStore
 from src.skills.execution_evidence import (
     SkillExecutionEvidence,
     aggregate_evidence,
@@ -854,6 +856,15 @@ def _make_real_execute_step(state: dict, task_logger: Any = None) -> ExecuteStep
             step_id=step.step_id,
         )
         execute_result = await execute_agent(agent, messages, exec_ctx)
+        if task_logger is not None and hasattr(
+            task_logger, "record_tool_selection_decision"
+        ):
+            try:
+                audit = (execute_result.metadata or {}).get("tool_selection_audit")
+                if isinstance(audit, dict):
+                    task_logger.record_tool_selection_decision(step.step_id, audit)
+            except Exception:  # noqa: BLE001 - audit projection is best effort
+                logger.exception("scheduler: could not persist tool selection audit")
         response_event = make_trace_event(
             kind="remote_agent_response",
             request={
@@ -980,6 +991,25 @@ async def run_scheduler_workflow(
     state["task_id"] = task_id
     workflow_id = state.get("workflow_id")
     graph = build_task_graph_from_state(state)
+    if task_logger is not None and hasattr(task_logger, "set_workflow_snapshot"):
+        try:
+            task_logger.set_workflow_snapshot(
+                state.get("planning_steps") or [],
+                state.get("task_profile") or {},
+            )
+            if hasattr(task_logger, "set_task_graph_snapshot"):
+                task_logger.set_task_graph_snapshot(graph.model_dump(mode="json"))
+        except Exception:  # noqa: BLE001 - observability cannot block execution
+            logger.exception("scheduler: could not persist task-level graph snapshot")
+    control_store = TaskControlStore()
+    try:
+        control_store.ensure_running(
+            task_id,
+            workflow_id=str(workflow_id or ""),
+            user_id=str(state.get("user_id") or ""),
+        )
+    except Exception:  # noqa: BLE001 - execution remains observable on control failure
+        logger.exception("scheduler: could not initialize task pause control")
 
     def persist_skill_evidence(evidence: SkillExecutionEvidence) -> None:
         payload = evidence.model_dump(mode="json")
@@ -1220,6 +1250,20 @@ async def run_scheduler_workflow(
         current_step = step_number(step.step_id)
         if task_logger is not None:
             try:
+                if hasattr(task_logger, "record_orchestration_attempt"):
+                    task_logger.record_orchestration_attempt(
+                        step_id=step.step_id,
+                        attempt=1,
+                        phase="primary",
+                        planned_agent=(
+                            getattr(step, "agent_name", None)
+                            or getattr(step, "preferred_resource_id", None)
+                            or step.step_id
+                        ),
+                        executed_agent=selected_name,
+                        event="start",
+                        monotonic_ns=time.monotonic_ns(),
+                    )
                 task_logger.log_agent_start(
                     node_name="scheduler",
                     step=current_step,
@@ -1258,6 +1302,19 @@ async def run_scheduler_workflow(
                 "inputs_present": sorted(str(key) for key in inputs),
             },
         )
+
+    async def on_batch_scheduled(*, step_ids):
+        if task_logger is None or not hasattr(
+            task_logger, "record_orchestration_batch"
+        ):
+            return
+        try:
+            task_logger.record_orchestration_batch(
+                step_ids=list(step_ids),
+                monotonic_ns=time.monotonic_ns(),
+            )
+        except Exception:  # noqa: BLE001 - observability cannot fail a batch
+            logger.exception("scheduler: could not persist batch schedule boundary")
 
     async def on_retry(
         *,
@@ -1312,6 +1369,16 @@ async def run_scheduler_workflow(
         current_step = step_number(step.step_id)
         if task_logger is not None:
             try:
+                if hasattr(task_logger, "record_orchestration_attempt"):
+                    task_logger.record_orchestration_attempt(
+                        step_id=step.step_id,
+                        attempt=attempt,
+                        phase=phase,
+                        planned_agent=planned_name,
+                        executed_agent=executed_name,
+                        event="start",
+                        monotonic_ns=time.monotonic_ns(),
+                    )
                 task_logger.log_agent_start(
                     node_name="scheduler",
                     step=current_step,
@@ -1368,6 +1435,17 @@ async def run_scheduler_workflow(
         failure = getattr(result, "failure", None)
         if task_logger is not None:
             try:
+                if hasattr(task_logger, "record_orchestration_attempt"):
+                    task_logger.record_orchestration_attempt(
+                        step_id=step.step_id,
+                        attempt=attempt,
+                        phase=phase,
+                        planned_agent=planned_name,
+                        executed_agent=executed_name,
+                        event="end",
+                        monotonic_ns=time.monotonic_ns(),
+                        status=status_value,
+                    )
                 task_logger.log_agent_end(
                     node_name="scheduler",
                     next_node="scheduler",
@@ -1490,6 +1568,39 @@ async def run_scheduler_workflow(
         state["completed_steps"] = completed
         state["current_step"] = counter["step"]
 
+        if succeeded and result.outputs and task_logger is not None and hasattr(
+            task_logger, "record_artifact_lineage"
+        ):
+            lineage: list[dict[str, Any]] = []
+            for output_name, ref in result.outputs.items():
+                try:
+                    artifact = store.get(ref)
+                    lineage.append(
+                        {
+                            "output_name": str(output_name),
+                            "artifact_id": str(artifact.artifact_id),
+                            "version": int(artifact.version),
+                            "logical_name": str(artifact.logical_name),
+                            "schema_ref": artifact.schema_ref,
+                            "derived_from": [
+                                item.model_dump(mode="json")
+                                for item in artifact.derived_from
+                            ],
+                            "sensitivity": str(artifact.sensitivity),
+                            "schema_valid": artifact.schema_valid,
+                        }
+                    )
+                except Exception:  # noqa: BLE001 - never expose payload fallback
+                    lineage.append(
+                        {
+                            "output_name": str(output_name),
+                            "artifact_id": str(getattr(ref, "artifact_id", "")),
+                            "version": getattr(ref, "version", None),
+                            "schema_ref": getattr(ref, "expected_schema_ref", None),
+                        }
+                    )
+            task_logger.record_artifact_lineage(step.step_id, lineage)
+
         # This is deliberately last: StepResult, Artifact payload, checkpoint,
         # and live execution position are already durable before any lossy
         # conversation projection is replaced.
@@ -1529,6 +1640,59 @@ async def run_scheduler_workflow(
                 pass
 
         status_value = _status_value(result.status)
+        if (
+            not step.is_read_only
+            and task_logger is not None
+            and hasattr(task_logger, "record_orchestration_attempt")
+        ):
+            try:
+                task_logger.record_orchestration_attempt(
+                    step_id=step.step_id,
+                    attempt=1,
+                    phase="primary",
+                    planned_agent=(
+                        getattr(step, "agent_name", None)
+                        or getattr(step, "preferred_resource_id", None)
+                        or step.step_id
+                    ),
+                    executed_agent=(
+                        (result.metrics or {}).get("selected_agent")
+                        or step_agents.get(step.step_id)
+                        or getattr(step, "agent_name", None)
+                        or step.step_id
+                    ),
+                    event="end",
+                    monotonic_ns=time.monotonic_ns(),
+                    status=status_value,
+                )
+            except Exception:  # noqa: BLE001 - observability cannot fail a step
+                logger.exception("scheduler: could not persist step end boundary")
+        if task_logger is not None and hasattr(
+            task_logger, "record_orchestration_step_result"
+        ):
+            try:
+                task_logger.record_orchestration_step_result(
+                    step.step_id,
+                    {
+                        "status": status_value,
+                        "planned_agent": (
+                            getattr(step, "agent_name", None)
+                            or getattr(step, "preferred_resource_id", None)
+                            or step.step_id
+                        ),
+                        "executed_agent": (
+                            (result.metrics or {}).get("selected_agent")
+                            or step_agents.get(step.step_id)
+                            or getattr(step, "agent_name", None)
+                        ),
+                        "metrics": _public_step_metrics(result.metrics or {}),
+                        "output_names": sorted(
+                            str(name) for name in (result.outputs or {})
+                        ),
+                    },
+                )
+            except Exception:  # noqa: BLE001 - observability cannot fail a step
+                logger.exception("scheduler: could not persist step summary")
         selected_name = (
             (result.metrics or {}).get("selected_agent")
             or step_agents.get(step.step_id)
@@ -1975,6 +2139,7 @@ async def run_scheduler_workflow(
         else 0
     )
     results = None
+    pause_snapshot: Optional[dict[str, Any]] = None
     run_task: Optional[asyncio.Task] = None
     try:
         while True:
@@ -1993,6 +2158,8 @@ async def run_scheduler_workflow(
                     commit_step_result=commit_step_result,
                     on_attempt_start=on_attempt_start,
                     on_attempt_end=on_attempt_end,
+                    on_batch_scheduled=on_batch_scheduled,
+                    should_pause=lambda: control_store.pause_requested(task_id),
                 )
             )
             try:
@@ -2020,6 +2187,33 @@ async def run_scheduler_workflow(
                     getattr(results, "terminal_status", ""),
                 )
             )
+            if terminal_value == WorkflowStatus.PAUSED.value:
+                checkpoint_steps = [
+                    int((result.metrics or {}).get("checkpoint_step"))
+                    for result in results.values()
+                    if (result.metrics or {}).get("checkpoint_step") is not None
+                ]
+                checkpoint_step = max(checkpoint_steps, default=-1)
+                resume_step = checkpoint_step + 1
+                pause_snapshot = control_store.mark_paused(
+                    task_id,
+                    checkpoint_step=checkpoint_step,
+                    resume_step=resume_step,
+                    completed_steps=list(state.get("completed_steps") or []),
+                )
+                record_governance_event(
+                    "WORKFLOW_PAUSED",
+                    task_id=task_id,
+                    workflow_id=str(workflow_id or ""),
+                    subject=state.get("user_id"),
+                    decision="PAUSED_AT_SAFE_POINT",
+                    details={
+                        "checkpoint_step": checkpoint_step,
+                        "resume_step": resume_step,
+                        "completed_steps": list(state.get("completed_steps") or []),
+                    },
+                )
+                break
             if terminal_value == WorkflowStatus.SUCCEEDED.value:
                 break
 
@@ -2205,7 +2399,7 @@ async def run_scheduler_workflow(
     )
     persist_skill_evidence(evidence)
     terminal_error = None
-    if status != WorkflowStatus.SUCCEEDED.value:
+    if status not in {WorkflowStatus.SUCCEEDED.value, WorkflowStatus.PAUSED.value}:
         terminal_error = (
             f"scheduler workflow ended with status {status}; " f"failed_steps={failed}"
         )
@@ -2236,6 +2430,11 @@ async def run_scheduler_workflow(
                 logger.exception(
                     "failed to persist recovery review for task %s", task_id
                 )
+    if status != WorkflowStatus.PAUSED.value:
+        try:
+            control_store.mark_terminal(task_id, status)
+        except Exception:  # noqa: BLE001 - task result remains authoritative
+            logger.exception("scheduler: could not persist terminal task control state")
     record_governance_event(
         "WORKFLOW_TERMINATED",
         task_id=task_id,
@@ -2270,6 +2469,11 @@ async def run_scheduler_workflow(
             "approval_required_steps": approval_required_steps,
             "needs_reconciliation": needs_recon,
             "recovery_review_required": recovery_review_required,
+            "paused": status == WorkflowStatus.PAUSED.value,
+            "checkpoint_step": (
+                pause_snapshot.get("checkpoint_step") if pause_snapshot else None
+            ),
+            "resume_step": pause_snapshot.get("resume_step") if pause_snapshot else None,
             "results": {sid: str(r.status) for sid, r in results.items()},
             "skill_execution_evidence": evidence.model_dump(mode="json"),
         },

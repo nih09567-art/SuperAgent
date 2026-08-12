@@ -1,15 +1,22 @@
+import os
+from pathlib import Path
+
 from src.utils.path_utils import get_project_root
 from src.service import env as _env
 
-workflow_dir = get_project_root() / "store" / "workflows"
+_store_root = Path(
+    os.getenv("SUPERAGENT_STORE_DIR", get_project_root() / "store")
+).expanduser().resolve()
 
-tools_dir = get_project_root() / "store" / "tools"
-agents_dir = get_project_root() / "store" / "agents"
-prompts_dir = get_project_root() / "store" / "prompts"
-workflows_dir = get_project_root() / "store" / "workflows"
-checkpoints_dir = get_project_root() / "store" / "checkpoints"
-task_logs_dir = get_project_root() / "store" / "task_logs"
-memory_dir = get_project_root() / "store" / "memory"
+workflow_dir = _store_root / "workflows"
+
+tools_dir = _store_root / "tools"
+agents_dir = _store_root / "agents"
+prompts_dir = _store_root / "prompts"
+workflows_dir = _store_root / "workflows"
+checkpoints_dir = _store_root / "checkpoints"
+task_logs_dir = _store_root / "task_logs"
+memory_dir = _store_root / "memory"
 
 context_variables = {
     "has_lauched": False

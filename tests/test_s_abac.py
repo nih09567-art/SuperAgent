@@ -367,6 +367,63 @@ def test_explicit_communication_policy_preserves_email_review_requirement():
     assert result["decision"] == "REVIEW_REQUIRED"
 
 
+def test_orchestration_evaluator_can_run_upstream_but_email_requires_review():
+    engine = PolicyEngine()
+    subject = SecurityContextBuilder.subject_for_user("orchestration_evaluator")
+    assert subject.get_job_roles() == ["orchestration_evaluator"]
+    assert subject.get_grants() != ["all"]
+
+    upstream = (
+        ("remote_person_info_tool", "query", "HR", ["HR"]),
+        ("knowledge_search_tool", "query", "HR", ["Knowledge"]),
+        ("query_leave_record", "query", "HR", ["HR", "Office"]),
+        ("remote_report_builder_tool", "generate", "DOCUMENT", ["Document"]),
+    )
+    for tool_name, operation_mode, task_type, capabilities in upstream:
+        result = engine.evaluate(
+            subject,
+            SecurityContextBuilder.object_for_tool(tool_name),
+            Scenario(
+                task_scenario={
+                    "task_type": task_type,
+                    "scenario_tags": ["hr_service", "reporting"],
+                    "expected_capabilities": capabilities,
+                    "scenario_fit_result": {"fit": "match", "reason": "eval"},
+                },
+                environment={"time": "working_hours", "network_zone": "internal"},
+            ),
+            SecurityContextBuilder.action_for_tool_call(
+                tool_name,
+                {"operation_mode": operation_mode},
+            ),
+        )
+        assert result["decision"] == "ALLOW", (tool_name, result)
+
+    email_result = engine.evaluate(
+        subject,
+        SecurityContextBuilder.object_for_tool("remote_email_tool"),
+        Scenario(
+            task_scenario={
+                "task_type": "COMMUNICATION",
+                "scenario_tags": ["notification_send", "external_send"],
+                "expected_capabilities": ["Communication"],
+                "scenario_fit_result": {"fit": "match", "reason": "eval"},
+            },
+            environment={"time": "working_hours", "network_zone": "internal"},
+        ),
+        SecurityContextBuilder.action_for_tool_call(
+            "remote_email_tool",
+            {
+                "to": "hr@example.test",
+                "operation_mode": "send",
+                "irreversible": True,
+            },
+        ),
+    )
+    assert email_result["decision"] == "REVIEW_REQUIRED"
+    assert email_result["human_review_required"] is True
+
+
 def test_email_agent_dispatch_defers_recipient_bound_review_to_remote_tool():
     engine = PolicyEngine()
     subject = SecurityContextBuilder.subject_for_user("admin")

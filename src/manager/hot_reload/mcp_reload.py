@@ -17,6 +17,12 @@ except Exception:  # pragma: no cover - optional dependency in test env
             raise RuntimeError("langchain_mcp_adapters is required for MCP reload")
 
 from src.manager.registry import ToolIdentifier, ToolMetadata, ToolRegistry, ToolScope
+from src.manager.registry.tool_semantics import (
+    SEMANTIC_FIELDS,
+    extract_tool_schema,
+    load_mcp_tool_semantics,
+    validate_semantics_against_discovery,
+)
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.WARNING)
@@ -48,6 +54,19 @@ class MCPVersionSnapshot:
                 description=meta.description,
                 version=meta.version,
                 tags=list(meta.tags),
+                server_name=meta.server_name,
+                runtime_tool_name=meta.runtime_tool_name,
+                input_schema=copy.deepcopy(meta.input_schema),
+                scenario=meta.scenario,
+                owner_agents=list(meta.owner_agents),
+                intents=list(meta.intents),
+                aliases=list(meta.aliases),
+                operation_mode=meta.operation_mode,
+                required_inputs=list(meta.required_inputs),
+                produces=list(meta.produces),
+                side_effect=meta.side_effect,
+                risk_level=meta.risk_level,
+                legacy_tool_name=meta.legacy_tool_name,
             )
 
         return MCPVersionSnapshot(
@@ -205,17 +224,65 @@ class MCPHotReloadManager:
             json.dumps(client_config, sort_keys=True, ensure_ascii=False).encode("utf-8")
         ).hexdigest()
         client = await self._get_or_create_client(config_hash, client_config)
-        tools = await asyncio.wait_for(client.get_tools(), timeout=self.load_timeout)
+        discovered_tools = []
+        for server_name in sorted(client_config):
+            tools = await asyncio.wait_for(
+                client.get_tools(server_name=server_name), timeout=self.load_timeout
+            )
+            discovered_tools.extend((server_name, tool) for tool in tools)
 
         tool_metas: List[ToolMetadata] = []
-        for tool in tools:
+        semantics = load_mcp_tool_semantics()
+        if scope == ToolScope.GLOBAL:
+            discovered_keys = {
+                (server, str(getattr(tool, "name", "") or ""))
+                for server, tool in discovered_tools
+                if str(getattr(tool, "name", "") or "")
+            }
+            configured_semantics = {
+                key: value
+                for key, value in semantics.items()
+                if key[0] in client_config
+            }
+            semantic_diff = validate_semantics_against_discovery(
+                discovered_keys, configured_semantics
+            )
+            if semantic_diff["missing_semantics"] or semantic_diff["orphan_semantics"]:
+                raise ValueError(f"MCP semantic coverage mismatch: {semantic_diff}")
+        for server, tool in discovered_tools:
             tool_name = getattr(tool, "name", "")
             if not tool_name:
                 continue
-            server = tool_name.split("_")[0] if "_" in tool_name else "mcp"
+            semantic = semantics.get((server, tool_name), {})
+            schema = extract_tool_schema(tool)
+            if semantic and list(semantic.get("required_inputs") or []) != list(
+                schema.get("required") or []
+            ):
+                raise ValueError(
+                    "required_inputs differs from tools/list schema: "
+                    f"{server}/{tool_name}"
+                )
             identifier = ToolIdentifier(scope=scope, server=server, name=tool_name)
             tool_metas.append(
-                ToolMetadata(identifier=identifier, tool=tool, description=getattr(tool, "description", "") or "", tags=[f"server:{server}"])
+                ToolMetadata(
+                    identifier=identifier,
+                    tool=tool,
+                    description=getattr(tool, "description", "") or "",
+                    tags=[f"server:{server}"],
+                    server_name=server,
+                    runtime_tool_name=tool_name,
+                    input_schema=schema,
+                    scenario=str(semantic.get("scenario") or ""),
+                    owner_agents=list(semantic.get("owner_agents") or []),
+                    intents=list(semantic.get("intents") or []),
+                    aliases=list(semantic.get("aliases") or []),
+                    operation_mode=str(semantic.get("operation_mode") or ""),
+                    required_inputs=list(semantic.get("required_inputs") or []),
+                    produces=list(semantic.get("produces") or []),
+                    side_effect=bool(semantic.get("side_effect", False)),
+                    risk_level=str(semantic.get("risk_level") or "low"),
+                    legacy_tool_name=semantic.get("legacy_tool_name"),
+                )
             )
 
         return tool_metas
@@ -351,6 +418,8 @@ class MCPHotReloadManager:
                 description=meta.description,
                 version=meta.version,
                 tags=list(meta.tags),
+                input_schema=dict(meta.input_schema),
+                semantics={field: getattr(meta, field) for field in SEMANTIC_FIELDS},
             )
 
         for agent_name, metas in agent_tools.items():
@@ -362,6 +431,8 @@ class MCPHotReloadManager:
                     description=meta.description,
                     version=meta.version,
                     tags=list(meta.tags),
+                    input_schema=dict(meta.input_schema),
+                    semantics={field: getattr(meta, field) for field in SEMANTIC_FIELDS},
                 )
 
     async def _rollback(self, snapshot: MCPVersionSnapshot) -> None:

@@ -221,6 +221,7 @@ class WorkflowResult(dict):
         needs_reconciliation: Optional[List[str]] = None,
         blocked_steps: Optional[List[str]] = None,
         additional_failures: Optional[List[Any]] = None,
+        paused_at_safe_point: bool = False,
     ) -> None:
         super().__init__(step_results or {})
         self.terminal_status = terminal_status
@@ -231,6 +232,7 @@ class WorkflowResult(dict):
         self.needs_reconciliation = list(needs_reconciliation or [])
         self.blocked_steps = list(blocked_steps or [])
         self.additional_failures = list(additional_failures or [])
+        self.paused_at_safe_point = bool(paused_at_safe_point)
 
 
 class InputResolutionError(Exception):
@@ -304,6 +306,8 @@ class TaskScheduler:
         commit_step_result: Optional[StepHook] = None,
         on_attempt_start: Optional[StepHook] = None,
         on_attempt_end: Optional[StepHook] = None,
+        on_batch_scheduled: Optional[StepHook] = None,
+        should_pause: Optional[Callable[[], bool]] = None,
     ) -> "WorkflowResult":
         """Execute ``graph`` and return a :class:`WorkflowResult`.
 
@@ -421,6 +425,11 @@ class TaskScheduler:
                 break
 
             batch = self._select_batch(runnable, smap)
+            if on_batch_scheduled is not None:
+                try:
+                    await on_batch_scheduled(step_ids=list(batch))
+                except Exception:  # noqa: BLE001 - observability is best effort
+                    logger.exception("scheduler: batch scheduling hook failed")
             coros = [
                 self._run_step(
                     smap[sid],
@@ -440,6 +449,29 @@ class TaskScheduler:
                 if result.is_success:
                     completed.add(sid)
                     self._outputs[sid] = dict(result.outputs)
+
+            # A pause is cooperative: finish the current concurrent batch and
+            # its critical Artifact/checkpoint commits, then stop before
+            # scheduling another batch. Never hide a failure or an approval /
+            # reconciliation outcome behind PAUSED.
+            remaining = set(smap) - attempted
+            pause_requested = False
+            if should_pause is not None and remaining:
+                try:
+                    pause_requested = bool(should_pause())
+                except Exception:  # noqa: BLE001 - control-plane read is best effort
+                    logger.exception("scheduler: pause control check failed")
+            if (
+                pause_requested
+                and all(result.status == StepStatus.SUCCEEDED for result in results.values())
+            ):
+                return WorkflowResult(
+                    results,
+                    terminal_status=WorkflowStatus.PAUSED,
+                    blocked_steps=[],
+                    additional_failures=additional_failures,
+                    paused_at_safe_point=True,
+                )
 
         # Every declared step receives an explicit terminal outcome. Steps that
         # could not enter the runnable frontier because an upstream dependency
@@ -1181,6 +1213,7 @@ class TaskScheduler:
             agents=context.get("agents", ()),
             authorized_agent_ids=authorized,
             metadata=context.get("metadata"),
+            task_profile=context.get("task_profile"),
         )
 
     def _redispatch_contract_outcome(
@@ -2596,6 +2629,7 @@ class TaskScheduler:
             agents=context.get("agents", ()),
             authorized_agent_ids=context.get("authorized_agent_ids", set()),
             metadata=context.get("metadata"),
+            task_profile=context.get("task_profile"),
         )
         return result
 

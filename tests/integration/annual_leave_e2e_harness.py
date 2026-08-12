@@ -41,13 +41,14 @@ except Exception:
     # environment; dotenv is only a convenience for this local demo.
     pass
 
-WEB_PORT = 8001
-REMOTE_AGENT_PORT = 8010
-REMOTE_TOOL_PORT = 8011
-REMOTE_REGISTRY_PORT = 8012
+WEB_PORT = int(os.getenv("ANNUAL_LEAVE_WEB_PORT", "8001"))
+REMOTE_AGENT_PORT = int(os.getenv("ANNUAL_LEAVE_REMOTE_AGENT_PORT", "8010"))
+REMOTE_TOOL_PORT = int(os.getenv("ANNUAL_LEAVE_REMOTE_TOOL_PORT", "8011"))
+REMOTE_REGISTRY_PORT = int(os.getenv("ANNUAL_LEAVE_REMOTE_REGISTRY_PORT", "8012"))
 WEB_BASE_URL = f"http://127.0.0.1:{WEB_PORT}"
-EXECUTION_USER_ID = "admin"
+EXECUTION_USER_ID = "orchestration_evaluator"
 EXECUTION_USER_API_KEY = "annual-leave-demo-execution-key"
+GOVERNANCE_APPROVER_ID = "admin"
 
 ANNUAL_LEAVE_QUERY = (
     "请查询员工王强的在职状态、岗位和累计工龄，并依据国务院关于职工带薪年休假的规定，"
@@ -330,11 +331,16 @@ class AnnualLeaveServiceManager:
         self.log_dir = (
             log_dir or self.project_root / "artifacts" / "annual-leave-service-logs"
         ).resolve()
+        runtime_key = hashlib.sha256(str(self.log_dir).encode("utf-8")).hexdigest()[:12]
+        self.runtime_dir = (
+            self.project_root / ".artifacts" / "http-runtime" / runtime_key
+        ).resolve()
         self.python_executable = python_executable or sys.executable
         self.fault_mode = fault_mode
         self.s_abac_enabled = s_abac_enabled
         self.running: list[RunningService] = []
         self._closed = False
+        self._previous_artifact_payload_store_dir: str | None = None
 
     @property
     def specs(self) -> tuple[ServiceSpec, ...]:
@@ -386,8 +392,37 @@ class AnnualLeaveServiceManager:
             )
 
         self.log_dir.mkdir(parents=True, exist_ok=True)
+        self.runtime_dir.mkdir(parents=True, exist_ok=True)
+        self._previous_artifact_payload_store_dir = os.environ.get(
+            "ARTIFACT_PAYLOAD_STORE_DIR"
+        )
+        os.environ["ARTIFACT_PAYLOAD_STORE_DIR"] = str(
+            self.runtime_dir / "artifact-payloads"
+        )
         mock_email_log = self.log_dir / "mock-email-log.json"
         mock_email_log.write_text('{"emails": []}\n', encoding="utf-8")
+        remote_registry_config = self.log_dir / "remote-registry-config.json"
+        remote_registry_config.write_text(
+            json.dumps(
+                {
+                    "cache_ttl": 5,
+                    "sources": [
+                        {
+                            "name": "remote-demo",
+                            "base_url": f"http://127.0.0.1:{REMOTE_REGISTRY_PORT}",
+                            "server_id": "remote-demo",
+                            "priority": 50,
+                            "timeout": 5,
+                            "health_check": True,
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
         env = dict(os.environ)
         env.update(
             {
@@ -400,11 +435,23 @@ class AnnualLeaveServiceManager:
                 "EXECUTION_USER_API_KEYS_JSON": json.dumps(
                     {EXECUTION_USER_ID: EXECUTION_USER_API_KEY}
                 ),
-                "GOVERNANCE_ADMIN_ACTOR_ID": EXECUTION_USER_ID,
+                "GOVERNANCE_ADMIN_ACTOR_ID": GOVERNANCE_APPROVER_ID,
                 "APPROVAL_STORE_DIR": str(self.log_dir / "approvals"),
                 "GOVERNANCE_EVENT_STORE_DIR": str(self.log_dir / "governance"),
                 "RECEIPT_STORE_DIR": str(self.log_dir / "receipts"),
                 "MOCK_EMAIL_LOG_PATH": str(mock_email_log),
+                "SUPERAGENT_STORE_DIR": str(self.runtime_dir / "store"),
+                "ARTIFACT_PAYLOAD_STORE_DIR": str(
+                    self.runtime_dir / "artifact-payloads"
+                ),
+                "REMOTE_REGISTRY_CONFIG_PATH": str(remote_registry_config),
+                "REMOTE_TOOL_SERVICE_URL": (
+                    f"http://127.0.0.1:{REMOTE_TOOL_PORT}/tool"
+                ),
+                "ANNUAL_LEAVE_WEB_PORT": str(WEB_PORT),
+                "ANNUAL_LEAVE_REMOTE_AGENT_PORT": str(REMOTE_AGENT_PORT),
+                "ANNUAL_LEAVE_REMOTE_TOOL_PORT": str(REMOTE_TOOL_PORT),
+                "ANNUAL_LEAVE_REMOTE_REGISTRY_PORT": str(REMOTE_REGISTRY_PORT),
                 "USE_MCP_TOOLS": "0",
                 "MEMORY_ENABLED": "0",
                 "WORKFLOW_SKILL_ENABLED": "0",
@@ -497,6 +544,12 @@ class AnnualLeaveServiceManager:
                 except OSError:
                     pass
         self.running.clear()
+        if self._previous_artifact_payload_store_dir is None:
+            os.environ.pop("ARTIFACT_PAYLOAD_STORE_DIR", None)
+        else:
+            os.environ["ARTIFACT_PAYLOAD_STORE_DIR"] = (
+                self._previous_artifact_payload_store_dir
+            )
 
     def __enter__(self) -> "AnnualLeaveServiceManager":
         self.start()
@@ -708,6 +761,7 @@ def _create_execution_authorization(
         method="POST",
         headers={
             "Authorization": f"Bearer {EXECUTION_USER_API_KEY}",
+            "X-Authenticated-User": EXECUTION_USER_ID,
             "Idempotency-Key": confirmation_request_id,
         },
         payload={
@@ -776,7 +830,7 @@ def _load_artifacts_from_checkpoint(
 
 
 def _assert_and_build_graph(
-    plan: list[dict[str, Any]], task_id: str
+    plan: list[dict[str, Any]], task_id: str, *, query: str = ANNUAL_LEAVE_QUERY
 ) -> tuple[Any, dict[str, str]]:
     from remote_agents.hr_assistant_agent import RemoteHRAssistantAgent
     from remote_agents.knowledge_agent import RemoteKnowledgeAgent
@@ -841,8 +895,8 @@ def _assert_and_build_graph(
     graph = plan_to_task_graph(
         plan,
         task_id=task_id,
-        subject="admin",
-        goal=ANNUAL_LEAVE_QUERY,
+        subject=EXECUTION_USER_ID,
+        goal=query,
         agent_contracts=contracts,
     )
     graph_by_id = {step.step_id: step for step in graph.steps}
@@ -935,7 +989,17 @@ def _assert_and_build_dynamic_five_graph(
         raise AnnualLeaveE2EError("Report fan-in schema is not report.sources@v1")
 
     email_binding = input_binding("RemoteEmailDispatchAgent", "email.dispatch.request")
-    email_sources = email_binding.get("source_artifacts") or []
+    email_sources = email_binding.get("source_artifacts")
+    if email_sources is None and (
+        email_binding.get("source_step") or email_binding.get("source_output")
+    ):
+        email_sources = [
+            {
+                "source_step": email_binding.get("source_step"),
+                "source_output": email_binding.get("source_output"),
+            }
+        ]
+    email_sources = email_sources or []
     if email_sources != [
         {"source_step": report_id, "source_output": "report.markdown"}
     ]:
@@ -1158,6 +1222,7 @@ def run_annual_leave_workflow(
     *,
     run_dir: Path,
     scenario: str = "success",
+    query: str = ANNUAL_LEAVE_QUERY,
 ) -> dict[str, Any]:
     """Run one launch -> production workflow and persist evidence."""
 
@@ -1176,6 +1241,7 @@ def run_annual_leave_workflow(
         workflow_id,
         workmode="launch",
         stop_after_planner=True,
+        query=query,
     )
     _write_json(run_dir / "request.json", {"scenario": scenario, "launch": launch_body})
     launch_events = consume_workflow_sse(
@@ -1198,19 +1264,20 @@ def run_annual_leave_workflow(
     if not isinstance(plan, list):
         plan = []
     _write_json(run_dir / "plan.json", plan)
-    graph, step_ids = _assert_and_build_graph(plan, task_id)
+    graph, step_ids = _assert_and_build_graph(plan, task_id, query=query)
     _write_json(run_dir / "task-graph.json", graph)
 
     production_body = _request_body(
         workflow_id,
         workmode="production",
         stop_after_planner=False,
+        query=query,
     )
     production_body.update(
         _create_execution_authorization(
             workflow_id=workflow_id,
             plan=plan,
-            user_query=ANNUAL_LEAVE_QUERY,
+            user_query=query,
         )
     )
     production_events = consume_workflow_sse(production_body, on_event=on_event)
@@ -1581,7 +1648,7 @@ def run_dynamic_five_agent_workflow(
             f"{WEB_BASE_URL}/api/security/approvals/{approval_id}/reject",
             method="POST",
             payload={
-                "approver": EXECUTION_USER_ID,
+                "approver": GOVERNANCE_APPROVER_ID,
                 "comment": "dynamic demo rejection",
             },
         )
@@ -1731,7 +1798,10 @@ def run_dynamic_five_agent_workflow(
     approved = _http_json(
         f"{WEB_BASE_URL}/api/security/approvals/{approval_id}/approve",
         method="POST",
-        payload={"approver": EXECUTION_USER_ID, "comment": "dynamic demo approval"},
+        payload={
+            "approver": GOVERNANCE_APPROVER_ID,
+            "comment": "dynamic demo approval",
+        },
     )
     if not isinstance(approved, dict) or approved.get("status") != "approved":
         raise AnnualLeaveE2EError("approval API did not approve the Email step")
@@ -1742,7 +1812,7 @@ def run_dynamic_five_agent_workflow(
         f"{WEB_BASE_URL}/api/security/approvals/{approval_id}/approve",
         method="POST",
         payload={
-            "approver": EXECUTION_USER_ID,
+            "approver": GOVERNANCE_APPROVER_ID,
             "comment": "duplicate dynamic demo approval",
         },
     )

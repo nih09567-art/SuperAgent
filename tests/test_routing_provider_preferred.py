@@ -277,3 +277,117 @@ def test_confirmed_profile_is_projected_to_the_current_step(monkeypatch):
     assert override["missing_fields"] == []
     assert override["needs_clarification"] is False
     assert "approved_task_profile" not in captured["metadata"]
+
+
+def test_trusted_profile_routes_each_step_without_reprofiling_global_query(
+    monkeypatch,
+):
+    async def _must_not_reprofile(**_kwargs):
+        raise AssertionError("execution routing must reuse the trusted TaskProfile")
+
+    monkeypatch.setattr(
+        orchestrator_pkg,
+        "make_routing_decision",
+        _must_not_reprofile,
+    )
+    trusted_profile = {
+        "task_id": "t1",
+        "entities": {"employee_name": "王强", "recipient": "hr@example.test"},
+        "missing_fields": [],
+        "needs_clarification": False,
+        "confidence": 0.93,
+        "subtasks": [
+            {
+                "id": "subtask_2",
+                "intent": "knowledge_lookup",
+                "task_type": "KNOWLEDGE",
+                "goal": "查询年假政策",
+                "action": "read",
+                "expected_capabilities": ["Knowledge"],
+                "scenario_tags": ["knowledge_lookup"],
+                "data_scope": ["knowledge.internal"],
+                "required_business_data": ["policy.info"],
+                "expected_deliverables": [],
+            },
+            {
+                "id": "subtask_4",
+                "intent": "report_generation",
+                "task_type": "DOCUMENT",
+                "goal": "生成报告",
+                "action": "generate",
+                "expected_capabilities": ["Document"],
+                "scenario_tags": ["reporting"],
+                "data_scope": ["document.generated"],
+                "required_business_data": [],
+                "expected_deliverables": ["report.markdown"],
+            },
+        ],
+    }
+    agents = [
+        SimpleNamespace(agent_name="RemoteKnowledgeAgent"),
+        SimpleNamespace(agent_name="RemoteReportAgent"),
+        SimpleNamespace(agent_name="RemoteEmailDispatchAgent"),
+    ]
+    provider = MainAgentRoutingProvider()
+
+    async def _run():
+        common = {
+            "user_query": "查询王强的工龄和年假政策，生成报告，发送给邮箱 hr@example.test",
+            "task_id": "t1",
+            "workflow_id": "wf1",
+            "agents": agents,
+            "authorized_agent_ids": {
+                "RemoteKnowledgeAgent",
+                "RemoteReportAgent",
+                "RemoteEmailDispatchAgent",
+            },
+            "task_profile": trusted_profile,
+        }
+        knowledge = await provider.decide(
+            TaskStep(
+                step_id="step_2",
+                subtask_ids=["subtask_2"],
+                operation_mode="read",
+                preferred_resource_id="RemoteKnowledgeAgent",
+            ),
+            **common,
+        )
+        report = await provider.decide(
+            TaskStep(
+                step_id="step_4",
+                subtask_ids=["subtask_4"],
+                operation_mode="generate",
+                preferred_resource_id="RemoteReportAgent",
+            ),
+            **common,
+        )
+        return knowledge, report
+
+    knowledge, report = asyncio.run(_run())
+
+    assert knowledge.decision == "DISPATCH"
+    assert knowledge.selected_agent == "RemoteKnowledgeAgent"
+    assert report.decision == "DISPATCH"
+    assert report.selected_agent == "RemoteReportAgent"
+
+
+def test_invalid_trusted_profile_binding_fails_closed():
+    provider = MainAgentRoutingProvider()
+    result = asyncio.run(
+        provider.decide(
+            TaskStep(step_id="step_2", subtask_ids=["missing"]),
+            user_query="查询年假政策",
+            task_id="t1",
+            workflow_id="wf1",
+            agents=[SimpleNamespace(agent_name="RemoteKnowledgeAgent")],
+            authorized_agent_ids={"RemoteKnowledgeAgent"},
+            task_profile={
+                "task_id": "t1",
+                "subtasks": [{"id": "subtask_2", "intent": "knowledge_lookup"}],
+            },
+        )
+    )
+
+    assert result.decision == "ROUTING_ERROR"
+    assert result.selected_agent is None
+    assert result.reason_codes[0].startswith("TRUSTED_STEP_PROFILE_INVALID")

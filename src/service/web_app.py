@@ -26,10 +26,12 @@ from src.utils.path_utils import get_project_root
 from src.workflow.cache import workflow_cache
 from src.robust.checkpoint import CheckpointManager
 from src.robust.task_logger import TaskLogger
+from src.robust.task_control import TaskControlStore
 from src.orchestration.governance import (
     get_governance_event_store,
     record_governance_event,
 )
+from src.orchestration.observability import build_orchestration_view
 from src.orchestration.artifact_payload_store import ArtifactPayloadStore
 from src.orchestration.completion import (
     PersistentReceiptStore,
@@ -389,6 +391,10 @@ def _finalize_disconnected_task(task_id: Optional[str], reason: str) -> None:
     if task_log is None or task_log.status not in {"running", "reserved"}:
         return
     task_log.log_workflow_terminal("FAILED", error=reason)
+    try:
+        TaskControlStore().mark_terminal(task_id, "FAILED")
+    except Exception:
+        logging.exception("failed to close task control after SSE disconnect")
 
 
 def _production_execution_digest(
@@ -479,6 +485,7 @@ def _server_execution_plan_hash(user_id: str, workflow_id: str) -> str:
 def _public_task_log(task_log: TaskLogger) -> dict[str, Any]:
     data = task_log.to_dict()
     data.pop("execution_authorization_token_hash", None)
+    data["task_control"] = TaskControlStore().get(task_log.task_id)
     return data
 
 
@@ -502,6 +509,7 @@ def _delete_task_runtime_records(task_id: str) -> dict[str, int]:
         "approvals": 0,
         "reconciliations": 0,
         "recovery_reviews": 0,
+        "task_controls": 0,
     }
 
     task_log = TaskLogger.load(normalized)
@@ -511,6 +519,8 @@ def _delete_task_runtime_records(task_id: str) -> dict[str, int]:
             counts["task_logs"] = 1
         except FileNotFoundError:
             pass
+
+    counts["task_controls"] = TaskControlStore().delete(normalized)
 
     checkpoint_manager = CheckpointManager()
     checkpoint_root = checkpoint_manager.base_dir.resolve()
@@ -1725,6 +1735,79 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail="Task log not found")
         return _public_task_log(task_log)
 
+    @app.get("/api/tasks/{task_id}/orchestration-view")
+    async def get_task_orchestration_view(task_id: str):
+        """Return a payload-free TaskGraph/runtime projection for the Web UI."""
+
+        task_log = TaskLogger.expire_stale_reservation(task_id)
+        if task_log is None:
+            raise HTTPException(status_code=404, detail="Task log not found")
+        governance_events = get_governance_event_store().list(task_id)
+        checkpoints = CheckpointManager().list_checkpoints(task_id=task_id)
+        control = TaskControlStore().get(task_id) or {}
+        return build_orchestration_view(
+            task_log,
+            governance_events=governance_events,
+            control=control,
+            checkpoints=checkpoints,
+        )
+
+    @app.get("/api/tasks/{task_id}/control")
+    async def get_task_control(task_id: str):
+        """Return the durable cooperative-pause state for one task."""
+        task_log = TaskLogger.load(task_id)
+        if task_log is None:
+            raise HTTPException(status_code=404, detail="Task log not found")
+        control = TaskControlStore().get(task_id)
+        return control or {
+            "task_id": task_id,
+            "workflow_id": task_log.workflow_id,
+            "user_id": task_log.execution_user_id,
+            "state": str(task_log.status or "UNKNOWN").upper(),
+        }
+
+    @app.post("/api/tasks/{task_id}/pause")
+    async def pause_task(task_id: str, body: "PauseRequest"):
+        """Request a cooperative pause at the next durable scheduler safe point."""
+        task_log = TaskLogger.load(task_id)
+        if task_log is None:
+            raise HTTPException(status_code=404, detail="Task log not found")
+        owner = str(task_log.execution_user_id or "")
+        if owner and owner != body.user_id:
+            raise HTTPException(status_code=403, detail="Task owner mismatch")
+        status = str(task_log.status or "").upper()
+        control_store = TaskControlStore()
+        if status == "PAUSED":
+            control = control_store.get(task_id)
+            if control is not None:
+                return control
+        if status not in {"RUNNING", "RESERVED"}:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Task cannot be paused in status={status or 'UNKNOWN'}",
+            )
+        try:
+            control = control_store.request_pause(
+                task_id,
+                workflow_id=task_log.workflow_id,
+                user_id=body.user_id,
+                reason=body.reason,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        record_governance_event(
+            "WORKFLOW_PAUSE_REQUESTED",
+            task_id=task_id,
+            workflow_id=task_log.workflow_id,
+            subject=body.user_id,
+            decision="PAUSE_REQUESTED",
+            details={"reason": body.reason},
+        )
+        return {
+            **control,
+            "resume_endpoint": "/api/tasks/resume",
+        }
+
     @app.get("/api/tasks/{task_id}/checkpoints")
     async def list_task_checkpoints(task_id: str):
         """List all checkpoints saved for a task execution."""
@@ -1770,7 +1853,12 @@ def create_app() -> FastAPI:
 
         # resume_step indicates the step to START executing
         # We need to load checkpoint from (resume_step - 1)
-        if body.resume_step < 1:
+        control_store = TaskControlStore()
+        control = control_store.get(body.task_id)
+        resume_step = body.resume_step
+        if resume_step is None and control is not None:
+            resume_step = control.get("resume_step")
+        if resume_step is None or resume_step < 1:
             raise HTTPException(
                 status_code=400,
                 detail="resume_step must be >= 1. Step 0 is the initial state, use step 1 to resume from the beginning."
@@ -1779,7 +1867,7 @@ def create_app() -> FastAPI:
         checkpoint_manager = CheckpointManager()
 
         # Load checkpoint from (resume_step - 1) to get the state before the target step
-        checkpoint_step = body.resume_step - 1
+        checkpoint_step = resume_step - 1
         checkpoint = checkpoint_manager.load_checkpoint(
             task_id=body.task_id, step=checkpoint_step
         )
@@ -1839,11 +1927,30 @@ def create_app() -> FastAPI:
         try:
             resumed_reconciliation = get_reconciliation_store().claim_for_resume(
                 task_id=body.task_id,
-                resume_step=body.resume_step,
+                resume_step=resume_step,
                 operator=body.user_id,
             )
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+        if control is not None and str(control.get("state") or "").upper() == "PAUSED":
+            try:
+                control_store.resume(body.task_id, user_id=body.user_id)
+            except PermissionError as exc:
+                raise HTTPException(status_code=403, detail=str(exc)) from exc
+            except ValueError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            record_governance_event(
+                "WORKFLOW_RESUME_REQUESTED",
+                task_id=body.task_id,
+                workflow_id=checkpoint.workflow_id,
+                subject=body.user_id,
+                decision="RESUME_FROM_SAFE_POINT",
+                details={
+                    "checkpoint_step": checkpoint_step,
+                    "resume_step": resume_step,
+                },
+            )
 
         server = Server()
 
@@ -1888,7 +1995,7 @@ def create_app() -> FastAPI:
                 heartbeat_task = asyncio.create_task(renew_resume_lease())
             try:
                 async for event in server._run_agent_workflow_with_resume(
-                    agent_request, resume_step=body.resume_step, task_id=body.task_id
+                    agent_request, resume_step=resume_step, task_id=body.task_id
                 ):
                     if resume_heartbeat_failed:
                         raise RuntimeError(
@@ -2836,9 +2943,16 @@ class ResumeRequest(BaseModel):
     Configuration (debug, deep_thinking_mode, etc.) is restored from checkpoint.
     """
     task_id: str
-    resume_step: int
+    resume_step: Optional[int] = None
     user_id: str = "test"
     lang: str = "en"
     workmode: str = "launch"
+
+
+class PauseRequest(BaseModel):
+    """Request a cooperative pause at the next persisted scheduler safe point."""
+
+    user_id: str = "test"
+    reason: str = "user_requested"
 
 app = create_app()

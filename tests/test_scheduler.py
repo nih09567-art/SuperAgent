@@ -10,7 +10,7 @@ import asyncio
 import pytest
 
 from src.interface.artifact import StepStatus
-from src.interface.task_graph import TaskGraph, TaskSpec, TaskStep
+from src.interface.task_graph import TaskGraph, TaskSpec, TaskStep, WorkflowStatus
 from src.manager.executor.base import ExecuteResult, ExecutionStatus
 from src.orchestration.providers import StubRoutingProvider
 from src.orchestration.scheduler import TaskScheduler
@@ -69,11 +69,64 @@ def test_serial_chain_runs_in_order_no_overlap():
     assert all(r.is_success for r in results.values())
 
 
+def test_pause_waits_for_committed_batch_and_stops_before_next_step():
+    fake = FakeExecutor(sleep=0)
+    commits: list[str] = []
+
+    async def commit_step_result(*, step, result):
+        assert result.is_success
+        commits.append(step.step_id)
+
+    def should_pause():
+        # The pause check must happen only after the critical commit hook.
+        assert commits == ["a"]
+        return True
+
+    graph = _graph(_step("a"), _step("b", ["a"]))
+    results = _run(
+        fake,
+        graph,
+        commit_step_result=commit_step_result,
+        should_pause=should_pause,
+    )
+
+    assert results.terminal_status == WorkflowStatus.PAUSED
+    assert results.paused_at_safe_point is True
+    assert fake.calls == ["a"]
+    assert commits == ["a"]
+    assert "b" not in results
+
+
+def test_pause_request_does_not_hide_a_failed_batch():
+    fake = FakeExecutor(sleep=0)
+    fake.fail_ids = {"a"}
+    graph = _graph(_step("a"), _step("b", ["a"]))
+
+    results = _run(fake, graph, should_pause=lambda: True)
+
+    assert results.terminal_status == WorkflowStatus.FAILED
+    assert results["a"].status == StepStatus.FAILED
+    assert results["b"].status == StepStatus.SKIPPED
+
+
 def test_independent_reads_run_in_parallel():
     fake = FakeExecutor()
     g = _graph(_step("a"), _step("b"), _step("c"))  # no deps -> all ready
     _run(fake, g)
     assert fake.peak >= 2  # ran concurrently
+
+
+def test_batch_schedule_hook_reports_actual_selected_frontiers():
+    fake = FakeExecutor(sleep=0)
+    scheduled: list[list[str]] = []
+
+    async def on_batch_scheduled(*, step_ids):
+        scheduled.append(step_ids)
+
+    graph = _graph(_step("hr"), _step("kb"), _step("report", ["hr", "kb"]))
+    _run(fake, graph, on_batch_scheduled=on_batch_scheduled)
+
+    assert scheduled == [["hr", "kb"], ["report"]]
 
 
 def test_writes_sharing_lock_are_serialized():

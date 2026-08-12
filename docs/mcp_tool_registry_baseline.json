@@ -1,0 +1,2993 @@
+{
+  "generated_at": "2026-08-10T02:38:26.735948+00:00",
+  "source": "live MCP tools/list",
+  "configured_servers": [
+    "excel-mcp-remote",
+    "office-mcp"
+  ],
+  "counts": {
+    "server_tools": 48,
+    "registry_tools": 48,
+    "semantic_tools": 48,
+    "loader_reported": 48,
+    "by_server": {
+      "excel-mcp-remote": 18,
+      "office-mcp": 30
+    }
+  },
+  "sets": {
+    "server_tools": [
+      "excel-mcp-remote:apply_formula",
+      "excel-mcp-remote:copy_range",
+      "excel-mcp-remote:copy_worksheet",
+      "excel-mcp-remote:create_chart",
+      "excel-mcp-remote:create_pivot_table",
+      "excel-mcp-remote:create_workbook",
+      "excel-mcp-remote:create_worksheet",
+      "excel-mcp-remote:delete_range",
+      "excel-mcp-remote:delete_worksheet",
+      "excel-mcp-remote:format_range",
+      "excel-mcp-remote:get_workbook_metadata",
+      "excel-mcp-remote:merge_cells",
+      "excel-mcp-remote:read_data_from_excel",
+      "excel-mcp-remote:rename_worksheet",
+      "excel-mcp-remote:unmerge_cells",
+      "excel-mcp-remote:validate_excel_range",
+      "excel-mcp-remote:validate_formula_syntax",
+      "excel-mcp-remote:write_data_to_excel",
+      "office-mcp:cancel_calendar_event",
+      "office-mcp:cancel_meeting",
+      "office-mcp:cancel_travel_request",
+      "office-mcp:create_calendar_event",
+      "office-mcp:create_meeting",
+      "office-mcp:create_travel_request",
+      "office-mcp:enroll_course",
+      "office-mcp:estimate_trip_cost",
+      "office-mcp:find_free_slots",
+      "office-mcp:find_meeting_slots",
+      "office-mcp:get_course_detail",
+      "office-mcp:get_delivery_status",
+      "office-mcp:get_employee_contact",
+      "office-mcp:get_employee_profile",
+      "office-mcp:get_learning_record",
+      "office-mcp:get_manager_chain",
+      "office-mcp:get_meeting_minutes",
+      "office-mcp:get_org_unit",
+      "office-mcp:get_travel_request",
+      "office-mcp:list_calendar_events",
+      "office-mcp:list_course_sessions",
+      "office-mcp:list_message_templates",
+      "office-mcp:resolve_contacts",
+      "office-mcp:search_courses",
+      "office-mcp:search_employees",
+      "office-mcp:search_travel_policy",
+      "office-mcp:send_email",
+      "office-mcp:send_message",
+      "office-mcp:update_calendar_event",
+      "office-mcp:update_meeting"
+    ],
+    "registry_tools": [
+      "excel-mcp-remote:apply_formula",
+      "excel-mcp-remote:copy_range",
+      "excel-mcp-remote:copy_worksheet",
+      "excel-mcp-remote:create_chart",
+      "excel-mcp-remote:create_pivot_table",
+      "excel-mcp-remote:create_workbook",
+      "excel-mcp-remote:create_worksheet",
+      "excel-mcp-remote:delete_range",
+      "excel-mcp-remote:delete_worksheet",
+      "excel-mcp-remote:format_range",
+      "excel-mcp-remote:get_workbook_metadata",
+      "excel-mcp-remote:merge_cells",
+      "excel-mcp-remote:read_data_from_excel",
+      "excel-mcp-remote:rename_worksheet",
+      "excel-mcp-remote:unmerge_cells",
+      "excel-mcp-remote:validate_excel_range",
+      "excel-mcp-remote:validate_formula_syntax",
+      "excel-mcp-remote:write_data_to_excel",
+      "office-mcp:cancel_calendar_event",
+      "office-mcp:cancel_meeting",
+      "office-mcp:cancel_travel_request",
+      "office-mcp:create_calendar_event",
+      "office-mcp:create_meeting",
+      "office-mcp:create_travel_request",
+      "office-mcp:enroll_course",
+      "office-mcp:estimate_trip_cost",
+      "office-mcp:find_free_slots",
+      "office-mcp:find_meeting_slots",
+      "office-mcp:get_course_detail",
+      "office-mcp:get_delivery_status",
+      "office-mcp:get_employee_contact",
+      "office-mcp:get_employee_profile",
+      "office-mcp:get_learning_record",
+      "office-mcp:get_manager_chain",
+      "office-mcp:get_meeting_minutes",
+      "office-mcp:get_org_unit",
+      "office-mcp:get_travel_request",
+      "office-mcp:list_calendar_events",
+      "office-mcp:list_course_sessions",
+      "office-mcp:list_message_templates",
+      "office-mcp:resolve_contacts",
+      "office-mcp:search_courses",
+      "office-mcp:search_employees",
+      "office-mcp:search_travel_policy",
+      "office-mcp:send_email",
+      "office-mcp:send_message",
+      "office-mcp:update_calendar_event",
+      "office-mcp:update_meeting"
+    ],
+    "agent_selected_tools": [
+      "create_calendar_event_tool",
+      "get_calendar_events_tool",
+      "knowledge_search_tool",
+      "query_leave_record",
+      "query_travel_record",
+      "remote_contact_query_tool",
+      "remote_credit_risk_db_tool",
+      "remote_docx_generator_tool",
+      "remote_email_tool",
+      "remote_meeting_scheduling_tool",
+      "remote_person_info_tool",
+      "remote_report_builder_tool",
+      "remote_salary_info_tool",
+      "remote_schedule_tool",
+      "remote_todo_query_tool",
+      "remote_unicorn_db_tool",
+      "remote_weather_tool",
+      "save_leave_record",
+      "save_travel_record"
+    ]
+  },
+  "diffs": {
+    "server_minus_registry": [],
+    "registry_minus_server": [],
+    "server_minus_semantics": [],
+    "semantics_minus_server": [],
+    "agent_selected_minus_registry_or_legacy": [
+      "query_leave_record",
+      "remote_credit_risk_db_tool",
+      "remote_docx_generator_tool",
+      "remote_report_builder_tool",
+      "remote_salary_info_tool",
+      "remote_todo_query_tool",
+      "remote_unicorn_db_tool",
+      "remote_weather_tool",
+      "save_leave_record"
+    ]
+  },
+  "agent_selected_tools_by_agent": {
+    "RemoteWeatherAgent": [
+      "remote_weather_tool"
+    ],
+    "RemoteHRAssistantAgent": [
+      "remote_person_info_tool",
+      "remote_salary_info_tool"
+    ],
+    "RemoteUnicornSelectorAgent": [
+      "remote_unicorn_db_tool"
+    ],
+    "RemoteBusinessRiskAgent": [
+      "remote_credit_risk_db_tool"
+    ],
+    "RemoteReportAgent": [
+      "remote_report_builder_tool"
+    ],
+    "RemoteEmailDispatchAgent": [
+      "remote_email_tool"
+    ],
+    "RemoteScheduleAgent": [
+      "remote_schedule_tool"
+    ],
+    "RemoteTodoAgent": [
+      "remote_todo_query_tool"
+    ],
+    "RemoteHRCalendarAgent": [
+      "get_calendar_events_tool",
+      "create_calendar_event_tool"
+    ],
+    "RemoteKnowledgeAgent": [
+      "knowledge_search_tool"
+    ],
+    "RemoteDocumentGeneratorAgent": [
+      "remote_docx_generator_tool"
+    ],
+    "RemoteOfficeAssistantAgent": [
+      "save_leave_record",
+      "query_leave_record",
+      "save_travel_record",
+      "query_travel_record"
+    ],
+    "RemoteMeetingManagerAgent": [
+      "remote_meeting_scheduling_tool"
+    ],
+    "RemoteCommunicationAgent": [
+      "remote_contact_query_tool",
+      "remote_email_tool"
+    ]
+  },
+  "tools": [
+    {
+      "server_name": "excel-mcp-remote",
+      "name": "apply_formula",
+      "description": "Apply Excel formula to cell.",
+      "input_schema": {
+        "properties": {
+          "filepath": {
+            "title": "Filepath",
+            "type": "string"
+          },
+          "sheet_name": {
+            "title": "Sheet Name",
+            "type": "string"
+          },
+          "cell": {
+            "title": "Cell",
+            "type": "string"
+          },
+          "formula": {
+            "title": "Formula",
+            "type": "string"
+          }
+        },
+        "required": [
+          "filepath",
+          "sheet_name",
+          "cell",
+          "formula"
+        ],
+        "title": "apply_formulaArguments",
+        "type": "object"
+      },
+      "registration_scope": "global",
+      "scenario": "spreadsheet",
+      "owner_agents": [],
+      "intents": [
+        "spreadsheet_formula_apply"
+      ],
+      "aliases": [
+        "应用Excel公式",
+        "写入单元格公式",
+        "apply formula"
+      ],
+      "operation_mode": "apply",
+      "required_inputs": [
+        "filepath",
+        "sheet_name",
+        "cell",
+        "formula"
+      ],
+      "produces": [
+        "spreadsheet.formula_result"
+      ],
+      "side_effect": true,
+      "risk_level": "medium",
+      "legacy_tool_name": null,
+      "entered_registry": true,
+      "referenced_by_agents": []
+    },
+    {
+      "server_name": "excel-mcp-remote",
+      "name": "copy_range",
+      "description": "Copy a range of cells to another location.",
+      "input_schema": {
+        "properties": {
+          "filepath": {
+            "title": "Filepath",
+            "type": "string"
+          },
+          "sheet_name": {
+            "title": "Sheet Name",
+            "type": "string"
+          },
+          "source_start": {
+            "title": "Source Start",
+            "type": "string"
+          },
+          "source_end": {
+            "title": "Source End",
+            "type": "string"
+          },
+          "target_start": {
+            "title": "Target Start",
+            "type": "string"
+          },
+          "target_sheet": {
+            "default": null,
+            "title": "Target Sheet",
+            "type": "string"
+          }
+        },
+        "required": [
+          "filepath",
+          "sheet_name",
+          "source_start",
+          "source_end",
+          "target_start"
+        ],
+        "title": "copy_rangeArguments",
+        "type": "object"
+      },
+      "registration_scope": "global",
+      "scenario": "spreadsheet",
+      "owner_agents": [],
+      "intents": [
+        "spreadsheet_range_copy"
+      ],
+      "aliases": [
+        "复制Excel区域",
+        "拷贝单元格范围",
+        "copy range"
+      ],
+      "operation_mode": "copy",
+      "required_inputs": [
+        "filepath",
+        "sheet_name",
+        "source_start",
+        "source_end",
+        "target_start"
+      ],
+      "produces": [
+        "spreadsheet.copied_range"
+      ],
+      "side_effect": true,
+      "risk_level": "medium",
+      "legacy_tool_name": null,
+      "entered_registry": true,
+      "referenced_by_agents": []
+    },
+    {
+      "server_name": "excel-mcp-remote",
+      "name": "copy_worksheet",
+      "description": "Copy worksheet within workbook.",
+      "input_schema": {
+        "properties": {
+          "filepath": {
+            "title": "Filepath",
+            "type": "string"
+          },
+          "source_sheet": {
+            "title": "Source Sheet",
+            "type": "string"
+          },
+          "target_sheet": {
+            "title": "Target Sheet",
+            "type": "string"
+          }
+        },
+        "required": [
+          "filepath",
+          "source_sheet",
+          "target_sheet"
+        ],
+        "title": "copy_worksheetArguments",
+        "type": "object"
+      },
+      "registration_scope": "global",
+      "scenario": "spreadsheet",
+      "owner_agents": [],
+      "intents": [
+        "spreadsheet_worksheet_copy"
+      ],
+      "aliases": [
+        "复制Excel工作表",
+        "拷贝工作表",
+        "copy worksheet"
+      ],
+      "operation_mode": "copy",
+      "required_inputs": [
+        "filepath",
+        "source_sheet",
+        "target_sheet"
+      ],
+      "produces": [
+        "spreadsheet.worksheet"
+      ],
+      "side_effect": true,
+      "risk_level": "medium",
+      "legacy_tool_name": null,
+      "entered_registry": true,
+      "referenced_by_agents": []
+    },
+    {
+      "server_name": "excel-mcp-remote",
+      "name": "create_chart",
+      "description": "Create chart in worksheet.",
+      "input_schema": {
+        "properties": {
+          "filepath": {
+            "title": "Filepath",
+            "type": "string"
+          },
+          "sheet_name": {
+            "title": "Sheet Name",
+            "type": "string"
+          },
+          "data_range": {
+            "title": "Data Range",
+            "type": "string"
+          },
+          "chart_type": {
+            "title": "Chart Type",
+            "type": "string"
+          },
+          "target_cell": {
+            "title": "Target Cell",
+            "type": "string"
+          },
+          "title": {
+            "default": "",
+            "title": "Title",
+            "type": "string"
+          },
+          "x_axis": {
+            "default": "",
+            "title": "X Axis",
+            "type": "string"
+          },
+          "y_axis": {
+            "default": "",
+            "title": "Y Axis",
+            "type": "string"
+          }
+        },
+        "required": [
+          "filepath",
+          "sheet_name",
+          "data_range",
+          "chart_type",
+          "target_cell"
+        ],
+        "title": "create_chartArguments",
+        "type": "object"
+      },
+      "registration_scope": "global",
+      "scenario": "spreadsheet",
+      "owner_agents": [],
+      "intents": [
+        "spreadsheet_chart_create"
+      ],
+      "aliases": [
+        "创建Excel图表",
+        "生成工作表图表",
+        "create chart"
+      ],
+      "operation_mode": "create",
+      "required_inputs": [
+        "filepath",
+        "sheet_name",
+        "data_range",
+        "chart_type",
+        "target_cell"
+      ],
+      "produces": [
+        "spreadsheet.chart"
+      ],
+      "side_effect": true,
+      "risk_level": "medium",
+      "legacy_tool_name": null,
+      "entered_registry": true,
+      "referenced_by_agents": []
+    },
+    {
+      "server_name": "excel-mcp-remote",
+      "name": "create_pivot_table",
+      "description": "Create pivot table in worksheet.",
+      "input_schema": {
+        "properties": {
+          "filepath": {
+            "title": "Filepath",
+            "type": "string"
+          },
+          "sheet_name": {
+            "title": "Sheet Name",
+            "type": "string"
+          },
+          "data_range": {
+            "title": "Data Range",
+            "type": "string"
+          },
+          "rows": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Rows",
+            "type": "array"
+          },
+          "values": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Values",
+            "type": "array"
+          },
+          "columns": {
+            "default": null,
+            "items": {
+              "type": "string"
+            },
+            "title": "Columns",
+            "type": "array"
+          },
+          "agg_func": {
+            "default": "mean",
+            "title": "Agg Func",
+            "type": "string"
+          }
+        },
+        "required": [
+          "filepath",
+          "sheet_name",
+          "data_range",
+          "rows",
+          "values"
+        ],
+        "title": "create_pivot_tableArguments",
+        "type": "object"
+      },
+      "registration_scope": "global",
+      "scenario": "spreadsheet",
+      "owner_agents": [],
+      "intents": [
+        "spreadsheet_pivot_create"
+      ],
+      "aliases": [
+        "创建Excel透视表",
+        "生成数据透视表",
+        "create pivot table"
+      ],
+      "operation_mode": "create",
+      "required_inputs": [
+        "filepath",
+        "sheet_name",
+        "data_range",
+        "rows",
+        "values"
+      ],
+      "produces": [
+        "spreadsheet.pivot_table"
+      ],
+      "side_effect": true,
+      "risk_level": "medium",
+      "legacy_tool_name": null,
+      "entered_registry": true,
+      "referenced_by_agents": []
+    },
+    {
+      "server_name": "excel-mcp-remote",
+      "name": "create_workbook",
+      "description": "Create new Excel workbook.",
+      "input_schema": {
+        "properties": {
+          "filepath": {
+            "title": "Filepath",
+            "type": "string"
+          }
+        },
+        "required": [
+          "filepath"
+        ],
+        "title": "create_workbookArguments",
+        "type": "object"
+      },
+      "registration_scope": "global",
+      "scenario": "spreadsheet",
+      "owner_agents": [],
+      "intents": [
+        "spreadsheet_workbook_create"
+      ],
+      "aliases": [
+        "创建Excel工作簿",
+        "新建工作簿",
+        "create workbook"
+      ],
+      "operation_mode": "create",
+      "required_inputs": [
+        "filepath"
+      ],
+      "produces": [
+        "spreadsheet.workbook"
+      ],
+      "side_effect": true,
+      "risk_level": "medium",
+      "legacy_tool_name": null,
+      "entered_registry": true,
+      "referenced_by_agents": []
+    },
+    {
+      "server_name": "excel-mcp-remote",
+      "name": "create_worksheet",
+      "description": "Create new worksheet in workbook.",
+      "input_schema": {
+        "properties": {
+          "filepath": {
+            "title": "Filepath",
+            "type": "string"
+          },
+          "sheet_name": {
+            "title": "Sheet Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "filepath",
+          "sheet_name"
+        ],
+        "title": "create_worksheetArguments",
+        "type": "object"
+      },
+      "registration_scope": "global",
+      "scenario": "spreadsheet",
+      "owner_agents": [],
+      "intents": [
+        "spreadsheet_worksheet_create"
+      ],
+      "aliases": [
+        "创建Excel工作表",
+        "新增工作表",
+        "create worksheet"
+      ],
+      "operation_mode": "create",
+      "required_inputs": [
+        "filepath",
+        "sheet_name"
+      ],
+      "produces": [
+        "spreadsheet.worksheet"
+      ],
+      "side_effect": true,
+      "risk_level": "medium",
+      "legacy_tool_name": null,
+      "entered_registry": true,
+      "referenced_by_agents": []
+    },
+    {
+      "server_name": "excel-mcp-remote",
+      "name": "delete_range",
+      "description": "Delete a range of cells and shift remaining cells.",
+      "input_schema": {
+        "properties": {
+          "filepath": {
+            "title": "Filepath",
+            "type": "string"
+          },
+          "sheet_name": {
+            "title": "Sheet Name",
+            "type": "string"
+          },
+          "start_cell": {
+            "title": "Start Cell",
+            "type": "string"
+          },
+          "end_cell": {
+            "title": "End Cell",
+            "type": "string"
+          },
+          "shift_direction": {
+            "default": "up",
+            "title": "Shift Direction",
+            "type": "string"
+          }
+        },
+        "required": [
+          "filepath",
+          "sheet_name",
+          "start_cell",
+          "end_cell"
+        ],
+        "title": "delete_rangeArguments",
+        "type": "object"
+      },
+      "registration_scope": "global",
+      "scenario": "spreadsheet",
+      "owner_agents": [],
+      "intents": [
+        "spreadsheet_range_delete"
+      ],
+      "aliases": [
+        "删除Excel区域",
+        "清除单元格范围",
+        "delete range"
+      ],
+      "operation_mode": "delete",
+      "required_inputs": [
+        "filepath",
+        "sheet_name",
+        "start_cell",
+        "end_cell"
+      ],
+      "produces": [
+        "spreadsheet.deleted_range"
+      ],
+      "side_effect": true,
+      "risk_level": "high",
+      "legacy_tool_name": null,
+      "entered_registry": true,
+      "referenced_by_agents": []
+    },
+    {
+      "server_name": "excel-mcp-remote",
+      "name": "delete_worksheet",
+      "description": "Delete worksheet from workbook.",
+      "input_schema": {
+        "properties": {
+          "filepath": {
+            "title": "Filepath",
+            "type": "string"
+          },
+          "sheet_name": {
+            "title": "Sheet Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "filepath",
+          "sheet_name"
+        ],
+        "title": "delete_worksheetArguments",
+        "type": "object"
+      },
+      "registration_scope": "global",
+      "scenario": "spreadsheet",
+      "owner_agents": [],
+      "intents": [
+        "spreadsheet_worksheet_delete"
+      ],
+      "aliases": [
+        "删除Excel工作表",
+        "移除工作表",
+        "delete worksheet"
+      ],
+      "operation_mode": "delete",
+      "required_inputs": [
+        "filepath",
+        "sheet_name"
+      ],
+      "produces": [
+        "spreadsheet.worksheet_deletion"
+      ],
+      "side_effect": true,
+      "risk_level": "high",
+      "legacy_tool_name": null,
+      "entered_registry": true,
+      "referenced_by_agents": []
+    },
+    {
+      "server_name": "excel-mcp-remote",
+      "name": "format_range",
+      "description": "Apply formatting to a range of cells.",
+      "input_schema": {
+        "properties": {
+          "filepath": {
+            "title": "Filepath",
+            "type": "string"
+          },
+          "sheet_name": {
+            "title": "Sheet Name",
+            "type": "string"
+          },
+          "start_cell": {
+            "title": "Start Cell",
+            "type": "string"
+          },
+          "end_cell": {
+            "default": null,
+            "title": "End Cell",
+            "type": "string"
+          },
+          "bold": {
+            "default": false,
+            "title": "Bold",
+            "type": "boolean"
+          },
+          "italic": {
+            "default": false,
+            "title": "Italic",
+            "type": "boolean"
+          },
+          "underline": {
+            "default": false,
+            "title": "Underline",
+            "type": "boolean"
+          },
+          "font_size": {
+            "default": null,
+            "title": "Font Size",
+            "type": "integer"
+          },
+          "font_color": {
+            "default": null,
+            "title": "Font Color",
+            "type": "string"
+          },
+          "bg_color": {
+            "default": null,
+            "title": "Bg Color",
+            "type": "string"
+          },
+          "border_style": {
+            "default": null,
+            "title": "Border Style",
+            "type": "string"
+          },
+          "border_color": {
+            "default": null,
+            "title": "Border Color",
+            "type": "string"
+          },
+          "number_format": {
+            "default": null,
+            "title": "Number Format",
+            "type": "string"
+          },
+          "alignment": {
+            "default": null,
+            "title": "Alignment",
+            "type": "string"
+          },
+          "wrap_text": {
+            "default": false,
+            "title": "Wrap Text",
+            "type": "boolean"
+          },
+          "merge_cells": {
+            "default": false,
+            "title": "Merge Cells",
+            "type": "boolean"
+          },
+          "protection": {
+            "default": null,
+            "title": "Protection",
+            "type": "object"
+          },
+          "conditional_format": {
+            "default": null,
+            "title": "Conditional Format",
+            "type": "object"
+          }
+        },
+        "required": [
+          "filepath",
+          "sheet_name",
+          "start_cell"
+        ],
+        "title": "format_rangeArguments",
+        "type": "object"
+      },
+      "registration_scope": "global",
+      "scenario": "spreadsheet",
+      "owner_agents": [],
+      "intents": [
+        "spreadsheet_range_format"
+      ],
+      "aliases": [
+        "格式化Excel区域",
+        "设置单元格格式",
+        "format range"
+      ],
+      "operation_mode": "format",
+      "required_inputs": [
+        "filepath",
+        "sheet_name",
+        "start_cell"
+      ],
+      "produces": [
+        "spreadsheet.formatted_range"
+      ],
+      "side_effect": true,
+      "risk_level": "medium",
+      "legacy_tool_name": null,
+      "entered_registry": true,
+      "referenced_by_agents": []
+    },
+    {
+      "server_name": "excel-mcp-remote",
+      "name": "get_workbook_metadata",
+      "description": "Get metadata about workbook including sheets, ranges, etc.",
+      "input_schema": {
+        "properties": {
+          "filepath": {
+            "title": "Filepath",
+            "type": "string"
+          },
+          "include_ranges": {
+            "default": false,
+            "title": "Include Ranges",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "filepath"
+        ],
+        "title": "get_workbook_metadataArguments",
+        "type": "object"
+      },
+      "registration_scope": "global",
+      "scenario": "spreadsheet",
+      "owner_agents": [],
+      "intents": [
+        "spreadsheet_workbook_metadata"
+      ],
+      "aliases": [
+        "查询Excel工作簿信息",
+        "查看工作簿元数据",
+        "get workbook metadata"
+      ],
+      "operation_mode": "query",
+      "required_inputs": [
+        "filepath"
+      ],
+      "produces": [
+        "spreadsheet.workbook_metadata"
+      ],
+      "side_effect": false,
+      "risk_level": "low",
+      "legacy_tool_name": null,
+      "entered_registry": true,
+      "referenced_by_agents": []
+    },
+    {
+      "server_name": "excel-mcp-remote",
+      "name": "merge_cells",
+      "description": "Merge a range of cells.",
+      "input_schema": {
+        "properties": {
+          "filepath": {
+            "title": "Filepath",
+            "type": "string"
+          },
+          "sheet_name": {
+            "title": "Sheet Name",
+            "type": "string"
+          },
+          "start_cell": {
+            "title": "Start Cell",
+            "type": "string"
+          },
+          "end_cell": {
+            "title": "End Cell",
+            "type": "string"
+          }
+        },
+        "required": [
+          "filepath",
+          "sheet_name",
+          "start_cell",
+          "end_cell"
+        ],
+        "title": "merge_cellsArguments",
+        "type": "object"
+      },
+      "registration_scope": "global",
+      "scenario": "spreadsheet",
+      "owner_agents": [],
+      "intents": [
+        "spreadsheet_cells_merge"
+      ],
+      "aliases": [
+        "合并Excel单元格",
+        "合并单元格区域",
+        "merge cells"
+      ],
+      "operation_mode": "merge",
+      "required_inputs": [
+        "filepath",
+        "sheet_name",
+        "start_cell",
+        "end_cell"
+      ],
+      "produces": [
+        "spreadsheet.merged_cells"
+      ],
+      "side_effect": true,
+      "risk_level": "medium",
+      "legacy_tool_name": null,
+      "entered_registry": true,
+      "referenced_by_agents": []
+    },
+    {
+      "server_name": "excel-mcp-remote",
+      "name": "read_data_from_excel",
+      "description": "Read data from Excel worksheet.",
+      "input_schema": {
+        "properties": {
+          "filepath": {
+            "title": "Filepath",
+            "type": "string"
+          },
+          "sheet_name": {
+            "title": "Sheet Name",
+            "type": "string"
+          },
+          "start_cell": {
+            "default": "A1",
+            "title": "Start Cell",
+            "type": "string"
+          },
+          "end_cell": {
+            "default": null,
+            "title": "End Cell",
+            "type": "string"
+          },
+          "preview_only": {
+            "default": false,
+            "title": "Preview Only",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "filepath",
+          "sheet_name"
+        ],
+        "title": "read_data_from_excelArguments",
+        "type": "object"
+      },
+      "registration_scope": "global",
+      "scenario": "spreadsheet",
+      "owner_agents": [],
+      "intents": [
+        "spreadsheet_data_read"
+      ],
+      "aliases": [
+        "读取Excel数据",
+        "查看工作表数据",
+        "read data from excel"
+      ],
+      "operation_mode": "query",
+      "required_inputs": [
+        "filepath",
+        "sheet_name"
+      ],
+      "produces": [
+        "spreadsheet.range_data"
+      ],
+      "side_effect": false,
+      "risk_level": "low",
+      "legacy_tool_name": null,
+      "entered_registry": true,
+      "referenced_by_agents": []
+    },
+    {
+      "server_name": "excel-mcp-remote",
+      "name": "rename_worksheet",
+      "description": "Rename worksheet in workbook.",
+      "input_schema": {
+        "properties": {
+          "filepath": {
+            "title": "Filepath",
+            "type": "string"
+          },
+          "old_name": {
+            "title": "Old Name",
+            "type": "string"
+          },
+          "new_name": {
+            "title": "New Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "filepath",
+          "old_name",
+          "new_name"
+        ],
+        "title": "rename_worksheetArguments",
+        "type": "object"
+      },
+      "registration_scope": "global",
+      "scenario": "spreadsheet",
+      "owner_agents": [],
+      "intents": [
+        "spreadsheet_worksheet_rename"
+      ],
+      "aliases": [
+        "重命名Excel工作表",
+        "修改工作表名称",
+        "rename worksheet"
+      ],
+      "operation_mode": "update",
+      "required_inputs": [
+        "filepath",
+        "old_name",
+        "new_name"
+      ],
+      "produces": [
+        "spreadsheet.worksheet"
+      ],
+      "side_effect": true,
+      "risk_level": "medium",
+      "legacy_tool_name": null,
+      "entered_registry": true,
+      "referenced_by_agents": []
+    },
+    {
+      "server_name": "excel-mcp-remote",
+      "name": "unmerge_cells",
+      "description": "Unmerge a range of cells.",
+      "input_schema": {
+        "properties": {
+          "filepath": {
+            "title": "Filepath",
+            "type": "string"
+          },
+          "sheet_name": {
+            "title": "Sheet Name",
+            "type": "string"
+          },
+          "start_cell": {
+            "title": "Start Cell",
+            "type": "string"
+          },
+          "end_cell": {
+            "title": "End Cell",
+            "type": "string"
+          }
+        },
+        "required": [
+          "filepath",
+          "sheet_name",
+          "start_cell",
+          "end_cell"
+        ],
+        "title": "unmerge_cellsArguments",
+        "type": "object"
+      },
+      "registration_scope": "global",
+      "scenario": "spreadsheet",
+      "owner_agents": [],
+      "intents": [
+        "spreadsheet_cells_unmerge"
+      ],
+      "aliases": [
+        "取消合并Excel单元格",
+        "拆分合并单元格",
+        "unmerge cells"
+      ],
+      "operation_mode": "unmerge",
+      "required_inputs": [
+        "filepath",
+        "sheet_name",
+        "start_cell",
+        "end_cell"
+      ],
+      "produces": [
+        "spreadsheet.unmerged_cells"
+      ],
+      "side_effect": true,
+      "risk_level": "medium",
+      "legacy_tool_name": null,
+      "entered_registry": true,
+      "referenced_by_agents": []
+    },
+    {
+      "server_name": "excel-mcp-remote",
+      "name": "validate_excel_range",
+      "description": "Validate if a range exists and is properly formatted.",
+      "input_schema": {
+        "properties": {
+          "filepath": {
+            "title": "Filepath",
+            "type": "string"
+          },
+          "sheet_name": {
+            "title": "Sheet Name",
+            "type": "string"
+          },
+          "start_cell": {
+            "title": "Start Cell",
+            "type": "string"
+          },
+          "end_cell": {
+            "default": null,
+            "title": "End Cell",
+            "type": "string"
+          }
+        },
+        "required": [
+          "filepath",
+          "sheet_name",
+          "start_cell"
+        ],
+        "title": "validate_excel_rangeArguments",
+        "type": "object"
+      },
+      "registration_scope": "global",
+      "scenario": "spreadsheet",
+      "owner_agents": [],
+      "intents": [
+        "spreadsheet_range_validate"
+      ],
+      "aliases": [
+        "校验Excel区域",
+        "检查单元格范围",
+        "validate excel range"
+      ],
+      "operation_mode": "validate",
+      "required_inputs": [
+        "filepath",
+        "sheet_name",
+        "start_cell"
+      ],
+      "produces": [
+        "spreadsheet.range_validation"
+      ],
+      "side_effect": false,
+      "risk_level": "low",
+      "legacy_tool_name": null,
+      "entered_registry": true,
+      "referenced_by_agents": []
+    },
+    {
+      "server_name": "excel-mcp-remote",
+      "name": "validate_formula_syntax",
+      "description": "Validate Excel formula syntax without applying it.",
+      "input_schema": {
+        "properties": {
+          "filepath": {
+            "title": "Filepath",
+            "type": "string"
+          },
+          "sheet_name": {
+            "title": "Sheet Name",
+            "type": "string"
+          },
+          "cell": {
+            "title": "Cell",
+            "type": "string"
+          },
+          "formula": {
+            "title": "Formula",
+            "type": "string"
+          }
+        },
+        "required": [
+          "filepath",
+          "sheet_name",
+          "cell",
+          "formula"
+        ],
+        "title": "validate_formula_syntaxArguments",
+        "type": "object"
+      },
+      "registration_scope": "global",
+      "scenario": "spreadsheet",
+      "owner_agents": [],
+      "intents": [
+        "spreadsheet_formula_validate"
+      ],
+      "aliases": [
+        "校验Excel公式",
+        "检查公式语法",
+        "validate formula syntax"
+      ],
+      "operation_mode": "validate",
+      "required_inputs": [
+        "filepath",
+        "sheet_name",
+        "cell",
+        "formula"
+      ],
+      "produces": [
+        "spreadsheet.formula_validation"
+      ],
+      "side_effect": false,
+      "risk_level": "low",
+      "legacy_tool_name": null,
+      "entered_registry": true,
+      "referenced_by_agents": []
+    },
+    {
+      "server_name": "excel-mcp-remote",
+      "name": "write_data_to_excel",
+      "description": "Write data to Excel worksheet.\n    \n    The function automatically detects the context and handles headers intelligently:\n    - Headers are added when writing to a new area\n    - Headers are not duplicated when writing below existing headers\n    - Title areas (rows 1-4) are treated specially\n    - If the first row of data appears to be headers, it will be used accordingly\n    ",
+      "input_schema": {
+        "properties": {
+          "filepath": {
+            "title": "Filepath",
+            "type": "string"
+          },
+          "sheet_name": {
+            "title": "Sheet Name",
+            "type": "string"
+          },
+          "data": {
+            "items": {
+              "type": "object"
+            },
+            "title": "Data",
+            "type": "array"
+          },
+          "start_cell": {
+            "default": "A1",
+            "title": "Start Cell",
+            "type": "string"
+          }
+        },
+        "required": [
+          "filepath",
+          "sheet_name",
+          "data"
+        ],
+        "title": "write_data_to_excelArguments",
+        "type": "object"
+      },
+      "registration_scope": "global",
+      "scenario": "spreadsheet",
+      "owner_agents": [],
+      "intents": [
+        "spreadsheet_data_write"
+      ],
+      "aliases": [
+        "写入Excel数据",
+        "填充工作表数据",
+        "write data to excel"
+      ],
+      "operation_mode": "write",
+      "required_inputs": [
+        "filepath",
+        "sheet_name",
+        "data"
+      ],
+      "produces": [
+        "spreadsheet.written_range"
+      ],
+      "side_effect": true,
+      "risk_level": "medium",
+      "legacy_tool_name": null,
+      "entered_registry": true,
+      "referenced_by_agents": []
+    },
+    {
+      "server_name": "office-mcp",
+      "name": "cancel_calendar_event",
+      "description": "Cancel a simulated calendar event by marking its status.",
+      "input_schema": {
+        "properties": {
+          "event_id": {
+            "title": "Event Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "event_id"
+        ],
+        "title": "cancel_calendar_eventArguments",
+        "type": "object"
+      },
+      "registration_scope": "global",
+      "scenario": "calendar",
+      "owner_agents": [
+        "RemoteHRCalendarAgent",
+        "RemoteScheduleAgent"
+      ],
+      "intents": [
+        "calendar_event_cancel",
+        "schedule_management"
+      ],
+      "aliases": [
+        "取消日程",
+        "删除日历事件",
+        "撤销日程",
+        "cancel calendar event"
+      ],
+      "operation_mode": "cancel",
+      "required_inputs": [
+        "event_id"
+      ],
+      "produces": [
+        "calendar.event"
+      ],
+      "side_effect": true,
+      "risk_level": "medium",
+      "legacy_tool_name": "remote_schedule_tool",
+      "entered_registry": true,
+      "referenced_by_agents": [
+        "RemoteScheduleAgent"
+      ]
+    },
+    {
+      "server_name": "office-mcp",
+      "name": "cancel_meeting",
+      "description": "Cancel a simulated meeting.",
+      "input_schema": {
+        "properties": {
+          "meeting_id": {
+            "title": "Meeting Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "meeting_id"
+        ],
+        "title": "cancel_meetingArguments",
+        "type": "object"
+      },
+      "registration_scope": "global",
+      "scenario": "meeting",
+      "owner_agents": [
+        "RemoteMeetingManagerAgent"
+      ],
+      "intents": [
+        "meeting_cancel",
+        "meeting_arrangement"
+      ],
+      "aliases": [
+        "取消会议",
+        "撤销会议",
+        "cancel meeting"
+      ],
+      "operation_mode": "cancel",
+      "required_inputs": [
+        "meeting_id"
+      ],
+      "produces": [
+        "meeting.record"
+      ],
+      "side_effect": true,
+      "risk_level": "medium",
+      "legacy_tool_name": "remote_meeting_scheduling_tool",
+      "entered_registry": true,
+      "referenced_by_agents": [
+        "RemoteMeetingManagerAgent"
+      ]
+    },
+    {
+      "server_name": "office-mcp",
+      "name": "cancel_travel_request",
+      "description": "Cancel a simulated travel request.",
+      "input_schema": {
+        "properties": {
+          "record_id": {
+            "title": "Record Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "record_id"
+        ],
+        "title": "cancel_travel_requestArguments",
+        "type": "object"
+      },
+      "registration_scope": "global",
+      "scenario": "travel",
+      "owner_agents": [
+        "RemoteOfficeAssistantAgent"
+      ],
+      "intents": [
+        "travel_request_cancel",
+        "travel_service"
+      ],
+      "aliases": [
+        "取消差旅申请",
+        "撤销出差申请",
+        "cancel travel request"
+      ],
+      "operation_mode": "cancel",
+      "required_inputs": [
+        "record_id"
+      ],
+      "produces": [
+        "travel.request"
+      ],
+      "side_effect": true,
+      "risk_level": "medium",
+      "legacy_tool_name": "query_travel_record",
+      "entered_registry": true,
+      "referenced_by_agents": [
+        "RemoteOfficeAssistantAgent"
+      ]
+    },
+    {
+      "server_name": "office-mcp",
+      "name": "create_calendar_event",
+      "description": "Create a simulated calendar event.",
+      "input_schema": {
+        "properties": {
+          "summary": {
+            "title": "Summary",
+            "type": "string"
+          },
+          "start_date": {
+            "title": "Start Date",
+            "type": "string"
+          },
+          "start_time": {
+            "default": "",
+            "title": "Start Time",
+            "type": "string"
+          },
+          "notes": {
+            "default": "",
+            "title": "Notes",
+            "type": "string"
+          },
+          "category": {
+            "default": "日程",
+            "title": "Category",
+            "type": "string"
+          }
+        },
+        "required": [
+          "summary",
+          "start_date"
+        ],
+        "title": "create_calendar_eventArguments",
+        "type": "object"
+      },
+      "registration_scope": "global",
+      "scenario": "calendar",
+      "owner_agents": [
+        "RemoteHRCalendarAgent",
+        "RemoteScheduleAgent"
+      ],
+      "intents": [
+        "calendar_event_create",
+        "schedule_management"
+      ],
+      "aliases": [
+        "创建日程",
+        "新增日历事件",
+        "添加日程",
+        "create calendar event"
+      ],
+      "operation_mode": "create",
+      "required_inputs": [
+        "summary",
+        "start_date"
+      ],
+      "produces": [
+        "calendar.event"
+      ],
+      "side_effect": true,
+      "risk_level": "medium",
+      "legacy_tool_name": "create_calendar_event_tool",
+      "entered_registry": true,
+      "referenced_by_agents": [
+        "RemoteHRCalendarAgent"
+      ]
+    },
+    {
+      "server_name": "office-mcp",
+      "name": "create_meeting",
+      "description": "Create a simulated meeting.",
+      "input_schema": {
+        "properties": {
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "meeting_date": {
+            "title": "Meeting Date",
+            "type": "string"
+          },
+          "meeting_time": {
+            "title": "Meeting Time",
+            "type": "string"
+          },
+          "participants": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Participants",
+            "type": "array"
+          },
+          "agenda": {
+            "default": "",
+            "title": "Agenda",
+            "type": "string"
+          }
+        },
+        "required": [
+          "title",
+          "meeting_date",
+          "meeting_time",
+          "participants"
+        ],
+        "title": "create_meetingArguments",
+        "type": "object"
+      },
+      "registration_scope": "global",
+      "scenario": "meeting",
+      "owner_agents": [
+        "RemoteMeetingManagerAgent"
+      ],
+      "intents": [
+        "meeting_create",
+        "meeting_arrangement"
+      ],
+      "aliases": [
+        "创建会议",
+        "安排会议",
+        "预定会议",
+        "create meeting"
+      ],
+      "operation_mode": "create",
+      "required_inputs": [
+        "title",
+        "meeting_date",
+        "meeting_time",
+        "participants"
+      ],
+      "produces": [
+        "meeting.record"
+      ],
+      "side_effect": true,
+      "risk_level": "medium",
+      "legacy_tool_name": "remote_meeting_scheduling_tool",
+      "entered_registry": true,
+      "referenced_by_agents": [
+        "RemoteMeetingManagerAgent"
+      ]
+    },
+    {
+      "server_name": "office-mcp",
+      "name": "create_travel_request",
+      "description": "Create a simulated employee travel request.",
+      "input_schema": {
+        "properties": {
+          "employee_id": {
+            "title": "Employee Id",
+            "type": "string"
+          },
+          "employee_name": {
+            "title": "Employee Name",
+            "type": "string"
+          },
+          "destination": {
+            "title": "Destination",
+            "type": "string"
+          },
+          "start_date": {
+            "title": "Start Date",
+            "type": "string"
+          },
+          "end_date": {
+            "title": "End Date",
+            "type": "string"
+          },
+          "purpose": {
+            "default": "",
+            "title": "Purpose",
+            "type": "string"
+          }
+        },
+        "required": [
+          "employee_id",
+          "employee_name",
+          "destination",
+          "start_date",
+          "end_date"
+        ],
+        "title": "create_travel_requestArguments",
+        "type": "object"
+      },
+      "registration_scope": "global",
+      "scenario": "travel",
+      "owner_agents": [
+        "RemoteOfficeAssistantAgent"
+      ],
+      "intents": [
+        "travel_request_create",
+        "travel_service"
+      ],
+      "aliases": [
+        "创建差旅申请",
+        "提交出差申请",
+        "新增差旅",
+        "create travel request"
+      ],
+      "operation_mode": "create",
+      "required_inputs": [
+        "employee_id",
+        "employee_name",
+        "destination",
+        "start_date",
+        "end_date"
+      ],
+      "produces": [
+        "travel.request"
+      ],
+      "side_effect": true,
+      "risk_level": "medium",
+      "legacy_tool_name": "save_travel_record",
+      "entered_registry": true,
+      "referenced_by_agents": [
+        "RemoteOfficeAssistantAgent"
+      ]
+    },
+    {
+      "server_name": "office-mcp",
+      "name": "enroll_course",
+      "description": "Create a simulated course enrollment.",
+      "input_schema": {
+        "properties": {
+          "employee_id": {
+            "title": "Employee Id",
+            "type": "string"
+          },
+          "employee_name": {
+            "title": "Employee Name",
+            "type": "string"
+          },
+          "course_id": {
+            "title": "Course Id",
+            "type": "string"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "employee_id",
+          "employee_name",
+          "course_id",
+          "session_id"
+        ],
+        "title": "enroll_courseArguments",
+        "type": "object"
+      },
+      "registration_scope": "global",
+      "scenario": "course",
+      "owner_agents": [
+        "RemoteKnowledgeAgent"
+      ],
+      "intents": [
+        "course_enrollment",
+        "training_enrollment"
+      ],
+      "aliases": [
+        "报名课程",
+        "参加培训",
+        "课程报名",
+        "enroll course"
+      ],
+      "operation_mode": "enroll",
+      "required_inputs": [
+        "employee_id",
+        "employee_name",
+        "course_id",
+        "session_id"
+      ],
+      "produces": [
+        "course.enrollment"
+      ],
+      "side_effect": true,
+      "risk_level": "medium",
+      "legacy_tool_name": "knowledge_search_tool",
+      "entered_registry": true,
+      "referenced_by_agents": [
+        "RemoteKnowledgeAgent"
+      ]
+    },
+    {
+      "server_name": "office-mcp",
+      "name": "estimate_trip_cost",
+      "description": "Estimate a simulated trip cost from simple configurable rates.",
+      "input_schema": {
+        "properties": {
+          "destination": {
+            "title": "Destination",
+            "type": "string"
+          },
+          "days": {
+            "title": "Days",
+            "type": "integer"
+          },
+          "transport_cost": {
+            "default": 800,
+            "title": "Transport Cost",
+            "type": "number"
+          },
+          "hotel_cost_per_day": {
+            "default": 500,
+            "title": "Hotel Cost Per Day",
+            "type": "number"
+          }
+        },
+        "required": [
+          "destination",
+          "days"
+        ],
+        "title": "estimate_trip_costArguments",
+        "type": "object"
+      },
+      "registration_scope": "global",
+      "scenario": "travel",
+      "owner_agents": [
+        "RemoteOfficeAssistantAgent"
+      ],
+      "intents": [
+        "travel_cost_estimate",
+        "travel_service"
+      ],
+      "aliases": [
+        "估算差旅费用",
+        "出差费用预算",
+        "行程成本",
+        "estimate trip cost"
+      ],
+      "operation_mode": "query",
+      "required_inputs": [
+        "destination",
+        "days"
+      ],
+      "produces": [
+        "travel.cost_estimate"
+      ],
+      "side_effect": false,
+      "risk_level": "low",
+      "legacy_tool_name": "query_travel_record",
+      "entered_registry": true,
+      "referenced_by_agents": [
+        "RemoteOfficeAssistantAgent"
+      ]
+    },
+    {
+      "server_name": "office-mcp",
+      "name": "find_free_slots",
+      "description": "Find simple mock free slots after excluding event start times.",
+      "input_schema": {
+        "properties": {
+          "target_date": {
+            "title": "Target Date",
+            "type": "string"
+          },
+          "duration_minutes": {
+            "default": 60,
+            "title": "Duration Minutes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "target_date"
+        ],
+        "title": "find_free_slotsArguments",
+        "type": "object"
+      },
+      "registration_scope": "global",
+      "scenario": "calendar",
+      "owner_agents": [
+        "RemoteHRCalendarAgent",
+        "RemoteScheduleAgent"
+      ],
+      "intents": [
+        "calendar_free_slots",
+        "availability_query"
+      ],
+      "aliases": [
+        "日历空闲时间",
+        "查找空档",
+        "可用时段",
+        "find free slots"
+      ],
+      "operation_mode": "query",
+      "required_inputs": [
+        "target_date"
+      ],
+      "produces": [
+        "calendar.free_slots"
+      ],
+      "side_effect": false,
+      "risk_level": "low",
+      "legacy_tool_name": "get_calendar_events_tool",
+      "entered_registry": true,
+      "referenced_by_agents": [
+        "RemoteHRCalendarAgent"
+      ]
+    },
+    {
+      "server_name": "office-mcp",
+      "name": "find_meeting_slots",
+      "description": "Find candidate meeting slots using the simulated calendar.",
+      "input_schema": {
+        "properties": {
+          "target_date": {
+            "title": "Target Date",
+            "type": "string"
+          },
+          "duration_minutes": {
+            "default": 60,
+            "title": "Duration Minutes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "target_date"
+        ],
+        "title": "find_meeting_slotsArguments",
+        "type": "object"
+      },
+      "registration_scope": "global",
+      "scenario": "meeting",
+      "owner_agents": [
+        "RemoteMeetingManagerAgent"
+      ],
+      "intents": [
+        "meeting_slots",
+        "meeting_arrangement"
+      ],
+      "aliases": [
+        "会议空闲时间",
+        "查找会议时段",
+        "会议可用时间",
+        "find meeting slots"
+      ],
+      "operation_mode": "query",
+      "required_inputs": [
+        "target_date"
+      ],
+      "produces": [
+        "meeting.slots"
+      ],
+      "side_effect": false,
+      "risk_level": "low",
+      "legacy_tool_name": "remote_meeting_scheduling_tool",
+      "entered_registry": true,
+      "referenced_by_agents": [
+        "RemoteMeetingManagerAgent"
+      ]
+    },
+    {
+      "server_name": "office-mcp",
+      "name": "get_course_detail",
+      "description": "Read details for one simulated course.",
+      "input_schema": {
+        "properties": {
+          "course_id": {
+            "title": "Course Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "course_id"
+        ],
+        "title": "get_course_detailArguments",
+        "type": "object"
+      },
+      "registration_scope": "global",
+      "scenario": "course",
+      "owner_agents": [
+        "RemoteKnowledgeAgent"
+      ],
+      "intents": [
+        "course_detail",
+        "knowledge_lookup"
+      ],
+      "aliases": [
+        "课程详情",
+        "培训详情",
+        "course detail"
+      ],
+      "operation_mode": "query",
+      "required_inputs": [
+        "course_id"
+      ],
+      "produces": [
+        "course.detail"
+      ],
+      "side_effect": false,
+      "risk_level": "low",
+      "legacy_tool_name": "knowledge_search_tool",
+      "entered_registry": true,
+      "referenced_by_agents": [
+        "RemoteKnowledgeAgent"
+      ]
+    },
+    {
+      "server_name": "office-mcp",
+      "name": "get_delivery_status",
+      "description": "Return a deterministic mock delivery status.",
+      "input_schema": {
+        "properties": {
+          "message_id": {
+            "title": "Message Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "message_id"
+        ],
+        "title": "get_delivery_statusArguments",
+        "type": "object"
+      },
+      "registration_scope": "global",
+      "scenario": "messaging",
+      "owner_agents": [
+        "RemoteCommunicationAgent",
+        "RemoteEmailDispatchAgent"
+      ],
+      "intents": [
+        "delivery_status",
+        "message_tracking"
+      ],
+      "aliases": [
+        "投递状态",
+        "消息发送状态",
+        "邮件状态",
+        "delivery status"
+      ],
+      "operation_mode": "query",
+      "required_inputs": [
+        "message_id"
+      ],
+      "produces": [
+        "message.delivery_status"
+      ],
+      "side_effect": false,
+      "risk_level": "low",
+      "legacy_tool_name": "remote_email_tool",
+      "entered_registry": true,
+      "referenced_by_agents": [
+        "RemoteCommunicationAgent",
+        "RemoteEmailDispatchAgent"
+      ]
+    },
+    {
+      "server_name": "office-mcp",
+      "name": "get_employee_contact",
+      "description": "Resolve a simulated employee contact.",
+      "input_schema": {
+        "properties": {
+          "name": {
+            "default": "",
+            "title": "Name",
+            "type": "string"
+          },
+          "department": {
+            "default": "",
+            "title": "Department",
+            "type": "string"
+          },
+          "position": {
+            "default": "",
+            "title": "Position",
+            "type": "string"
+          }
+        },
+        "title": "get_employee_contactArguments",
+        "type": "object"
+      },
+      "registration_scope": "global",
+      "scenario": "personnel",
+      "owner_agents": [
+        "RemoteHRAssistantAgent",
+        "RemoteCommunicationAgent"
+      ],
+      "intents": [
+        "employee_contact",
+        "contact_lookup"
+      ],
+      "aliases": [
+        "员工联系方式",
+        "员工联系信息",
+        "employee contact"
+      ],
+      "operation_mode": "query",
+      "required_inputs": [],
+      "produces": [
+        "employee.contact"
+      ],
+      "side_effect": false,
+      "risk_level": "low",
+      "legacy_tool_name": "remote_contact_query_tool",
+      "entered_registry": true,
+      "referenced_by_agents": [
+        "RemoteCommunicationAgent"
+      ]
+    },
+    {
+      "server_name": "office-mcp",
+      "name": "get_employee_profile",
+      "description": "Read one simulated employee profile by name or employee identifier.",
+      "input_schema": {
+        "properties": {
+          "employee_name": {
+            "default": "",
+            "title": "Employee Name",
+            "type": "string"
+          },
+          "employee_id": {
+            "default": "",
+            "title": "Employee Id",
+            "type": "string"
+          }
+        },
+        "title": "get_employee_profileArguments",
+        "type": "object"
+      },
+      "registration_scope": "global",
+      "scenario": "personnel",
+      "owner_agents": [
+        "RemoteHRAssistantAgent"
+      ],
+      "intents": [
+        "employee_profile",
+        "employee_information_query"
+      ],
+      "aliases": [
+        "员工档案",
+        "员工详情",
+        "个人资料",
+        "employee profile"
+      ],
+      "operation_mode": "query",
+      "required_inputs": [],
+      "produces": [
+        "employee.profile"
+      ],
+      "side_effect": false,
+      "risk_level": "low",
+      "legacy_tool_name": "remote_person_info_tool",
+      "entered_registry": true,
+      "referenced_by_agents": [
+        "RemoteHRAssistantAgent"
+      ]
+    },
+    {
+      "server_name": "office-mcp",
+      "name": "get_learning_record",
+      "description": "Read simulated course enrollment and progress records.",
+      "input_schema": {
+        "properties": {
+          "employee_id": {
+            "default": "",
+            "title": "Employee Id",
+            "type": "string"
+          },
+          "employee_name": {
+            "default": "",
+            "title": "Employee Name",
+            "type": "string"
+          }
+        },
+        "title": "get_learning_recordArguments",
+        "type": "object"
+      },
+      "registration_scope": "global",
+      "scenario": "course",
+      "owner_agents": [
+        "RemoteKnowledgeAgent"
+      ],
+      "intents": [
+        "learning_record",
+        "training_history"
+      ],
+      "aliases": [
+        "学习记录",
+        "培训记录",
+        "课程进度",
+        "learning record"
+      ],
+      "operation_mode": "query",
+      "required_inputs": [],
+      "produces": [
+        "employee.learning_record"
+      ],
+      "side_effect": false,
+      "risk_level": "low",
+      "legacy_tool_name": "knowledge_search_tool",
+      "entered_registry": true,
+      "referenced_by_agents": [
+        "RemoteKnowledgeAgent"
+      ]
+    },
+    {
+      "server_name": "office-mcp",
+      "name": "get_manager_chain",
+      "description": "Return a deterministic mock manager chain for an employee.",
+      "input_schema": {
+        "properties": {
+          "employee_name": {
+            "default": "",
+            "title": "Employee Name",
+            "type": "string"
+          },
+          "employee_id": {
+            "default": "",
+            "title": "Employee Id",
+            "type": "string"
+          }
+        },
+        "title": "get_manager_chainArguments",
+        "type": "object"
+      },
+      "registration_scope": "global",
+      "scenario": "personnel",
+      "owner_agents": [
+        "RemoteHRAssistantAgent"
+      ],
+      "intents": [
+        "manager_chain",
+        "reporting_line"
+      ],
+      "aliases": [
+        "汇报链",
+        "上级链",
+        "直属领导",
+        "manager chain"
+      ],
+      "operation_mode": "query",
+      "required_inputs": [],
+      "produces": [
+        "employee.manager_chain"
+      ],
+      "side_effect": false,
+      "risk_level": "low",
+      "legacy_tool_name": "remote_person_info_tool",
+      "entered_registry": true,
+      "referenced_by_agents": [
+        "RemoteHRAssistantAgent"
+      ]
+    },
+    {
+      "server_name": "office-mcp",
+      "name": "get_meeting_minutes",
+      "description": "Return deterministic mock minutes for a simulated meeting.",
+      "input_schema": {
+        "properties": {
+          "meeting_id": {
+            "title": "Meeting Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "meeting_id"
+        ],
+        "title": "get_meeting_minutesArguments",
+        "type": "object"
+      },
+      "registration_scope": "global",
+      "scenario": "meeting",
+      "owner_agents": [
+        "RemoteMeetingManagerAgent"
+      ],
+      "intents": [
+        "meeting_minutes",
+        "meeting_followup"
+      ],
+      "aliases": [
+        "会议纪要",
+        "查看会议记录",
+        "meeting minutes"
+      ],
+      "operation_mode": "query",
+      "required_inputs": [
+        "meeting_id"
+      ],
+      "produces": [
+        "meeting.minutes"
+      ],
+      "side_effect": false,
+      "risk_level": "low",
+      "legacy_tool_name": "remote_meeting_scheduling_tool",
+      "entered_registry": true,
+      "referenced_by_agents": [
+        "RemoteMeetingManagerAgent"
+      ]
+    },
+    {
+      "server_name": "office-mcp",
+      "name": "get_org_unit",
+      "description": "List simulated employees belonging to an organization unit.",
+      "input_schema": {
+        "properties": {
+          "department": {
+            "title": "Department",
+            "type": "string"
+          },
+          "limit": {
+            "default": 20,
+            "title": "Limit",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "department"
+        ],
+        "title": "get_org_unitArguments",
+        "type": "object"
+      },
+      "registration_scope": "global",
+      "scenario": "personnel",
+      "owner_agents": [
+        "RemoteHRAssistantAgent"
+      ],
+      "intents": [
+        "organization_unit",
+        "department_members"
+      ],
+      "aliases": [
+        "部门成员",
+        "组织单元",
+        "部门人员",
+        "organization unit"
+      ],
+      "operation_mode": "query",
+      "required_inputs": [
+        "department"
+      ],
+      "produces": [
+        "organization.unit.members"
+      ],
+      "side_effect": false,
+      "risk_level": "low",
+      "legacy_tool_name": "remote_person_info_tool",
+      "entered_registry": true,
+      "referenced_by_agents": [
+        "RemoteHRAssistantAgent"
+      ]
+    },
+    {
+      "server_name": "office-mcp",
+      "name": "get_travel_request",
+      "description": "Read simulated employee travel requests.",
+      "input_schema": {
+        "properties": {
+          "employee_id": {
+            "default": "",
+            "title": "Employee Id",
+            "type": "string"
+          },
+          "employee_name": {
+            "default": "",
+            "title": "Employee Name",
+            "type": "string"
+          },
+          "record_id": {
+            "default": "",
+            "title": "Record Id",
+            "type": "string"
+          }
+        },
+        "title": "get_travel_requestArguments",
+        "type": "object"
+      },
+      "registration_scope": "global",
+      "scenario": "travel",
+      "owner_agents": [
+        "RemoteOfficeAssistantAgent"
+      ],
+      "intents": [
+        "travel_request_query",
+        "travel_service"
+      ],
+      "aliases": [
+        "查询差旅申请",
+        "出差申请记录",
+        "差旅单详情",
+        "get travel request"
+      ],
+      "operation_mode": "query",
+      "required_inputs": [],
+      "produces": [
+        "travel.requests"
+      ],
+      "side_effect": false,
+      "risk_level": "low",
+      "legacy_tool_name": "query_travel_record",
+      "entered_registry": true,
+      "referenced_by_agents": [
+        "RemoteOfficeAssistantAgent"
+      ]
+    },
+    {
+      "server_name": "office-mcp",
+      "name": "list_calendar_events",
+      "description": "List simulated calendar events in an inclusive date range.",
+      "input_schema": {
+        "properties": {
+          "start_date": {
+            "title": "Start Date",
+            "type": "string"
+          },
+          "end_date": {
+            "title": "End Date",
+            "type": "string"
+          }
+        },
+        "required": [
+          "start_date",
+          "end_date"
+        ],
+        "title": "list_calendar_eventsArguments",
+        "type": "object"
+      },
+      "registration_scope": "global",
+      "scenario": "calendar",
+      "owner_agents": [
+        "RemoteHRCalendarAgent",
+        "RemoteScheduleAgent"
+      ],
+      "intents": [
+        "calendar_events",
+        "schedule_query"
+      ],
+      "aliases": [
+        "日程列表",
+        "查询日程",
+        "日历事件",
+        "list calendar events"
+      ],
+      "operation_mode": "query",
+      "required_inputs": [
+        "start_date",
+        "end_date"
+      ],
+      "produces": [
+        "calendar.events"
+      ],
+      "side_effect": false,
+      "risk_level": "low",
+      "legacy_tool_name": "get_calendar_events_tool",
+      "entered_registry": true,
+      "referenced_by_agents": [
+        "RemoteHRCalendarAgent"
+      ]
+    },
+    {
+      "server_name": "office-mcp",
+      "name": "list_course_sessions",
+      "description": "List available sessions for a simulated course.",
+      "input_schema": {
+        "properties": {
+          "course_id": {
+            "title": "Course Id",
+            "type": "string"
+          },
+          "start_date": {
+            "default": "",
+            "title": "Start Date",
+            "type": "string"
+          }
+        },
+        "required": [
+          "course_id"
+        ],
+        "title": "list_course_sessionsArguments",
+        "type": "object"
+      },
+      "registration_scope": "global",
+      "scenario": "course",
+      "owner_agents": [
+        "RemoteKnowledgeAgent"
+      ],
+      "intents": [
+        "course_sessions",
+        "knowledge_lookup"
+      ],
+      "aliases": [
+        "课程场次",
+        "培训班次",
+        "开课安排",
+        "list course sessions"
+      ],
+      "operation_mode": "query",
+      "required_inputs": [
+        "course_id"
+      ],
+      "produces": [
+        "course.sessions"
+      ],
+      "side_effect": false,
+      "risk_level": "low",
+      "legacy_tool_name": "knowledge_search_tool",
+      "entered_registry": true,
+      "referenced_by_agents": [
+        "RemoteKnowledgeAgent"
+      ]
+    },
+    {
+      "server_name": "office-mcp",
+      "name": "list_message_templates",
+      "description": "List reusable simulated message templates.",
+      "input_schema": {
+        "properties": {
+          "template_id": {
+            "default": "",
+            "title": "Template Id",
+            "type": "string"
+          }
+        },
+        "title": "list_message_templatesArguments",
+        "type": "object"
+      },
+      "registration_scope": "global",
+      "scenario": "messaging",
+      "owner_agents": [
+        "RemoteCommunicationAgent",
+        "RemoteEmailDispatchAgent"
+      ],
+      "intents": [
+        "message_templates",
+        "message_or_email_send"
+      ],
+      "aliases": [
+        "消息模板",
+        "邮件模板",
+        "通知模板",
+        "list message templates"
+      ],
+      "operation_mode": "query",
+      "required_inputs": [],
+      "produces": [
+        "message.templates"
+      ],
+      "side_effect": false,
+      "risk_level": "low",
+      "legacy_tool_name": "remote_email_tool",
+      "entered_registry": true,
+      "referenced_by_agents": [
+        "RemoteCommunicationAgent",
+        "RemoteEmailDispatchAgent"
+      ]
+    },
+    {
+      "server_name": "office-mcp",
+      "name": "resolve_contacts",
+      "description": "Resolve message recipients from the simulated contact directory.",
+      "input_schema": {
+        "properties": {
+          "name": {
+            "default": "",
+            "title": "Name",
+            "type": "string"
+          },
+          "department": {
+            "default": "",
+            "title": "Department",
+            "type": "string"
+          },
+          "position": {
+            "default": "",
+            "title": "Position",
+            "type": "string"
+          }
+        },
+        "title": "resolve_contactsArguments",
+        "type": "object"
+      },
+      "registration_scope": "global",
+      "scenario": "messaging",
+      "owner_agents": [
+        "RemoteCommunicationAgent",
+        "RemoteEmailDispatchAgent"
+      ],
+      "intents": [
+        "contact_resolution",
+        "message_or_email_send"
+      ],
+      "aliases": [
+        "解析联系人",
+        "查询收件人",
+        "查找邮箱",
+        "resolve contacts"
+      ],
+      "operation_mode": "query",
+      "required_inputs": [],
+      "produces": [
+        "contacts.resolved"
+      ],
+      "side_effect": false,
+      "risk_level": "low",
+      "legacy_tool_name": "remote_contact_query_tool",
+      "entered_registry": true,
+      "referenced_by_agents": [
+        "RemoteCommunicationAgent"
+      ]
+    },
+    {
+      "server_name": "office-mcp",
+      "name": "search_courses",
+      "description": "Search the simulated internal course catalog.",
+      "input_schema": {
+        "properties": {
+          "query": {
+            "default": "",
+            "title": "Query",
+            "type": "string"
+          },
+          "category": {
+            "default": "",
+            "title": "Category",
+            "type": "string"
+          },
+          "limit": {
+            "default": 10,
+            "title": "Limit",
+            "type": "integer"
+          }
+        },
+        "title": "search_coursesArguments",
+        "type": "object"
+      },
+      "registration_scope": "global",
+      "scenario": "course",
+      "owner_agents": [
+        "RemoteKnowledgeAgent"
+      ],
+      "intents": [
+        "course_search",
+        "knowledge_lookup"
+      ],
+      "aliases": [
+        "搜索课程",
+        "培训课程查询",
+        "查找培训",
+        "search courses"
+      ],
+      "operation_mode": "query",
+      "required_inputs": [],
+      "produces": [
+        "course.search.results"
+      ],
+      "side_effect": false,
+      "risk_level": "low",
+      "legacy_tool_name": "knowledge_search_tool",
+      "entered_registry": true,
+      "referenced_by_agents": [
+        "RemoteKnowledgeAgent"
+      ]
+    },
+    {
+      "server_name": "office-mcp",
+      "name": "search_employees",
+      "description": "Search simulated employee profiles by keyword, department, or job.",
+      "input_schema": {
+        "properties": {
+          "keyword": {
+            "default": "",
+            "title": "Keyword",
+            "type": "string"
+          },
+          "department": {
+            "default": "",
+            "title": "Department",
+            "type": "string"
+          },
+          "job_keyword": {
+            "default": "",
+            "title": "Job Keyword",
+            "type": "string"
+          },
+          "limit": {
+            "default": 10,
+            "title": "Limit",
+            "type": "integer"
+          }
+        },
+        "title": "search_employeesArguments",
+        "type": "object"
+      },
+      "registration_scope": "global",
+      "scenario": "personnel",
+      "owner_agents": [
+        "RemoteHRAssistantAgent"
+      ],
+      "intents": [
+        "employee_search",
+        "employee_information_query"
+      ],
+      "aliases": [
+        "搜索员工",
+        "查找员工",
+        "员工查询",
+        "search employee"
+      ],
+      "operation_mode": "query",
+      "required_inputs": [],
+      "produces": [
+        "employee.search.results"
+      ],
+      "side_effect": false,
+      "risk_level": "low",
+      "legacy_tool_name": "remote_person_info_tool",
+      "entered_registry": true,
+      "referenced_by_agents": [
+        "RemoteHRAssistantAgent"
+      ]
+    },
+    {
+      "server_name": "office-mcp",
+      "name": "search_travel_policy",
+      "description": "Return a compact simulated employee travel policy.",
+      "input_schema": {
+        "properties": {
+          "destination": {
+            "default": "",
+            "title": "Destination",
+            "type": "string"
+          }
+        },
+        "title": "search_travel_policyArguments",
+        "type": "object"
+      },
+      "registration_scope": "global",
+      "scenario": "travel",
+      "owner_agents": [
+        "RemoteOfficeAssistantAgent"
+      ],
+      "intents": [
+        "travel_policy",
+        "travel_service"
+      ],
+      "aliases": [
+        "差旅政策",
+        "出差标准",
+        "差旅规定",
+        "travel policy"
+      ],
+      "operation_mode": "query",
+      "required_inputs": [],
+      "produces": [
+        "travel.policy"
+      ],
+      "side_effect": false,
+      "risk_level": "low",
+      "legacy_tool_name": "query_travel_record",
+      "entered_registry": true,
+      "referenced_by_agents": [
+        "RemoteOfficeAssistantAgent"
+      ]
+    },
+    {
+      "server_name": "office-mcp",
+      "name": "send_email",
+      "description": "Send a simulated email and return a delivery receipt.",
+      "input_schema": {
+        "properties": {
+          "to": {
+            "title": "To",
+            "type": "string"
+          },
+          "subject": {
+            "title": "Subject",
+            "type": "string"
+          },
+          "body": {
+            "title": "Body",
+            "type": "string"
+          }
+        },
+        "required": [
+          "to",
+          "subject",
+          "body"
+        ],
+        "title": "send_emailArguments",
+        "type": "object"
+      },
+      "registration_scope": "global",
+      "scenario": "messaging",
+      "owner_agents": [
+        "RemoteCommunicationAgent",
+        "RemoteEmailDispatchAgent"
+      ],
+      "intents": [
+        "email_send",
+        "message_or_email_send"
+      ],
+      "aliases": [
+        "发送邮件",
+        "发邮件",
+        "邮件通知",
+        "send email"
+      ],
+      "operation_mode": "send",
+      "required_inputs": [
+        "to",
+        "subject",
+        "body"
+      ],
+      "produces": [
+        "email.delivery_receipt"
+      ],
+      "side_effect": true,
+      "risk_level": "medium",
+      "legacy_tool_name": "remote_email_tool",
+      "entered_registry": true,
+      "referenced_by_agents": [
+        "RemoteCommunicationAgent",
+        "RemoteEmailDispatchAgent"
+      ]
+    },
+    {
+      "server_name": "office-mcp",
+      "name": "send_message",
+      "description": "Send a simulated internal message or email-like notification.",
+      "input_schema": {
+        "properties": {
+          "recipient": {
+            "title": "Recipient",
+            "type": "string"
+          },
+          "content": {
+            "title": "Content",
+            "type": "string"
+          },
+          "channel": {
+            "default": "internal",
+            "title": "Channel",
+            "type": "string"
+          },
+          "subject": {
+            "default": "数字员工消息",
+            "title": "Subject",
+            "type": "string"
+          }
+        },
+        "required": [
+          "recipient",
+          "content"
+        ],
+        "title": "send_messageArguments",
+        "type": "object"
+      },
+      "registration_scope": "global",
+      "scenario": "messaging",
+      "owner_agents": [
+        "RemoteCommunicationAgent"
+      ],
+      "intents": [
+        "internal_message_send",
+        "message_or_email_send"
+      ],
+      "aliases": [
+        "发送内部消息",
+        "发送消息",
+        "站内通知",
+        "send message"
+      ],
+      "operation_mode": "send",
+      "required_inputs": [
+        "recipient",
+        "content"
+      ],
+      "produces": [
+        "message.delivery_receipt"
+      ],
+      "side_effect": true,
+      "risk_level": "medium",
+      "legacy_tool_name": "remote_email_tool",
+      "entered_registry": true,
+      "referenced_by_agents": [
+        "RemoteCommunicationAgent",
+        "RemoteEmailDispatchAgent"
+      ]
+    },
+    {
+      "server_name": "office-mcp",
+      "name": "update_calendar_event",
+      "description": "Update fields on a simulated calendar event.",
+      "input_schema": {
+        "properties": {
+          "event_id": {
+            "title": "Event Id",
+            "type": "string"
+          },
+          "summary": {
+            "default": "",
+            "title": "Summary",
+            "type": "string"
+          },
+          "start_date": {
+            "default": "",
+            "title": "Start Date",
+            "type": "string"
+          },
+          "start_time": {
+            "default": "",
+            "title": "Start Time",
+            "type": "string"
+          },
+          "notes": {
+            "default": "",
+            "title": "Notes",
+            "type": "string"
+          }
+        },
+        "required": [
+          "event_id"
+        ],
+        "title": "update_calendar_eventArguments",
+        "type": "object"
+      },
+      "registration_scope": "global",
+      "scenario": "calendar",
+      "owner_agents": [
+        "RemoteHRCalendarAgent",
+        "RemoteScheduleAgent"
+      ],
+      "intents": [
+        "calendar_event_update",
+        "schedule_management"
+      ],
+      "aliases": [
+        "更新日程",
+        "修改日历事件",
+        "调整日程",
+        "update calendar event"
+      ],
+      "operation_mode": "update",
+      "required_inputs": [
+        "event_id"
+      ],
+      "produces": [
+        "calendar.event"
+      ],
+      "side_effect": true,
+      "risk_level": "medium",
+      "legacy_tool_name": "remote_schedule_tool",
+      "entered_registry": true,
+      "referenced_by_agents": [
+        "RemoteScheduleAgent"
+      ]
+    },
+    {
+      "server_name": "office-mcp",
+      "name": "update_meeting",
+      "description": "Update a simulated meeting.",
+      "input_schema": {
+        "properties": {
+          "meeting_id": {
+            "title": "Meeting Id",
+            "type": "string"
+          },
+          "title": {
+            "default": "",
+            "title": "Title",
+            "type": "string"
+          },
+          "meeting_date": {
+            "default": "",
+            "title": "Meeting Date",
+            "type": "string"
+          },
+          "meeting_time": {
+            "default": "",
+            "title": "Meeting Time",
+            "type": "string"
+          },
+          "agenda": {
+            "default": "",
+            "title": "Agenda",
+            "type": "string"
+          }
+        },
+        "required": [
+          "meeting_id"
+        ],
+        "title": "update_meetingArguments",
+        "type": "object"
+      },
+      "registration_scope": "global",
+      "scenario": "meeting",
+      "owner_agents": [
+        "RemoteMeetingManagerAgent"
+      ],
+      "intents": [
+        "meeting_update",
+        "meeting_arrangement"
+      ],
+      "aliases": [
+        "更新会议",
+        "修改会议",
+        "调整会议",
+        "update meeting"
+      ],
+      "operation_mode": "update",
+      "required_inputs": [
+        "meeting_id"
+      ],
+      "produces": [
+        "meeting.record"
+      ],
+      "side_effect": true,
+      "risk_level": "medium",
+      "legacy_tool_name": "remote_meeting_scheduling_tool",
+      "entered_registry": true,
+      "referenced_by_agents": [
+        "RemoteMeetingManagerAgent"
+      ]
+    }
+  ]
+}

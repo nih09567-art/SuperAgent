@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from .tool_identifier import ToolIdentifier, ToolScope
 
@@ -18,6 +18,19 @@ class ToolMetadata:
     description: str = ""
     version: str = "1.0.0"
     tags: List[str] = field(default_factory=list)
+    server_name: str = ""
+    runtime_tool_name: str = ""
+    input_schema: Dict[str, Any] = field(default_factory=dict)
+    scenario: str = ""
+    owner_agents: List[str] = field(default_factory=list)
+    intents: List[str] = field(default_factory=list)
+    aliases: List[str] = field(default_factory=list)
+    operation_mode: str = ""
+    required_inputs: List[str] = field(default_factory=list)
+    produces: List[str] = field(default_factory=list)
+    side_effect: bool = False
+    risk_level: str = "low"
+    legacy_tool_name: Optional[str] = None
 
 
 class ToolRegistry:
@@ -79,14 +92,30 @@ class ToolRegistry:
         description: str = "",
         version: str = "1.0.0",
         tags: Optional[List[str]] = None,
+        input_schema: Optional[Dict[str, Any]] = None,
+        semantics: Optional[Dict[str, Any]] = None,
     ) -> ToolMetadata:
         async with self._lock:
+            semantic = dict(semantics or {})
             metadata = ToolMetadata(
                 identifier=identifier,
                 tool=tool,
                 description=description,
                 version=version,
                 tags=tags or [],
+                server_name=identifier.server,
+                runtime_tool_name=str(getattr(tool, "name", "") or identifier.name),
+                input_schema=dict(input_schema or {}),
+                scenario=str(semantic.get("scenario") or ""),
+                owner_agents=list(semantic.get("owner_agents") or []),
+                intents=list(semantic.get("intents") or []),
+                aliases=list(semantic.get("aliases") or []),
+                operation_mode=str(semantic.get("operation_mode") or ""),
+                required_inputs=list(semantic.get("required_inputs") or []),
+                produces=list(semantic.get("produces") or []),
+                side_effect=bool(semantic.get("side_effect", False)),
+                risk_level=str(semantic.get("risk_level") or "low"),
+                legacy_tool_name=semantic.get("legacy_tool_name"),
             )
             self._tools[identifier] = metadata
             self._global_tools[identifier] = metadata
@@ -101,6 +130,8 @@ class ToolRegistry:
         description: str = "",
         version: str = "1.0.0",
         tags: Optional[List[str]] = None,
+        input_schema: Optional[Dict[str, Any]] = None,
+        semantics: Optional[Dict[str, Any]] = None,
     ) -> ToolMetadata:
         if identifier.scope != ToolScope.AGENT:
             raise ValueError(
@@ -111,12 +142,26 @@ class ToolRegistry:
             if agent_name not in self._agent_tools:
                 self._agent_tools[agent_name] = {}
 
+            semantic = dict(semantics or {})
             metadata = ToolMetadata(
                 identifier=identifier,
                 tool=tool,
                 description=description,
                 version=version,
                 tags=tags or [],
+                server_name=identifier.server,
+                runtime_tool_name=str(getattr(tool, "name", "") or identifier.name),
+                input_schema=dict(input_schema or {}),
+                scenario=str(semantic.get("scenario") or ""),
+                owner_agents=list(semantic.get("owner_agents") or []),
+                intents=list(semantic.get("intents") or []),
+                aliases=list(semantic.get("aliases") or []),
+                operation_mode=str(semantic.get("operation_mode") or ""),
+                required_inputs=list(semantic.get("required_inputs") or []),
+                produces=list(semantic.get("produces") or []),
+                side_effect=bool(semantic.get("side_effect", False)),
+                risk_level=str(semantic.get("risk_level") or "low"),
+                legacy_tool_name=semantic.get("legacy_tool_name"),
             )
             self._tools[identifier] = metadata
             self._agent_tools[agent_name][identifier] = metadata
@@ -209,6 +254,32 @@ class ToolRegistry:
     async def list_all_tools(self) -> List[ToolMetadata]:
         async with self._lock:
             return list(self._tools.values())
+
+    async def mcp_metadata_view(self) -> Dict[Tuple[str, str], ToolMetadata]:
+        """Return one control-plane record per concrete MCP runtime tool.
+
+        Agent-scoped registrations may repeat a globally discovered tool.  The
+        discovery/selection view deliberately collapses those scope variants by
+        the MCP identity ``(server_name, runtime_tool_name)`` while preserving
+        tools with the same runtime name on different servers.
+        """
+
+        async with self._lock:
+            view: Dict[Tuple[str, str], ToolMetadata] = {}
+            for metadata in self._tools.values():
+                if not metadata.identifier.is_mcp:
+                    continue
+                key = (
+                    metadata.server_name or metadata.identifier.server,
+                    metadata.runtime_tool_name or metadata.identifier.name,
+                )
+                current = view.get(key)
+                if current is None or (
+                    current.identifier.scope != ToolScope.GLOBAL
+                    and metadata.identifier.scope == ToolScope.GLOBAL
+                ):
+                    view[key] = metadata
+            return view
 
     async def find_tools(
         self,

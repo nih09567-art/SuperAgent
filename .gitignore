@@ -26,6 +26,7 @@ store
 /projects/
 /output/*_assets/
 .pytest_cache/
+/.pytest_tmp/
 .pytest_tmp_*/
 .pytest-tmp-daily-*/
 /.pytest-*/
@@ -49,6 +50,9 @@ config/mcp.json
 blackd.log
 /log
 /output/*.log
+/output/document_*.docx
+/output/ppt-assets/
+/tmp/
 
 # mypy
 .mypy_cache/

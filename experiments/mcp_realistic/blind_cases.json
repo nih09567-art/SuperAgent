@@ -1,0 +1,60 @@
+{
+  "dataset_id": "mcp-realistic-blind-v1",
+  "frozen_at": "2026-08-11T22:25:00+08:00",
+  "construction_basis": [
+    "config/office_mcp_tools.json",
+    "config/mcp_tool_semantics.json"
+  ],
+  "case_policy": "Cases were written from registry metadata before inspecting selector implementation or existing evaluation gold cases.",
+  "cases": [
+    {"id":"N01","category":"natural_positive","query":"帮我找一下研发部里姓王的员工。","expected_server":"office-mcp","expected_tool":"search_employees","family":"personnel","agent_name":"RemoteHRAssistantAgent","arguments":{"query":"王","department":"研发部"}},
+    {"id":"N02","category":"natural_positive","query":"调出员工 E1024 的完整个人档案。","expected_server":"office-mcp","expected_tool":"get_employee_profile","family":"personnel","agent_name":"RemoteHRAssistantAgent","arguments":{"employee_id":"E1024"}},
+    {"id":"N03","category":"natural_positive","query":"列出财务部目前的全部成员。","expected_server":"office-mcp","expected_tool":"get_org_unit","family":"personnel","agent_name":"RemoteHRAssistantAgent","arguments":{"department":"财务部"}},
+    {"id":"N04","category":"natural_positive","query":"查一下李娜从直属领导往上的汇报关系。","expected_server":"office-mcp","expected_tool":"get_manager_chain","family":"personnel","agent_name":"RemoteHRAssistantAgent","arguments":{"employee_name":"李娜"}},
+    {"id":"N05","category":"natural_positive","query":"看看我 8 月 18 日到 8 月 20 日已经安排了哪些日程。","expected_server":"office-mcp","expected_tool":"list_calendar_events","family":"calendar","agent_name":"RemoteScheduleAgent","arguments":{"start_date":"2026-08-18","end_date":"2026-08-20"}},
+    {"id":"N06","category":"natural_positive","query":"找出 8 月 21 日我日历里的空闲时段。","expected_server":"office-mcp","expected_tool":"find_free_slots","family":"calendar","agent_name":"RemoteScheduleAgent","arguments":{"target_date":"2026-08-21"}},
+    {"id":"N07","category":"natural_positive","query":"搜索关于项目风险管理的培训课程。","expected_server":"office-mcp","expected_tool":"search_courses","family":"course","agent_name":"RemoteKnowledgeAgent","arguments":{"query":"项目风险管理"}},
+    {"id":"N08","category":"natural_positive","query":"查看课程 C-204 的详细介绍。","expected_server":"office-mcp","expected_tool":"get_course_detail","family":"course","agent_name":"RemoteKnowledgeAgent","arguments":{"course_id":"C-204"}},
+    {"id":"N09","category":"natural_positive","query":"课程 C-204 接下来有哪些开课班次？","expected_server":"office-mcp","expected_tool":"list_course_sessions","family":"course","agent_name":"RemoteKnowledgeAgent","arguments":{"course_id":"C-204"}},
+    {"id":"N10","category":"natural_positive","query":"查询员工 E1024 过去一年的培训学习记录。","expected_server":"office-mcp","expected_tool":"get_learning_record","family":"course","agent_name":"RemoteKnowledgeAgent","arguments":{"employee_id":"E1024"}},
+    {"id":"N11","category":"natural_positive","query":"查一下去上海出差的住宿标准和报销政策。","expected_server":"office-mcp","expected_tool":"search_travel_policy","family":"travel","agent_name":"RemoteOfficeAssistantAgent","arguments":{"query":"上海 住宿 报销"}},
+    {"id":"N12","category":"natural_positive","query":"估算两个人去成都出差 3 天的大致费用。","expected_server":"office-mcp","expected_tool":"estimate_trip_cost","family":"travel","agent_name":"RemoteOfficeAssistantAgent","arguments":{"destination":"成都","days":3,"traveler_count":2}},
+    {"id":"N13","category":"natural_positive","query":"查询差旅申请单 TR-7788 的当前详情。","expected_server":"office-mcp","expected_tool":"get_travel_request","family":"travel","agent_name":"RemoteOfficeAssistantAgent","arguments":{"record_id":"TR-7788"}},
+    {"id":"N14","category":"natural_positive","query":"找出 8 月 25 日适合项目组开会的可用时段。","expected_server":"office-mcp","expected_tool":"find_meeting_slots","family":"meeting","agent_name":"RemoteMeetingManagerAgent","arguments":{"target_date":"2026-08-25","participants":["E1024","E1031"]}},
+    {"id":"N15","category":"natural_positive","query":"查看会议 M-310 的会议纪要。","expected_server":"office-mcp","expected_tool":"get_meeting_minutes","family":"meeting","agent_name":"RemoteMeetingManagerAgent","arguments":{"meeting_id":"M-310"}},
+    {"id":"N16","category":"natural_positive","query":"解析王强和李娜的公司邮箱地址。","expected_server":"office-mcp","expected_tool":"resolve_contacts","family":"messaging","agent_name":"RemoteCommunicationAgent","arguments":{"names":["王强","李娜"]}},
+    {"id":"N17","category":"natural_positive","query":"列出可以用于培训提醒的通知模板。","expected_server":"office-mcp","expected_tool":"list_message_templates","family":"messaging","agent_name":"RemoteCommunicationAgent","arguments":{"template_type":"培训提醒"}},
+    {"id":"N18","category":"natural_positive","query":"查询消息 MSG-9001 是否已经投递成功。","expected_server":"office-mcp","expected_tool":"get_delivery_status","family":"messaging","agent_name":"RemoteCommunicationAgent","arguments":{"message_id":"MSG-9001"}},
+    {"id":"N19","category":"natural_positive","query":"读取 budget.xlsx 的预算表数据。","expected_server":"excel-mcp-remote","expected_tool":"read_data_from_excel","family":"spreadsheet","agent_name":null,"arguments":{"filepath":"budget.xlsx","sheet_name":"预算"}},
+    {"id":"N20","category":"natural_positive","query":"查看 headcount.xlsx 这个工作簿的元数据。","expected_server":"excel-mcp-remote","expected_tool":"get_workbook_metadata","family":"spreadsheet","agent_name":null,"arguments":{"filepath":"headcount.xlsx"}},
+    {"id":"N21","category":"natural_positive","query":"检查 forecast.xlsx 的 Sheet1!D8 里公式 =SUM(D2:D7) 语法是否正确。","expected_server":"excel-mcp-remote","expected_tool":"validate_formula_syntax","family":"spreadsheet","agent_name":null,"arguments":{"filepath":"forecast.xlsx","sheet_name":"Sheet1","cell":"D8","formula":"=SUM(D2:D7)"}},
+    {"id":"N22","category":"natural_positive","query":"校验 sales.xlsx 中销售表从 A2 开始的区域是否合法。","expected_server":"excel-mcp-remote","expected_tool":"validate_excel_range","family":"spreadsheet","agent_name":null,"arguments":{"filepath":"sales.xlsx","sheet_name":"销售","start_cell":"A2"}},
+    {"id":"N23","category":"natural_positive","query":"查出员工 E2099 的办公电话和邮箱。","expected_server":"office-mcp","expected_tool":"get_employee_contact","family":"personnel","agent_name":"RemoteHRAssistantAgent","arguments":{"employee_id":"E2099"}},
+    {"id":"N24","category":"natural_positive","query":"Show my calendar entries between 2026-09-01 and 2026-09-03.","expected_server":"office-mcp","expected_tool":"list_calendar_events","family":"calendar","agent_name":"RemoteScheduleAgent","arguments":{"start_date":"2026-09-01","end_date":"2026-09-03"}},
+
+    {"id":"C01","category":"confusable","query":"不要安排会议，只查我 8 月 26 日个人日历的空档。","expected_server":"office-mcp","expected_tool":"find_free_slots","family":"calendar","agent_name":"RemoteScheduleAgent","arguments":{"target_date":"2026-08-26"}},
+    {"id":"C02","category":"confusable","query":"不是查个人空闲时间，请找出王强和李娜都能参会的时间。","expected_server":"office-mcp","expected_tool":"find_meeting_slots","family":"meeting","agent_name":"RemoteMeetingManagerAgent","arguments":{"target_date":"2026-08-27","participants":["王强","李娜"]}},
+    {"id":"C03","category":"confusable","query":"先别发邮件，只解析收件人张伟对应的邮箱。","expected_server":"office-mcp","expected_tool":"resolve_contacts","family":"messaging","agent_name":"RemoteCommunicationAgent","arguments":{"names":["张伟"]}},
+    {"id":"C04","category":"confusable","query":"查员工 E3012 的联系方式，不要查询他的完整人事档案。","expected_server":"office-mcp","expected_tool":"get_employee_contact","family":"personnel","agent_name":"RemoteHRAssistantAgent","arguments":{"employee_id":"E3012"}},
+    {"id":"C05","category":"confusable","query":"只检查 payroll.xlsx 中工资表 F20 的公式 =F18-F19，不要写入。","expected_server":"excel-mcp-remote","expected_tool":"validate_formula_syntax","family":"spreadsheet","agent_name":null,"arguments":{"filepath":"payroll.xlsx","sheet_name":"工资","cell":"F20","formula":"=F18-F19"}},
+    {"id":"C06","category":"confusable","query":"读取 inventory.xlsx 的库存表内容，不要向里面写数据。","expected_server":"excel-mcp-remote","expected_tool":"read_data_from_excel","family":"spreadsheet","agent_name":null,"arguments":{"filepath":"inventory.xlsx","sheet_name":"库存"}},
+    {"id":"C07","category":"confusable","query":"查询现有差旅单 TR-8802，不是新建出差申请。","expected_server":"office-mcp","expected_tool":"get_travel_request","family":"travel","agent_name":"RemoteOfficeAssistantAgent","arguments":{"record_id":"TR-8802"}},
+    {"id":"C08","category":"confusable","query":"查看会议 M-991 的纪要，不要修改会议安排。","expected_server":"office-mcp","expected_tool":"get_meeting_minutes","family":"meeting","agent_name":"RemoteMeetingManagerAgent","arguments":{"meeting_id":"M-991"}},
+
+    {"id":"A01","category":"abstain","query":"帮我订一杯少糖热拿铁。","expected_server":null,"expected_tool":null,"family":"unknown","agent_name":null,"arguments":{}},
+    {"id":"A02","category":"abstain","query":"重启生产数据库并清空所有缓存。","expected_server":null,"expected_tool":null,"family":"unknown","agent_name":null,"arguments":{}},
+    {"id":"A03","category":"abstain","query":"把这段视频剪成十五秒并添加字幕。","expected_server":null,"expected_tool":null,"family":"unknown","agent_name":null,"arguments":{}},
+    {"id":"A04","category":"abstain","query":"预测明天公司股票的收盘价。","expected_server":null,"expected_tool":null,"family":"unknown","agent_name":null,"arguments":{}}
+  ],
+  "schema_probes": [
+    {"id":"S01","source_case":"N03","expected_tool":"get_org_unit","remove_inputs":["department"]},
+    {"id":"S02","source_case":"N05","expected_tool":"list_calendar_events","remove_inputs":["end_date"]},
+    {"id":"S03","source_case":"N08","expected_tool":"get_course_detail","remove_inputs":["course_id"]},
+    {"id":"S04","source_case":"N12","expected_tool":"estimate_trip_cost","remove_inputs":["days"]},
+    {"id":"S05","source_case":"N15","expected_tool":"get_meeting_minutes","remove_inputs":["meeting_id"]},
+    {"id":"S06","source_case":"N18","expected_tool":"get_delivery_status","remove_inputs":["message_id"]},
+    {"id":"S07","source_case":"N19","expected_tool":"read_data_from_excel","remove_inputs":["sheet_name"]},
+    {"id":"S08","source_case":"N21","expected_tool":"validate_formula_syntax","remove_inputs":["formula"]}
+  ],
+  "readonly_enforce_cases": ["N01","N02","N05","N07","N11","N14","N19","N21"]
+}

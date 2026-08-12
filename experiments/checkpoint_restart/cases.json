@@ -1,0 +1,72 @@
+{
+  "dataset_id": "checkpoint-process-restart-v2",
+  "description": "Six frozen cross-process checkpoint recovery cases. A worker exits via os._exit immediately after the target checkpoint is durable; a fresh worker loads that checkpoint and resumes.",
+  "cases": [
+    {
+      "id": "CP-01",
+      "name": "sequential_after_first_read",
+      "crash_when": {"completed_contains": ["lookup"]},
+      "expected_terminal": "SUCCEEDED",
+      "steps": [
+        {"step_id": "lookup", "agent": "lookup", "mode": "read", "output": "lookup.result"},
+        {"step_id": "analyze", "agent": "analyze", "mode": "read", "depends_on": ["lookup"], "output": "analysis.result", "bind": [{"parameter_name": "lookup", "source_step": "lookup", "source_output": "lookup.result"}]},
+        {"step_id": "finish", "agent": "finish", "mode": "read", "depends_on": ["analyze"], "output": "final.result", "bind": [{"parameter_name": "analysis", "source_step": "analyze", "source_output": "analysis.result"}]}
+      ]
+    },
+    {
+      "id": "CP-02",
+      "name": "parallel_batch_before_fanin",
+      "crash_when": {"completed_contains": ["employee", "policy"]},
+      "expected_terminal": "SUCCEEDED",
+      "steps": [
+        {"step_id": "employee", "agent": "employee", "mode": "read", "output": "employee.info"},
+        {"step_id": "policy", "agent": "policy", "mode": "read", "output": "policy.info"},
+        {"step_id": "report", "agent": "report", "mode": "read", "depends_on": ["employee", "policy"], "output": "report.markdown", "bind": [{"parameter_name": "employee", "source_step": "employee", "source_output": "employee.info"}, {"parameter_name": "policy", "source_step": "policy", "source_output": "policy.info"}]}
+      ]
+    },
+    {
+      "id": "CP-03",
+      "name": "intermediate_artifact_chain",
+      "crash_when": {"completed_contains": ["extract", "transform"]},
+      "expected_terminal": "SUCCEEDED",
+      "steps": [
+        {"step_id": "extract", "agent": "extract", "mode": "read", "output": "raw.data"},
+        {"step_id": "transform", "agent": "transform", "mode": "read", "depends_on": ["extract"], "output": "normalized.data", "bind": [{"parameter_name": "raw", "source_step": "extract", "source_output": "raw.data"}]},
+        {"step_id": "publish", "agent": "publish", "mode": "read", "depends_on": ["transform"], "output": "published.result", "bind": [{"parameter_name": "normalized", "source_step": "transform", "source_output": "normalized.data"}]}
+      ]
+    },
+    {
+      "id": "CP-04",
+      "name": "resume_into_side_effect",
+      "crash_when": {"completed_contains": ["prepare", "report"]},
+      "expected_terminal": "SUCCEEDED",
+      "steps": [
+        {"step_id": "prepare", "agent": "prepare", "mode": "read", "output": "prepared.data"},
+        {"step_id": "report", "agent": "report", "mode": "read", "depends_on": ["prepare"], "output": "report.markdown", "bind": [{"parameter_name": "prepared", "source_step": "prepare", "source_output": "prepared.data"}]},
+        {"step_id": "send", "agent": "send", "mode": "send", "behavior": "confirmed_side_effect", "depends_on": ["report"], "output": "email.dispatch.receipt", "schema_ref": "email.dispatch.receipt@v1", "bind": [{"parameter_name": "report", "source_step": "report", "source_output": "report.markdown"}]}
+      ]
+    },
+    {
+      "id": "CP-05",
+      "name": "after_confirmed_side_effect",
+      "crash_when": {"completed_contains": ["prepare", "send"]},
+      "expected_terminal": "SUCCEEDED",
+      "steps": [
+        {"step_id": "prepare", "agent": "prepare", "mode": "read", "output": "prepared.data"},
+        {"step_id": "send", "agent": "send", "mode": "send", "behavior": "confirmed_side_effect", "depends_on": ["prepare"], "output": "email.dispatch.receipt", "schema_ref": "email.dispatch.receipt@v1", "bind": [{"parameter_name": "prepared", "source_step": "prepare", "source_output": "prepared.data"}]},
+        {"step_id": "archive", "agent": "archive", "mode": "read", "depends_on": ["send"], "output": "archive.result", "bind": [{"parameter_name": "receipt", "source_step": "send", "source_output": "email.dispatch.receipt"}]}
+      ]
+    },
+    {
+      "id": "CP-06",
+      "name": "uncertain_side_effect_reconciliation",
+      "crash_when": {"step_result_present": "send"},
+      "expected_terminal": "NEEDS_RECONCILIATION",
+      "steps": [
+        {"step_id": "prepare", "agent": "prepare", "mode": "read", "output": "prepared.data"},
+        {"step_id": "send", "agent": "send", "mode": "send", "behavior": "uncertain_side_effect", "depends_on": ["prepare"], "output": "email.dispatch.receipt", "schema_ref": "email.dispatch.receipt@v1", "bind": [{"parameter_name": "prepared", "source_step": "prepare", "source_output": "prepared.data"}]},
+        {"step_id": "archive", "agent": "archive", "mode": "read", "depends_on": ["send"], "output": "archive.result"}
+      ]
+    }
+  ]
+}

@@ -50,6 +50,7 @@ SCHEDULER_TERMINAL_STATUSES = {
     "PARTIAL_FAILED",
     "CLARIFY_REQUIRED",
     "APPROVAL_REQUIRED",
+    "PAUSED",
     "REJECTED",
     "NEEDS_RECONCILIATION",
 }
@@ -115,6 +116,12 @@ class TaskLogger:
         self.execution_phase: str = "initial_planning"  # 新增: 执行阶段
         self.planning_steps: List[Dict[str, Any]] = []
         self.task_profile: Dict[str, Any] = {}
+        self.task_graph: Dict[str, Any] = {}
+        self.orchestration_batches: List[Dict[str, Any]] = []
+        self.orchestration_attempts: List[Dict[str, Any]] = []
+        self.tool_selection_decisions: Dict[str, Dict[str, Any]] = {}
+        self.artifact_lineage: List[Dict[str, Any]] = []
+        self.orchestration_step_results: Dict[str, Dict[str, Any]] = {}
         self.agent_contract_fingerprints: Dict[str, str] = {}
         self.agent_capability_bindings: Dict[str, List[str]] = {}
         self.skill_execution_evidence: Dict[str, Any] = {}
@@ -534,11 +541,131 @@ class TaskLogger:
         self,
         planning_steps: List[Dict[str, Any]],
         task_profile: Optional[Dict[str, Any]] = None,
+        task_graph: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Persist the approved plan and scenario used by this execution."""
 
         self.planning_steps = [dict(step) for step in planning_steps if isinstance(step, dict)]
         self.task_profile = dict(task_profile or {})
+        if isinstance(task_graph, dict):
+            self.task_graph = json.loads(json.dumps(task_graph, ensure_ascii=False, default=str))
+        self._flush()
+
+    def set_task_graph_snapshot(self, task_graph: Dict[str, Any]) -> None:
+        """Persist the trusted graph selected for this exact task run."""
+
+        if isinstance(task_graph, dict):
+            self.task_graph = json.loads(
+                json.dumps(task_graph, ensure_ascii=False, default=str)
+            )
+            self._flush()
+
+    def record_orchestration_attempt(
+        self,
+        *,
+        step_id: str,
+        attempt: int,
+        phase: str,
+        planned_agent: str,
+        executed_agent: str,
+        event: str,
+        monotonic_ns: int,
+        status: Optional[str] = None,
+    ) -> None:
+        """Persist a payload-free attempt boundary for timeline replay."""
+
+        self.orchestration_attempts.append(
+            {
+                "sequence": len(self.orchestration_attempts) + 1,
+                "step_id": str(step_id),
+                "attempt": int(attempt),
+                "phase": str(phase or "primary"),
+                "planned_agent": str(planned_agent or ""),
+                "executed_agent": str(executed_agent or ""),
+                "event": str(event),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "monotonic_ns": int(monotonic_ns),
+                **({"status": str(status)} if status else {}),
+            }
+        )
+        self._flush()
+
+    def record_orchestration_batch(
+        self,
+        *,
+        step_ids: List[str],
+        monotonic_ns: int,
+    ) -> None:
+        """Persist the instant a runnable batch enters concurrent scheduling."""
+
+        sequence = len(self.orchestration_batches) + 1
+        self.orchestration_batches.append(
+            {
+                "sequence": sequence,
+                "batch_id": f"batch_{sequence}",
+                "step_ids": [
+                    str(step_id) for step_id in step_ids if str(step_id)
+                ],
+                "scheduled_at": datetime.now(timezone.utc).isoformat(),
+                "scheduled_monotonic_ns": int(monotonic_ns),
+            }
+        )
+        self._flush()
+
+    def record_tool_selection_decision(
+        self, step_id: str, decision: Dict[str, Any]
+    ) -> None:
+        """Persist the selector's audit-only, argument-free decision."""
+
+        if not isinstance(decision, dict):
+            return
+        allowed = {
+            "requested_mode",
+            "mode",
+            "enforce_blocked",
+            "agent_name",
+            "server_name",
+            "selected_tool",
+            "selected_tool_key",
+            "recommended_mcp_tool",
+            "compatible_legacy_tool",
+            "actual_legacy_tool",
+            "actual_tool_names",
+            "recommendation_matches_actual",
+            "candidate_count_before_filter",
+            "candidate_count_after_filter",
+            "candidate_count",
+            "candidates",
+            "excluded",
+            "error",
+        }
+        safe = {key: value for key, value in decision.items() if key in allowed}
+        self.tool_selection_decisions[str(step_id)] = json.loads(
+            json.dumps(safe, ensure_ascii=False, default=str)
+        )
+        self._flush()
+
+    def record_artifact_lineage(self, step_id: str, artifacts: List[Dict[str, Any]]) -> None:
+        """Persist metadata-only Artifact lineage for the orchestration UI."""
+
+        for artifact in artifacts or []:
+            if not isinstance(artifact, dict):
+                continue
+            entry = dict(artifact)
+            entry["producer_step_id"] = str(step_id)
+            self.artifact_lineage.append(entry)
+        self._flush()
+
+    def record_orchestration_step_result(
+        self, step_id: str, result: Dict[str, Any]
+    ) -> None:
+        """Persist a bounded status/metrics summary for graph replay."""
+
+        if not isinstance(result, dict):
+            return
+        self.orchestration_step_results[str(step_id)] = json.loads(
+            json.dumps(result, ensure_ascii=False, default=str)
+        )
         self._flush()
 
     def set_agent_contract_fingerprints(self, fingerprints: Dict[str, str]) -> None:
@@ -609,6 +736,12 @@ class TaskLogger:
             "execution_phase": self.execution_phase,  # 新增
             "planning_steps": self.planning_steps,
             "task_profile": self.task_profile,
+            "task_graph": self.task_graph,
+            "orchestration_batches": self.orchestration_batches,
+            "orchestration_attempts": self.orchestration_attempts,
+            "tool_selection_decisions": self.tool_selection_decisions,
+            "artifact_lineage": self.artifact_lineage,
+            "orchestration_step_results": self.orchestration_step_results,
             "agent_contract_fingerprints": self.agent_contract_fingerprints,
             "agent_capability_bindings": self.agent_capability_bindings,
             "skill_execution_evidence": self.skill_execution_evidence,
@@ -661,6 +794,14 @@ class TaskLogger:
             inst.execution_phase = data.get("execution_phase", "initial_planning")
             inst.planning_steps = data.get("planning_steps", [])
             inst.task_profile = data.get("task_profile", {})
+            inst.task_graph = data.get("task_graph", {})
+            inst.orchestration_batches = data.get("orchestration_batches", [])
+            inst.orchestration_attempts = data.get("orchestration_attempts", [])
+            inst.tool_selection_decisions = data.get("tool_selection_decisions", {})
+            inst.artifact_lineage = data.get("artifact_lineage", [])
+            inst.orchestration_step_results = data.get(
+                "orchestration_step_results", {}
+            )
             inst.agent_contract_fingerprints = data.get(
                 "agent_contract_fingerprints", {}
             )

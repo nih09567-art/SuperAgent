@@ -1,0 +1,816 @@
+{
+  "catalog_version": "1.0",
+  "tools": [
+    {
+      "name": "search_employees",
+      "scenario": "personnel",
+      "owner_agents": [
+        "RemoteHRAssistantAgent"
+      ],
+      "intents": [
+        "employee_search",
+        "employee_information_query"
+      ],
+      "aliases": [
+        "搜索员工",
+        "查找员工",
+        "员工查询",
+        "search employee"
+      ],
+      "operation_mode": "query",
+      "required_inputs": [],
+      "produces": [
+        "employee.search.results"
+      ],
+      "risk_level": "low",
+      "side_effect": false,
+      "legacy_tool_name": "remote_person_info_tool"
+    },
+    {
+      "name": "get_employee_profile",
+      "scenario": "personnel",
+      "owner_agents": [
+        "RemoteHRAssistantAgent"
+      ],
+      "intents": [
+        "employee_profile",
+        "employee_information_query"
+      ],
+      "aliases": [
+        "员工档案",
+        "员工详情",
+        "个人资料",
+        "employee profile"
+      ],
+      "operation_mode": "query",
+      "required_inputs": [],
+      "produces": [
+        "employee.profile"
+      ],
+      "risk_level": "low",
+      "side_effect": false,
+      "legacy_tool_name": "remote_person_info_tool"
+    },
+    {
+      "name": "get_org_unit",
+      "scenario": "personnel",
+      "owner_agents": [
+        "RemoteHRAssistantAgent"
+      ],
+      "intents": [
+        "organization_unit",
+        "department_members"
+      ],
+      "aliases": [
+        "部门成员",
+        "组织单元",
+        "部门人员",
+        "organization unit"
+      ],
+      "operation_mode": "query",
+      "required_inputs": [
+        "department"
+      ],
+      "produces": [
+        "organization.unit.members"
+      ],
+      "risk_level": "low",
+      "side_effect": false,
+      "legacy_tool_name": "remote_person_info_tool"
+    },
+    {
+      "name": "get_manager_chain",
+      "scenario": "personnel",
+      "owner_agents": [
+        "RemoteHRAssistantAgent"
+      ],
+      "intents": [
+        "manager_chain",
+        "reporting_line"
+      ],
+      "aliases": [
+        "汇报链",
+        "上级链",
+        "直属领导",
+        "manager chain"
+      ],
+      "operation_mode": "query",
+      "required_inputs": [],
+      "produces": [
+        "employee.manager_chain"
+      ],
+      "risk_level": "low",
+      "side_effect": false,
+      "legacy_tool_name": "remote_person_info_tool"
+    },
+    {
+      "name": "get_employee_contact",
+      "scenario": "personnel",
+      "owner_agents": [
+        "RemoteHRAssistantAgent",
+        "RemoteCommunicationAgent"
+      ],
+      "intents": [
+        "employee_contact",
+        "contact_lookup"
+      ],
+      "aliases": [
+        "员工联系方式",
+        "员工联系信息",
+        "employee contact"
+      ],
+      "operation_mode": "query",
+      "required_inputs": [],
+      "produces": [
+        "employee.contact"
+      ],
+      "risk_level": "low",
+      "side_effect": false,
+      "legacy_tool_name": "remote_contact_query_tool"
+    },
+    {
+      "name": "list_calendar_events",
+      "scenario": "calendar",
+      "owner_agents": [
+        "RemoteHRCalendarAgent",
+        "RemoteScheduleAgent"
+      ],
+      "intents": [
+        "calendar_events",
+        "schedule_query"
+      ],
+      "aliases": [
+        "日程列表",
+        "查询日程",
+        "日历事件",
+        "list calendar events"
+      ],
+      "operation_mode": "query",
+      "required_inputs": [
+        "start_date",
+        "end_date"
+      ],
+      "produces": [
+        "calendar.events"
+      ],
+      "risk_level": "low",
+      "side_effect": false,
+      "legacy_tool_name": "get_calendar_events_tool"
+    },
+    {
+      "name": "find_free_slots",
+      "scenario": "calendar",
+      "owner_agents": [
+        "RemoteHRCalendarAgent",
+        "RemoteScheduleAgent"
+      ],
+      "intents": [
+        "calendar_free_slots",
+        "availability_query"
+      ],
+      "aliases": [
+        "日历空闲时间",
+        "查找空档",
+        "可用时段",
+        "find free slots"
+      ],
+      "operation_mode": "query",
+      "required_inputs": [
+        "target_date"
+      ],
+      "produces": [
+        "calendar.free_slots"
+      ],
+      "risk_level": "low",
+      "side_effect": false,
+      "legacy_tool_name": "get_calendar_events_tool"
+    },
+    {
+      "name": "create_calendar_event",
+      "scenario": "calendar",
+      "owner_agents": [
+        "RemoteHRCalendarAgent",
+        "RemoteScheduleAgent"
+      ],
+      "intents": [
+        "calendar_event_create",
+        "schedule_management"
+      ],
+      "aliases": [
+        "创建日程",
+        "新增日历事件",
+        "添加日程",
+        "create calendar event"
+      ],
+      "operation_mode": "create",
+      "required_inputs": [
+        "summary",
+        "start_date"
+      ],
+      "produces": [
+        "calendar.event"
+      ],
+      "risk_level": "medium",
+      "side_effect": true,
+      "legacy_tool_name": "create_calendar_event_tool"
+    },
+    {
+      "name": "update_calendar_event",
+      "scenario": "calendar",
+      "owner_agents": [
+        "RemoteHRCalendarAgent",
+        "RemoteScheduleAgent"
+      ],
+      "intents": [
+        "calendar_event_update",
+        "schedule_management"
+      ],
+      "aliases": [
+        "更新日程",
+        "修改日历事件",
+        "调整日程",
+        "update calendar event"
+      ],
+      "operation_mode": "update",
+      "required_inputs": [
+        "event_id"
+      ],
+      "produces": [
+        "calendar.event"
+      ],
+      "risk_level": "medium",
+      "side_effect": true,
+      "legacy_tool_name": "remote_schedule_tool"
+    },
+    {
+      "name": "cancel_calendar_event",
+      "scenario": "calendar",
+      "owner_agents": [
+        "RemoteHRCalendarAgent",
+        "RemoteScheduleAgent"
+      ],
+      "intents": [
+        "calendar_event_cancel",
+        "schedule_management"
+      ],
+      "aliases": [
+        "取消日程",
+        "删除日历事件",
+        "撤销日程",
+        "cancel calendar event"
+      ],
+      "operation_mode": "cancel",
+      "required_inputs": [
+        "event_id"
+      ],
+      "produces": [
+        "calendar.event"
+      ],
+      "risk_level": "medium",
+      "side_effect": true,
+      "legacy_tool_name": "remote_schedule_tool"
+    },
+    {
+      "name": "search_courses",
+      "scenario": "course",
+      "owner_agents": [
+        "RemoteKnowledgeAgent"
+      ],
+      "intents": [
+        "course_search",
+        "knowledge_lookup"
+      ],
+      "aliases": [
+        "搜索课程",
+        "培训课程查询",
+        "查找培训",
+        "search courses"
+      ],
+      "operation_mode": "query",
+      "required_inputs": [],
+      "produces": [
+        "course.search.results"
+      ],
+      "risk_level": "low",
+      "side_effect": false,
+      "legacy_tool_name": "knowledge_search_tool"
+    },
+    {
+      "name": "get_course_detail",
+      "scenario": "course",
+      "owner_agents": [
+        "RemoteKnowledgeAgent"
+      ],
+      "intents": [
+        "course_detail",
+        "knowledge_lookup"
+      ],
+      "aliases": [
+        "课程详情",
+        "培训详情",
+        "course detail"
+      ],
+      "operation_mode": "query",
+      "required_inputs": [
+        "course_id"
+      ],
+      "produces": [
+        "course.detail"
+      ],
+      "risk_level": "low",
+      "side_effect": false,
+      "legacy_tool_name": "knowledge_search_tool"
+    },
+    {
+      "name": "list_course_sessions",
+      "scenario": "course",
+      "owner_agents": [
+        "RemoteKnowledgeAgent"
+      ],
+      "intents": [
+        "course_sessions",
+        "knowledge_lookup"
+      ],
+      "aliases": [
+        "课程场次",
+        "培训班次",
+        "开课安排",
+        "list course sessions"
+      ],
+      "operation_mode": "query",
+      "required_inputs": [
+        "course_id"
+      ],
+      "produces": [
+        "course.sessions"
+      ],
+      "risk_level": "low",
+      "side_effect": false,
+      "legacy_tool_name": "knowledge_search_tool"
+    },
+    {
+      "name": "enroll_course",
+      "scenario": "course",
+      "owner_agents": [
+        "RemoteKnowledgeAgent"
+      ],
+      "intents": [
+        "course_enrollment",
+        "training_enrollment"
+      ],
+      "aliases": [
+        "报名课程",
+        "参加培训",
+        "课程报名",
+        "enroll course"
+      ],
+      "operation_mode": "enroll",
+      "required_inputs": [
+        "employee_id",
+        "employee_name",
+        "course_id",
+        "session_id"
+      ],
+      "produces": [
+        "course.enrollment"
+      ],
+      "risk_level": "medium",
+      "side_effect": true,
+      "legacy_tool_name": "knowledge_search_tool"
+    },
+    {
+      "name": "get_learning_record",
+      "scenario": "course",
+      "owner_agents": [
+        "RemoteKnowledgeAgent"
+      ],
+      "intents": [
+        "learning_record",
+        "training_history"
+      ],
+      "aliases": [
+        "学习记录",
+        "培训记录",
+        "课程进度",
+        "learning record"
+      ],
+      "operation_mode": "query",
+      "required_inputs": [],
+      "produces": [
+        "employee.learning_record"
+      ],
+      "risk_level": "low",
+      "side_effect": false,
+      "legacy_tool_name": "knowledge_search_tool"
+    },
+    {
+      "name": "search_travel_policy",
+      "scenario": "travel",
+      "owner_agents": [
+        "RemoteOfficeAssistantAgent"
+      ],
+      "intents": [
+        "travel_policy",
+        "travel_service"
+      ],
+      "aliases": [
+        "差旅政策",
+        "出差标准",
+        "差旅规定",
+        "travel policy"
+      ],
+      "operation_mode": "query",
+      "required_inputs": [],
+      "produces": [
+        "travel.policy"
+      ],
+      "risk_level": "low",
+      "side_effect": false,
+      "legacy_tool_name": "query_travel_record"
+    },
+    {
+      "name": "estimate_trip_cost",
+      "scenario": "travel",
+      "owner_agents": [
+        "RemoteOfficeAssistantAgent"
+      ],
+      "intents": [
+        "travel_cost_estimate",
+        "travel_service"
+      ],
+      "aliases": [
+        "估算差旅费用",
+        "出差费用预算",
+        "行程成本",
+        "estimate trip cost"
+      ],
+      "operation_mode": "query",
+      "required_inputs": [
+        "destination",
+        "days"
+      ],
+      "produces": [
+        "travel.cost_estimate"
+      ],
+      "risk_level": "low",
+      "side_effect": false,
+      "legacy_tool_name": "query_travel_record"
+    },
+    {
+      "name": "create_travel_request",
+      "scenario": "travel",
+      "owner_agents": [
+        "RemoteOfficeAssistantAgent"
+      ],
+      "intents": [
+        "travel_request_create",
+        "travel_service"
+      ],
+      "aliases": [
+        "创建差旅申请",
+        "提交出差申请",
+        "新增差旅",
+        "create travel request"
+      ],
+      "operation_mode": "create",
+      "required_inputs": [
+        "employee_id",
+        "employee_name",
+        "destination",
+        "start_date",
+        "end_date"
+      ],
+      "produces": [
+        "travel.request"
+      ],
+      "risk_level": "medium",
+      "side_effect": true,
+      "legacy_tool_name": "save_travel_record"
+    },
+    {
+      "name": "get_travel_request",
+      "scenario": "travel",
+      "owner_agents": [
+        "RemoteOfficeAssistantAgent"
+      ],
+      "intents": [
+        "travel_request_query",
+        "travel_service"
+      ],
+      "aliases": [
+        "查询差旅申请",
+        "出差申请记录",
+        "差旅单详情",
+        "get travel request"
+      ],
+      "operation_mode": "query",
+      "required_inputs": [],
+      "produces": [
+        "travel.requests"
+      ],
+      "risk_level": "low",
+      "side_effect": false,
+      "legacy_tool_name": "query_travel_record"
+    },
+    {
+      "name": "cancel_travel_request",
+      "scenario": "travel",
+      "owner_agents": [
+        "RemoteOfficeAssistantAgent"
+      ],
+      "intents": [
+        "travel_request_cancel",
+        "travel_service"
+      ],
+      "aliases": [
+        "取消差旅申请",
+        "撤销出差申请",
+        "cancel travel request"
+      ],
+      "operation_mode": "cancel",
+      "required_inputs": [
+        "record_id"
+      ],
+      "produces": [
+        "travel.request"
+      ],
+      "risk_level": "medium",
+      "side_effect": true,
+      "legacy_tool_name": "query_travel_record"
+    },
+    {
+      "name": "find_meeting_slots",
+      "scenario": "meeting",
+      "owner_agents": [
+        "RemoteMeetingManagerAgent"
+      ],
+      "intents": [
+        "meeting_slots",
+        "meeting_arrangement"
+      ],
+      "aliases": [
+        "会议空闲时间",
+        "查找会议时段",
+        "会议可用时间",
+        "find meeting slots"
+      ],
+      "operation_mode": "query",
+      "required_inputs": [
+        "target_date"
+      ],
+      "produces": [
+        "meeting.slots"
+      ],
+      "risk_level": "low",
+      "side_effect": false,
+      "legacy_tool_name": "remote_meeting_scheduling_tool"
+    },
+    {
+      "name": "create_meeting",
+      "scenario": "meeting",
+      "owner_agents": [
+        "RemoteMeetingManagerAgent"
+      ],
+      "intents": [
+        "meeting_create",
+        "meeting_arrangement"
+      ],
+      "aliases": [
+        "创建会议",
+        "安排会议",
+        "预定会议",
+        "create meeting"
+      ],
+      "operation_mode": "create",
+      "required_inputs": [
+        "title",
+        "meeting_date",
+        "meeting_time",
+        "participants"
+      ],
+      "produces": [
+        "meeting.record"
+      ],
+      "risk_level": "medium",
+      "side_effect": true,
+      "legacy_tool_name": "remote_meeting_scheduling_tool"
+    },
+    {
+      "name": "update_meeting",
+      "scenario": "meeting",
+      "owner_agents": [
+        "RemoteMeetingManagerAgent"
+      ],
+      "intents": [
+        "meeting_update",
+        "meeting_arrangement"
+      ],
+      "aliases": [
+        "更新会议",
+        "修改会议",
+        "调整会议",
+        "update meeting"
+      ],
+      "operation_mode": "update",
+      "required_inputs": [
+        "meeting_id"
+      ],
+      "produces": [
+        "meeting.record"
+      ],
+      "risk_level": "medium",
+      "side_effect": true,
+      "legacy_tool_name": "remote_meeting_scheduling_tool"
+    },
+    {
+      "name": "cancel_meeting",
+      "scenario": "meeting",
+      "owner_agents": [
+        "RemoteMeetingManagerAgent"
+      ],
+      "intents": [
+        "meeting_cancel",
+        "meeting_arrangement"
+      ],
+      "aliases": [
+        "取消会议",
+        "撤销会议",
+        "cancel meeting"
+      ],
+      "operation_mode": "cancel",
+      "required_inputs": [
+        "meeting_id"
+      ],
+      "produces": [
+        "meeting.record"
+      ],
+      "risk_level": "medium",
+      "side_effect": true,
+      "legacy_tool_name": "remote_meeting_scheduling_tool"
+    },
+    {
+      "name": "get_meeting_minutes",
+      "scenario": "meeting",
+      "owner_agents": [
+        "RemoteMeetingManagerAgent"
+      ],
+      "intents": [
+        "meeting_minutes",
+        "meeting_followup"
+      ],
+      "aliases": [
+        "会议纪要",
+        "查看会议记录",
+        "meeting minutes"
+      ],
+      "operation_mode": "query",
+      "required_inputs": [
+        "meeting_id"
+      ],
+      "produces": [
+        "meeting.minutes"
+      ],
+      "risk_level": "low",
+      "side_effect": false,
+      "legacy_tool_name": "remote_meeting_scheduling_tool"
+    },
+    {
+      "name": "resolve_contacts",
+      "scenario": "messaging",
+      "owner_agents": [
+        "RemoteCommunicationAgent",
+        "RemoteEmailDispatchAgent"
+      ],
+      "intents": [
+        "contact_resolution",
+        "message_or_email_send"
+      ],
+      "aliases": [
+        "解析联系人",
+        "查询收件人",
+        "查找邮箱",
+        "resolve contacts"
+      ],
+      "operation_mode": "query",
+      "required_inputs": [],
+      "produces": [
+        "contacts.resolved"
+      ],
+      "risk_level": "low",
+      "side_effect": false,
+      "legacy_tool_name": "remote_contact_query_tool"
+    },
+    {
+      "name": "list_message_templates",
+      "scenario": "messaging",
+      "owner_agents": [
+        "RemoteCommunicationAgent",
+        "RemoteEmailDispatchAgent"
+      ],
+      "intents": [
+        "message_templates",
+        "message_or_email_send"
+      ],
+      "aliases": [
+        "消息模板",
+        "邮件模板",
+        "通知模板",
+        "list message templates"
+      ],
+      "operation_mode": "query",
+      "required_inputs": [],
+      "produces": [
+        "message.templates"
+      ],
+      "risk_level": "low",
+      "side_effect": false,
+      "legacy_tool_name": "remote_email_tool"
+    },
+    {
+      "name": "send_email",
+      "scenario": "messaging",
+      "owner_agents": [
+        "RemoteCommunicationAgent",
+        "RemoteEmailDispatchAgent"
+      ],
+      "intents": [
+        "email_send",
+        "message_or_email_send"
+      ],
+      "aliases": [
+        "发送邮件",
+        "发邮件",
+        "邮件通知",
+        "send email"
+      ],
+      "operation_mode": "send",
+      "required_inputs": [
+        "to",
+        "subject",
+        "body"
+      ],
+      "produces": [
+        "email.delivery_receipt"
+      ],
+      "risk_level": "medium",
+      "side_effect": true,
+      "legacy_tool_name": "remote_email_tool"
+    },
+    {
+      "name": "send_message",
+      "scenario": "messaging",
+      "owner_agents": [
+        "RemoteCommunicationAgent"
+      ],
+      "intents": [
+        "internal_message_send",
+        "message_or_email_send"
+      ],
+      "aliases": [
+        "发送内部消息",
+        "发送消息",
+        "站内通知",
+        "send message"
+      ],
+      "operation_mode": "send",
+      "required_inputs": [
+        "recipient",
+        "content"
+      ],
+      "produces": [
+        "message.delivery_receipt"
+      ],
+      "risk_level": "medium",
+      "side_effect": true,
+      "legacy_tool_name": "remote_email_tool"
+    },
+    {
+      "name": "get_delivery_status",
+      "scenario": "messaging",
+      "owner_agents": [
+        "RemoteCommunicationAgent",
+        "RemoteEmailDispatchAgent"
+      ],
+      "intents": [
+        "delivery_status",
+        "message_tracking"
+      ],
+      "aliases": [
+        "投递状态",
+        "消息发送状态",
+        "邮件状态",
+        "delivery status"
+      ],
+      "operation_mode": "query",
+      "required_inputs": [
+        "message_id"
+      ],
+      "produces": [
+        "message.delivery_status"
+      ],
+      "risk_level": "low",
+      "side_effect": false,
+      "legacy_tool_name": "remote_email_tool"
+    }
+  ]
+}

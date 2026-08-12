@@ -18,6 +18,34 @@ DEMO_USERS: Dict[str, Dict[str, Any]] = {
         "available_agents": "*",
         "icon": "🛡",
     },
+    "orchestration_evaluator": {
+        "display_name": "Orchestration Evaluator",
+        "role": "UniversalAssistant",
+        "department": "Evaluation",
+        "job_role": "orchestration_evaluator",
+        "clearance_level": 4,
+        "trust_level": "HIGH",
+        "grants": [
+            "employee_profile_read",
+            "leave_read",
+            "knowledge_read",
+            "report_generate",
+            "external_send",
+        ],
+        "description": (
+            "Evaluation-only principal for the annual-leave orchestration "
+            "workflow. It can run the five trusted Agents but cannot bypass "
+            "mandatory Email review."
+        ),
+        "available_agents": [
+            "RemoteHRAssistantAgent",
+            "RemoteKnowledgeAgent",
+            "RemoteOfficeAssistantAgent",
+            "RemoteReportAgent",
+            "RemoteEmailDispatchAgent",
+        ],
+        "icon": "🧪",
+    },
     "hr_manager": {
         "display_name": "HR Manager (Zhang Wei)",
         "role": "HRAgent",

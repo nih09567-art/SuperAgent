@@ -17,6 +17,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, Iterable, List, Mapping, Optional, Protocol, runtime_checkable
 
+from src.contracts import TaskProfile
 from src.interface.task_graph import TaskStep
 
 
@@ -52,6 +53,7 @@ class RoutingProvider(Protocol):
         agents: Iterable[Any],
         authorized_agent_ids: set[str],
         metadata: Optional[dict] = None,
+        task_profile: Optional[dict] = None,
     ) -> RoutingResult: ...
 
 
@@ -81,6 +83,7 @@ class StubRoutingProvider:
         agents: Iterable[Any] = (),
         authorized_agent_ids: Optional[set[str]] = None,
         metadata: Optional[dict] = None,
+        task_profile: Optional[dict] = None,
     ) -> RoutingResult:
         return RoutingResult(
             selected_agent=step.preferred_resource_id,
@@ -88,6 +91,130 @@ class StubRoutingProvider:
             confidence=1.0,
             reason_codes=["stub:preferred_resource_id"],
         )
+
+
+def _unique_strings(values: Iterable[Any]) -> list[str]:
+    return list(
+        dict.fromkeys(str(value).strip() for value in values if str(value).strip())
+    )
+
+
+def _step_task_profile(
+    trusted_profile: Mapping[str, Any],
+    step: TaskStep,
+) -> TaskProfile:
+    """Narrow the validated TaskProfile to this scheduler step.
+
+    Natural-language recognition is deliberately not repeated here. The graph
+    has already been validated against ``subtask_ids`` before execution, and
+    this function retains confirmed entities such as the email recipient.
+    """
+
+    raw_subtasks = trusted_profile.get("subtasks") or []
+    if not isinstance(raw_subtasks, list) or not raw_subtasks:
+        raise ValueError("trusted TaskProfile has no subtasks")
+
+    indexed = {
+        str(item.get("id") or "").strip(): item
+        for item in raw_subtasks
+        if isinstance(item, Mapping) and str(item.get("id") or "").strip()
+    }
+    raw_ids = getattr(step, "subtask_ids", None) or []
+    subtask_ids = _unique_strings(
+        raw_ids if isinstance(raw_ids, (list, tuple, set)) else [raw_ids]
+    )
+    if not subtask_ids:
+        raise ValueError(f"step {step.step_id!r} has no trusted subtask binding")
+    unknown = [subtask_id for subtask_id in subtask_ids if subtask_id not in indexed]
+    if unknown:
+        raise ValueError(
+            f"step {step.step_id!r} references unknown trusted subtasks {unknown}"
+        )
+    subtasks = [dict(indexed[subtask_id]) for subtask_id in subtask_ids]
+
+    intents = _unique_strings(item.get("intent") for item in subtasks)
+    capabilities = _unique_strings(
+        [
+            capability
+            for item in subtasks
+            for capability in (item.get("expected_capabilities") or [])
+        ]
+        + list(step.required_capabilities or [])
+    )
+    scenario_tags = _unique_strings(
+        tag for item in subtasks for tag in (item.get("scenario_tags") or [])
+    )
+    data_scope = _unique_strings(
+        scope for item in subtasks for scope in (item.get("data_scope") or [])
+    )
+    required_business_data = _unique_strings(
+        value
+        for item in subtasks
+        for value in (item.get("required_business_data") or [])
+    )
+    expected_deliverables = _unique_strings(
+        value
+        for item in subtasks
+        for value in (item.get("expected_deliverables") or [])
+    )
+    actions = _unique_strings(item.get("action") for item in subtasks)
+    action = str(getattr(step, "operation_mode", "") or "").strip()
+    if not action or action == "unknown":
+        action = actions[0] if len(actions) == 1 else "read"
+    goals = _unique_strings(item.get("goal") for item in subtasks)
+    task_types = _unique_strings(item.get("task_type") for item in subtasks)
+
+    return TaskProfile(
+        task_id=str(trusted_profile.get("task_id") or step.step_id),
+        intent=intents[0] if intents else "general_assistance",
+        intents=intents,
+        task_type=(
+            task_types[0]
+            if len(task_types) == 1
+            else "COMPOSITE" if task_types else "GENERAL"
+        ),
+        business_goal="；".join(goals)
+        or str(getattr(step, "description", "") or getattr(step, "title", "")),
+        action=action,
+        operation_mode=action,
+        entities=dict(trusted_profile.get("entities") or {}),
+        required_business_data=required_business_data,
+        expected_deliverables=expected_deliverables,
+        side_effects=(
+            list(trusted_profile.get("side_effects") or [])
+            if action in {"send", "write", "delete", "execute"}
+            else []
+        ),
+        data_scope=data_scope or ["general"],
+        scenario_tags=scenario_tags or ["general"],
+        expected_capabilities=capabilities or ["General"],
+        risk_level=str(getattr(step, "risk_level", "") or "LOW"),
+        irreversible=bool(
+            getattr(step, "external_side_effect", False)
+            or trusted_profile.get("irreversible") and action != "read"
+        ),
+        constraints=list(trusted_profile.get("constraints") or []),
+        missing_fields=list(trusted_profile.get("missing_fields") or []),
+        confidence=float(trusted_profile.get("confidence") or 0.5),
+        reason="trusted_step_profile",
+        sub_intents=intents,
+        subtasks=subtasks,
+        is_composite=len(subtasks) > 1,
+        primary_goal_intent=intents[0] if intents else "general_assistance",
+        ambiguities=list(trusted_profile.get("ambiguities") or []),
+        needs_clarification=bool(trusted_profile.get("needs_clarification")),
+        clarification_questions=list(
+            trusted_profile.get("clarification_questions") or []
+        ),
+        clarification_reasons=list(
+            trusted_profile.get("clarification_reasons") or []
+        ),
+        recognition_mode="trusted_profile",
+        raw_request=str(trusted_profile.get("raw_request") or ""),
+        resolved_request=str(trusted_profile.get("resolved_request") or ""),
+        context_references=list(trusted_profile.get("context_references") or []),
+        context_artifacts=list(trusted_profile.get("context_artifacts") or []),
+    )
 
 
 class MainAgentRoutingProvider:
@@ -233,6 +360,7 @@ class MainAgentRoutingProvider:
         agents: Iterable[Any],
         authorized_agent_ids: set[str],
         metadata: Optional[dict] = None,
+        task_profile: Optional[dict] = None,
     ) -> RoutingResult:
         # Lazy import keeps this module importable without the orchestrator stack.
         from src.orchestrator import make_routing_decision
@@ -243,20 +371,43 @@ class MainAgentRoutingProvider:
         if step.preferred_resource_id:
             meta.setdefault("preferred_resource_id", step.preferred_resource_id)
 
-        task_profile_override = self._confirmed_step_profile(
-            step,
-            meta.pop("approved_task_profile", None),
-        )
+        approved_profile = meta.pop("approved_task_profile", None)
+        # Profiles created before structured subtasks existed retain the
+        # legacy recognition path. Current validated graphs always carry
+        # subtasks and therefore use deterministic step-level routing.
+        if task_profile and task_profile.get("subtasks"):
+            from src.orchestrator.department_router import build_agent_cards, route_task
 
-        profile, cards, decision = await make_routing_decision(
-            user_query=user_query,
-            task_id=task_id,
-            workflow_id=workflow_id,
-            agents=agents,
-            authorized_agent_ids=authorized_agent_ids,
-            metadata=meta,
-            task_profile_override=task_profile_override,
-        )
+            try:
+                profile = _step_task_profile(task_profile, step)
+            except (TypeError, ValueError) as exc:
+                return RoutingResult(
+                    selected_agent=None,
+                    decision="ROUTING_ERROR",
+                    confidence=0.0,
+                    reason_codes=[f"TRUSTED_STEP_PROFILE_INVALID: {exc}"],
+                )
+            cards = build_agent_cards(agents)
+            decision = route_task(
+                profile,
+                cards,
+                authorized_agent_ids=authorized_agent_ids,
+                workflow_id=workflow_id,
+            )
+        else:
+            task_profile_override = self._confirmed_step_profile(
+                step,
+                approved_profile,
+            )
+            profile, cards, decision = await make_routing_decision(
+                user_query=user_query,
+                task_id=task_id,
+                workflow_id=workflow_id,
+                agents=agents,
+                authorized_agent_ids=authorized_agent_ids,
+                metadata=meta,
+                task_profile_override=task_profile_override,
+            )
         # Honor the main agent's verdict. Only DISPATCH may execute; on
         # REJECT/CLARIFY/NO_CAPABLE_AGENT we return no agent so the scheduler
         # cannot fall back to ``preferred_resource_id`` and bypass the decision.

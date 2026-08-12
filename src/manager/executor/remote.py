@@ -77,6 +77,7 @@ except Exception:  # pragma: no cover
         pass
 
 from .base import AgentExecutor, ExecuteResult, ExecutionContext, ExecutionStatus
+from src.manager.registry.tool_selection_service import ToolSelectionService
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.WARNING)
@@ -194,6 +195,7 @@ class RemoteExecutor(AgentExecutor):
         self._session: Optional[aiohttp.ClientSession] = None
         self._session_lock = asyncio.Lock()
         self._request_semaphore = asyncio.Semaphore(max_concurrency)
+        self._tool_selection_service = ToolSelectionService()
 
     async def _do_initialize(self):
         # Keep initialization lightweight; create session lazily on first request.
@@ -249,6 +251,33 @@ class RemoteExecutor(AgentExecutor):
 
         try:
             await self.initialize()
+            selected_tools = getattr(agent, "selected_tools", None) or []
+            raw_authorized_tools = (context.metadata or {}).get(
+                "authorized_remote_tools", []
+            )
+            authorized_tool_names = {
+                str(item.get("tool_name") or "").strip()
+                for item in (
+                    raw_authorized_tools
+                    if isinstance(raw_authorized_tools, list)
+                    else []
+                )
+                if isinstance(item, dict)
+                and str(item.get("tool_name") or "").strip()
+                and str(item.get("tool_name") or "").strip() != "*"
+                and isinstance(item.get("arguments"), dict)
+            }
+            await self._tool_selection_service.audit(
+                agent_name=agent.agent_name,
+                messages=messages,
+                context=context,
+                actual_tool_names=[
+                    str(getattr(tool, "name", "") or "")
+                    for tool in selected_tools
+                    if str(getattr(tool, "name", "") or "")
+                    in authorized_tool_names
+                ],
+            )
             request_data = self._build_request(agent, messages, context)
             headers = await self._build_headers(agent)
             # The scheduler owns retries for side-effecting steps. Retrying the
@@ -280,6 +309,10 @@ class RemoteExecutor(AgentExecutor):
             result = remote_response.to_execute_result(duration)
             result.metadata["duration"] = duration
             result.metadata["endpoint"] = endpoint
+            if "tool_selection_audit" in context.metadata:
+                result.metadata["tool_selection_audit"] = context.metadata[
+                    "tool_selection_audit"
+                ]
             return result
         except asyncio.TimeoutError as e:
             duration = time.time() - start_time

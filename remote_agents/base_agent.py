@@ -4,6 +4,7 @@
 from typing import Any, Dict, List, Optional
 from abc import ABC, abstractmethod
 from contextvars import ContextVar, Token
+import json
 import logging
 import os
 import unicodedata
@@ -20,6 +21,9 @@ logger = logging.getLogger(__name__)
 
 _authorized_remote_tools: ContextVar[tuple[tuple[str, Dict[str, Any]], ...]] = ContextVar(
     "authorized_remote_tools", default=()
+)
+_tool_execution_trace: ContextVar[tuple[Dict[str, Any], ...]] = ContextVar(
+    "tool_execution_trace", default=()
 )
 
 _SECURITY_ARGUMENT_ALIASES: Dict[str, tuple[str, ...]] = {
@@ -311,6 +315,52 @@ def reset_authorized_remote_tools(token: Token) -> None:
     _authorized_remote_tools.reset(token)
 
 
+def bind_tool_execution_trace() -> Token:
+    """Start an isolated tool-execution trace for the current async request."""
+
+    return _tool_execution_trace.set(())
+
+
+def get_tool_execution_trace() -> List[Dict[str, Any]]:
+    """Return a copy of the current request's redacted execution records."""
+
+    return [dict(item) for item in _tool_execution_trace.get()]
+
+
+def reset_tool_execution_trace(token: Token) -> None:
+    _tool_execution_trace.reset(token)
+
+
+def _record_tool_execution(
+    *,
+    logical_tool: str,
+    runtime_tool: str,
+    execution_transport: str,
+    server_name: str,
+    status: str,
+    arguments: Dict[str, Any],
+    error: Exception | None = None,
+) -> Dict[str, Any]:
+    """Append and log provenance without retaining argument values."""
+
+    record: Dict[str, Any] = {
+        "logical_tool": logical_tool,
+        "runtime_tool": runtime_tool,
+        "execution_transport": execution_transport,
+        "server_name": server_name,
+        "status": status,
+        "argument_keys": sorted(str(key) for key in arguments),
+    }
+    if error is not None:
+        record["error_type"] = type(error).__name__
+    _tool_execution_trace.set((*_tool_execution_trace.get(), record))
+    logger.info(
+        "remote_tool_execution=%s",
+        json.dumps(record, ensure_ascii=False, sort_keys=True),
+    )
+    return dict(record)
+
+
 class RemoteToolExecutionError(RuntimeError):
     """Tool failure carrying machine-readable side-effect phase metadata."""
 
@@ -361,9 +411,14 @@ class BaseRemoteAgent(ABC):
             metadata=AgentResultMetadata(
                 producer_agent=self.name,
                 schema_version=contract_version,
+                tool_executions=get_tool_execution_trace(),
             ),
         )
-        return envelope.model_dump(mode="json")
+        payload = envelope.model_dump(mode="json")
+        for record in payload["metadata"].get("tool_executions", []):
+            if record.get("error_type") is None:
+                record.pop("error_type", None)
+        return payload
 
     @staticmethod
     def execution_error(
@@ -427,7 +482,7 @@ class BaseRemoteAgent(ABC):
         self,
         tool_name: str,
         arguments: Dict[str, Any],
-        tool_service_url: str = "http://127.0.0.1:8011/tool",
+        tool_service_url: Optional[str] = None,
         timeout: Optional[int] = None,
     ) -> Any:
         """
@@ -444,6 +499,9 @@ class BaseRemoteAgent(ABC):
         """
         import httpx
 
+        tool_service_url = tool_service_url or os.getenv(
+            "REMOTE_TOOL_SERVICE_URL", "http://127.0.0.1:8011/tool"
+        )
         if timeout is None:
             timeout = int(os.getenv("REMOTE_TOOL_TIMEOUT", "120"))
         if timeout <= 0:
@@ -490,19 +548,50 @@ class BaseRemoteAgent(ABC):
             mcp_call = resolve_office_mcp_call(tool_name, outbound_arguments)
             if mcp_call is not None:
                 mcp_tool_name, mcp_arguments = mcp_call
-                result = await call_office_mcp_tool(
-                    mcp_tool_name, mcp_arguments, timeout=timeout
+                trace_arguments = {str(key): None for key in mcp_arguments}
+                server_name = str(
+                    os.getenv("OFFICE_MCP_SERVER_NAME") or "office-mcp"
                 )
-                logger.info(
-                    "Tool %s executed through MCP tool %s",
-                    tool_name,
-                    mcp_tool_name,
+                try:
+                    result = await call_office_mcp_tool(
+                        mcp_tool_name, mcp_arguments, timeout=timeout
+                    )
+                except Exception as exc:
+                    _record_tool_execution(
+                        logical_tool=tool_name,
+                        runtime_tool=mcp_tool_name,
+                        execution_transport="mcp",
+                        server_name=server_name,
+                        status="failed",
+                        arguments=trace_arguments,
+                        error=exc,
+                    )
+                    raise
+                _record_tool_execution(
+                    logical_tool=tool_name,
+                    runtime_tool=mcp_tool_name,
+                    execution_transport="mcp",
+                    server_name=server_name,
+                    status="success",
+                    arguments=trace_arguments,
                 )
                 return result
             if transport == "mcp":
-                raise RuntimeError(
+                error = RuntimeError(
                     f"Remote tool '{tool_name}' has no office MCP mapping"
                 )
+                _record_tool_execution(
+                    logical_tool=tool_name,
+                    runtime_tool=tool_name,
+                    execution_transport="mcp",
+                    server_name=str(
+                        os.getenv("OFFICE_MCP_SERVER_NAME") or "office-mcp"
+                    ),
+                    status="failed",
+                    arguments=outbound_arguments,
+                    error=error,
+                )
+                raise error
 
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, read=timeout)) as client:
@@ -520,13 +609,38 @@ class BaseRemoteAgent(ABC):
                     )
                 if str(result.get("status") or "").lower() in {"error", "failed"}:
                     raise RemoteToolExecutionError(tool_name, result)
-                logger.info(f"Tool {tool_name} executed successfully")
+                _record_tool_execution(
+                    logical_tool=tool_name,
+                    runtime_tool=tool_name,
+                    execution_transport="http",
+                    server_name="remote-tool-service",
+                    status="success",
+                    arguments=outbound_arguments,
+                )
                 return result
         except httpx.TimeoutException as exc:
+            _record_tool_execution(
+                logical_tool=tool_name,
+                runtime_tool=tool_name,
+                execution_transport="http",
+                server_name="remote-tool-service",
+                status="failed",
+                arguments=outbound_arguments,
+                error=exc,
+            )
             message = f"Tool {tool_name} timed out after {timeout}s"
             logger.error(message)
             raise TimeoutError(message) from exc
         except Exception as e:
+            _record_tool_execution(
+                logical_tool=tool_name,
+                runtime_tool=tool_name,
+                execution_transport="http",
+                server_name="remote-tool-service",
+                status="failed",
+                arguments=outbound_arguments,
+                error=e,
+            )
             detail = str(e) or type(e).__name__
             logger.error(f"Tool {tool_name} execution failed: {detail}")
             raise

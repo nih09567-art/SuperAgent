@@ -232,6 +232,14 @@ def test_web_prefers_structured_failure_and_keeps_legacy_error_fallback():
     assert "failure.details?.task_graph_rejection_reason" in source
 
 
+def test_web_displays_safe_clarification_question():
+    source = _source()
+
+    assert 'failure.code === "CLARIFICATION_REQUIRED"' in source
+    assert "failure.details.clarification" in source
+    assert "需要补充" in source
+
+
 def test_web_failure_display_covers_actionable_categories_and_escapes_fields():
     source = _source()
 
@@ -392,4 +400,3 @@ def test_routing_decision_is_saved_before_history_console_renders():
     render_index = event_branch.index("renderDecisionHistoryControls({")
 
     assert remember_index < save_index < render_index
-
