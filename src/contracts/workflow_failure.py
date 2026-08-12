@@ -91,6 +91,7 @@ SAFE_DETAIL_KEYS = frozenset(
         "actual_schema_ref",
         "attempts",
         "blocked_by",
+        "clarification",
         "completion_condition",
         "expected_schema_ref",
         "logical_name",

@@ -35,13 +35,22 @@ def _load_env() -> None:
         pass
 
 
-def _run_scenario(services, *, run_dir: Path, scenario: str) -> dict:
+def _run_scenario(
+    services,
+    *,
+    run_dir: Path,
+    scenario: str,
+    query: str | None = None,
+) -> dict:
     if scenario == "dynamic-three":
         return run_annual_leave_workflow(
             services,
             run_dir=run_dir,
             scenario="success",
+            **({"query": query} if query else {}),
         )
+    if query:
+        raise ValueError("--query is currently supported only for dynamic-three")
     if scenario == "dynamic-five-approved":
         return run_dynamic_five_agent_workflow(
             services,
@@ -74,6 +83,10 @@ def main() -> int:
         "--output-root",
         type=Path,
         default=Path("artifacts/demo-runs/annual-leave"),
+    )
+    parser.add_argument(
+        "--query",
+        help="Override the natural-language request for dynamic-three evaluations.",
     )
     args = parser.parse_args()
     _load_env()
@@ -116,6 +129,7 @@ def main() -> int:
                         services,
                         run_dir=run_dir,
                         scenario=args.scenario,
+                        query=args.query,
                     )
                     results.append(result)
                     passed += 1

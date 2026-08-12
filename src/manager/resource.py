@@ -1,4 +1,5 @@
 ﻿import asyncio
+import os
 import time
 from pathlib import Path
 from typing import Optional
@@ -22,6 +23,9 @@ def _default_resource_dir() -> Path:
 
 
 def _default_config_path() -> Path:
+    configured = os.getenv("REMOTE_REGISTRY_CONFIG_PATH")
+    if configured:
+        return Path(configured).expanduser().resolve()
     return get_project_root() / "config" / "remote_registry.json"
 
 

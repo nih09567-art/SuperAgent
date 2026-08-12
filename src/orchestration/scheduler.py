@@ -1164,6 +1164,7 @@ class TaskScheduler:
             agents=context.get("agents", ()),
             authorized_agent_ids=authorized,
             metadata=context.get("metadata"),
+            task_profile=context.get("task_profile"),
         )
 
     def _redispatch_contract_outcome(
@@ -2562,6 +2563,7 @@ class TaskScheduler:
             agents=context.get("agents", ()),
             authorized_agent_ids=context.get("authorized_agent_ids", set()),
             metadata=context.get("metadata"),
+            task_profile=context.get("task_profile"),
         )
         return result
 

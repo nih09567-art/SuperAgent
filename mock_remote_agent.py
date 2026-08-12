@@ -637,4 +637,8 @@ async def agent(req: RemoteRequest, authorization: Optional[str] = Header(defaul
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8010)
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=int(os.getenv("ANNUAL_LEAVE_REMOTE_AGENT_PORT", "8010")),
+    )

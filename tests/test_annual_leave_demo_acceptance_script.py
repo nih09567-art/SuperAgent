@@ -22,8 +22,13 @@ def test_run_scenario_dispatches_to_expected_harness(
 ) -> None:
     captured = {}
 
-    def run_three(services, *, run_dir, scenario):
-        captured.update(call="three", run_dir=run_dir, scenario=scenario)
+    def run_three(services, *, run_dir, scenario, **kwargs):
+        captured.update(
+            call="three",
+            run_dir=run_dir,
+            scenario=scenario,
+            query=kwargs.get("query"),
+        )
         return {"status": "SUCCEEDED"}
 
     def run_five(services, *, run_dir, approval_decision):
@@ -54,6 +59,29 @@ def test_run_scenario_dispatches_to_expected_harness(
         assert result["status"] == "SUCCEEDED"
     else:
         assert captured["approval_decision"] == expected_decision
+
+
+def test_dynamic_three_forwards_custom_query(monkeypatch, tmp_path: Path) -> None:
+    captured = {}
+
+    def run_three(services, *, run_dir, scenario, query):
+        captured.update(query=query, scenario=scenario)
+        return {"status": "SUCCEEDED"}
+
+    monkeypatch.setattr(acceptance, "run_annual_leave_workflow", run_three)
+
+    result = acceptance._run_scenario(
+        object(),
+        run_dir=tmp_path,
+        scenario="dynamic-three",
+        query="口语化年假评测请求",
+    )
+
+    assert result["status"] == "SUCCEEDED"
+    assert captured == {
+        "query": "口语化年假评测请求",
+        "scenario": "success",
+    }
 
 
 def test_run_scenario_rejects_unknown_mode(tmp_path: Path) -> None:

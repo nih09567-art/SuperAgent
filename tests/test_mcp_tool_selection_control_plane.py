@@ -22,6 +22,16 @@ CASES = json.loads(
         encoding="utf-8-sig"
     )
 )["cases"]
+REALISTIC_CASES = json.loads(
+    (ROOT / "experiments" / "mcp_realistic" / "blind_cases.json").read_text(
+        encoding="utf-8"
+    )
+)["cases"]
+REALISTIC_REGISTRY = json.loads(
+    (ROOT / "docs" / "mcp_tool_registry_baseline.json").read_text(
+        encoding="utf-8-sig"
+    )
+)["tools"]
 
 
 def _json_type(value):
@@ -136,6 +146,39 @@ def test_generic_selector_excludes_missing_inputs_and_abstains_unknown():
         mode="audit",
     )
     assert unknown["selected_tool"] is None
+
+
+def test_inferred_filters_do_not_false_abstain_negated_or_ambiguous_queries():
+    by_id = {case["id"]: case for case in REALISTIC_CASES}
+
+    for case_id in ("N05", "N17", "N24", "C01", "C03", "C07"):
+        case = by_id[case_id]
+        decision = select_tools(
+            task_text=case["query"],
+            target_agent=case.get("agent_name"),
+            known_inputs=case["arguments"],
+            candidates=REALISTIC_REGISTRY,
+            top_k=3,
+            mode="audit",
+        )
+        assert decision["selected_tool_key"] == (
+            f"{case['expected_server']}:{case['expected_tool']}"
+        ), case_id
+
+
+def test_selector_preserves_true_abstention_after_inference_relaxation():
+    for case in REALISTIC_CASES:
+        if case["category"] != "abstain":
+            continue
+        decision = select_tools(
+            task_text=case["query"],
+            target_agent=case.get("agent_name"),
+            known_inputs=case["arguments"],
+            candidates=REALISTIC_REGISTRY,
+            top_k=3,
+            mode="audit",
+        )
+        assert decision["selected_tool"] is None, case["id"]
 
 
 def test_registry_view_keys_by_server_and_runtime_name_without_scope_duplicates():

@@ -3029,6 +3029,9 @@ const formatFailureDetails = (failure) => {
   const parameter = failure.parameterName
     ? `<div class="failure-meta-row"><span>输入参数</span><strong>${escapeHtml(failure.parameterName)}</strong></div>`
     : "";
+  const clarification = failure.code === "CLARIFICATION_REQUIRED" && failure.details.clarification
+    ? `<div class="failure-meta-row"><span>需要补充</span><strong>${escapeHtml(String(failure.details.clarification))}</strong></div>`
+    : "";
   const detailLabels = {
     logical_name: "Artifact",
     schema_ref: "目标 Schema",
@@ -3061,6 +3064,7 @@ const formatFailureDetails = (failure) => {
         ${blockedBy}
         ${source}
         ${parameter}
+        ${clarification}
         ${safeDetails}
         <div class="failure-meta-row"><span>重试策略</span><strong>${escapeHtml(retryText)}</strong></div>
       </div>

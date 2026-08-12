@@ -400,7 +400,7 @@ class BaseRemoteAgent(ABC):
         self,
         tool_name: str,
         arguments: Dict[str, Any],
-        tool_service_url: str = "http://127.0.0.1:8011/tool",
+        tool_service_url: Optional[str] = None,
         timeout: Optional[int] = None,
     ) -> Any:
         """
@@ -417,6 +417,9 @@ class BaseRemoteAgent(ABC):
         """
         import httpx
 
+        tool_service_url = tool_service_url or os.getenv(
+            "REMOTE_TOOL_SERVICE_URL", "http://127.0.0.1:8011/tool"
+        )
         if timeout is None:
             timeout = int(os.getenv("REMOTE_TOOL_TIMEOUT", "120"))
         if timeout <= 0:

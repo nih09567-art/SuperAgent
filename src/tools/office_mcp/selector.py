@@ -47,10 +47,24 @@ OPERATION_MARKERS = {
     "create": ("创建", "新增", "添加", "安排", "预定", "提交", "生成", "新建", "create"),
     "query": (
         "查询", "搜索", "查找", "查看", "获取", "读取", "列出", "详情", "状态",
-        "记录", "政策", "估算", "解析", "空闲", "纪要", "search", "find",
-        "get", "read", "list", "resolve", "estimate",
+        "记录", "政策", "估算", "解析", "空闲", "纪要", "看看", "哪些", "只查",
+        "search", "find", "get", "read", "list", "resolve", "estimate", "show",
     ),
 }
+
+NEGATION_MARKERS = (
+    "不要",
+    "不是",
+    "无需",
+    "不必",
+    "别",
+    "勿",
+    "禁止",
+    "do not",
+    "don't",
+    "not",
+    "without",
+)
 
 
 def selection_mode() -> str:
@@ -137,17 +151,51 @@ def _tokens(value: Any) -> set[str]:
     return tokens
 
 
-def _infer_label(query: str, markers: Mapping[str, Iterable[str]]) -> Dict[str, Any]:
+def _marker_is_negated(query: str, marker: str) -> bool:
+    start = 0
+    found = False
+    while True:
+        index = query.find(marker, start)
+        if index < 0:
+            return found
+        found = True
+        prefix = query[max(0, index - 12) : index].rstrip()
+        if not any(prefix.endswith(negation) for negation in NEGATION_MARKERS):
+            return False
+        start = index + max(1, len(marker))
+
+
+def _infer_label(
+    query: str,
+    markers: Mapping[str, Iterable[str]],
+    *,
+    ignore_negated: bool = False,
+) -> Dict[str, Any]:
     normalized_query = _normalize(query)
     matches = []
     for label, values in markers.items():
-        hits = [value for value in values if _normalize(value) in normalized_query]
+        hits = []
+        for value in values:
+            normalized_value = _normalize(value)
+            if not normalized_value or normalized_value not in normalized_query:
+                continue
+            if ignore_negated and _marker_is_negated(
+                normalized_query, normalized_value
+            ):
+                continue
+            hits.append(value)
         if hits:
             matches.append((label, sum(len(_normalize(hit)) for hit in hits), hits))
     matches.sort(key=lambda item: (-item[1], item[0]))
+    ambiguous = len(matches) > 1 and matches[0][1] == matches[1][1]
     return {
-        "value": matches[0][0] if matches else None,
+        "value": matches[0][0] if matches and not ambiguous else None,
         "evidence": matches[0][2] if matches else [],
+        "ambiguous": ambiguous,
+        "candidates": [
+            {"value": label, "score": score, "evidence": evidence}
+            for label, score, evidence in matches
+        ],
     }
 
 
@@ -156,13 +204,14 @@ def infer_scenario(query: str) -> Dict[str, Any]:
 
 
 def infer_operation(query: str) -> Dict[str, Any]:
-    return _infer_label(query, OPERATION_MARKERS)
+    return _infer_label(query, OPERATION_MARKERS, ignore_negated=True)
 
 
 def _score_tool(
     tool: Mapping[str, Any],
     query: str,
     known_inputs: Mapping[str, Any],
+    inferred_scenario: Optional[str],
     inferred_operation: Optional[str],
 ) -> Dict[str, Any]:
     normalized_query = _normalize(query)
@@ -172,7 +221,11 @@ def _score_tool(
     semantic_score = 0.0
 
     name = _normalize(tool.get("name"))
-    if name and (name in normalized_query or name.replace(" ", "") in normalized_query.replace(" ", "")):
+    if (
+        name
+        and (name in normalized_query or name.replace(" ", "") in normalized_query.replace(" ", ""))
+        and not _marker_is_negated(normalized_query, name)
+    ):
         score += 120.0
         semantic_score += 120.0
         reasons.append({"signal": "tool_name", "value": tool.get("name"), "points": 120.0})
@@ -181,7 +234,11 @@ def _score_tool(
         best = None
         for value in tool.get(kind, []):
             normalized = _normalize(value)
-            if normalized and normalized in normalized_query:
+            if (
+                normalized
+                and normalized in normalized_query
+                and not _marker_is_negated(normalized_query, normalized)
+            ):
                 points = weight + min(len(normalized), 20) / 10
                 if best is None or points > best[1]:
                     best = (value, points)
@@ -210,6 +267,10 @@ def _score_tool(
         score += points
         semantic_score += points
         reasons.append({"signal": "token_overlap", "value": overlap, "points": points})
+
+    if inferred_scenario and _normalize(tool.get("scenario")) == inferred_scenario:
+        score += 12.0
+        reasons.append({"signal": "scenario", "value": inferred_scenario, "points": 12.0})
 
     if inferred_operation and tool.get("operation_mode") == inferred_operation:
         score += 15.0
@@ -251,8 +312,12 @@ def select_tools(
     inputs = dict(known_inputs or {})
     scenario_inference = infer_scenario(task_text)
     operation_inference = infer_operation(task_text)
-    expected_scenario = _normalize(scenario or scenario_inference["value"])
-    expected_operation = _normalize(operation_mode or operation_inference["value"])
+    explicit_scenario = _normalize(scenario)
+    explicit_operation = _normalize(operation_mode)
+    inferred_scenario = _normalize(scenario_inference["value"])
+    inferred_operation = _normalize(operation_inference["value"])
+    expected_scenario = explicit_scenario or inferred_scenario
+    expected_operation = explicit_operation or inferred_operation
     expected_agent = str(target_agent or "").strip()
 
     matching_servers = sorted(
@@ -272,12 +337,18 @@ def select_tools(
         name = str(tool.get("name") or "")
         tool_server = str(tool.get("server_name") or "")
         reasons = []
-        scored = _score_tool(tool, task_text, inputs, expected_operation or None)
+        scored = _score_tool(
+            tool,
+            task_text,
+            inputs,
+            explicit_scenario or inferred_scenario or None,
+            explicit_operation or inferred_operation or None,
+        )
         if expected_server and tool_server != expected_server:
             reasons.append({"stage": "server_domain_filter", "reason": "server_mismatch", "expected": expected_server, "actual": tool_server})
-        if expected_scenario and _normalize(tool.get("scenario")) != expected_scenario:
+        if explicit_scenario and _normalize(tool.get("scenario")) != explicit_scenario:
             reasons.append({"stage": "scenario_operation_filter", "reason": "scenario_mismatch", "expected": expected_scenario, "actual": tool.get("scenario")})
-        if expected_operation and _normalize(tool.get("operation_mode")) != expected_operation:
+        if explicit_operation and _normalize(tool.get("operation_mode")) != explicit_operation:
             reasons.append({"stage": "scenario_operation_filter", "reason": "operation_mismatch", "expected": expected_operation, "actual": tool.get("operation_mode")})
         owners = list(tool.get("owner_agents") or [])
         if expected_agent and owners and expected_agent not in owners:
@@ -293,6 +364,7 @@ def select_tools(
                 {
                     "server_name": tool_server,
                     "name": name,
+                    "score": scored["score"],
                     "semantic_score": scored["semantic_score"],
                     "reasons": reasons,
                 }
@@ -320,9 +392,9 @@ def select_tools(
     )
     ranked = ranked_candidates[:top_k]
     schema_blocked_scores = [
-        item["semantic_score"]
+        item["score"]
         for item in excluded
-        if item["semantic_score"] > 0
+        if item["score"] > 0
         and item["reasons"]
         and all(reason["stage"] == "input_schema_filter" for reason in item["reasons"])
     ]
@@ -331,7 +403,7 @@ def select_tools(
         ranked[0]
         if ranked
         and ranked[0]["semantic_score"] > 0
-        and ranked[0]["semantic_score"] > best_blocked_score
+        and ranked[0]["score"] > best_blocked_score
         else None
     )
     abstention_reason = None
@@ -356,8 +428,12 @@ def select_tools(
             "server_name": expected_server or None,
             "scenario": scenario or scenario_inference["value"],
             "scenario_evidence": [] if scenario else scenario_inference["evidence"],
+            "scenario_ambiguous": False if scenario else scenario_inference["ambiguous"],
+            "scenario_candidates": [] if scenario else scenario_inference["candidates"],
             "operation_mode": operation_mode or operation_inference["value"],
             "operation_evidence": [] if operation_mode else operation_inference["evidence"],
+            "operation_ambiguous": False if operation_mode else operation_inference["ambiguous"],
+            "operation_candidates": [] if operation_mode else operation_inference["candidates"],
         },
         "filters": {
             "target_agent": target_agent,

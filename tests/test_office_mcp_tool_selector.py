@@ -137,6 +137,7 @@ def test_off_audit_enforce_modes_are_local_to_selector(monkeypatch):
         "known_inputs": {"keyword": "王强"},
         "agent_name": "RemoteHRAssistantAgent",
     }
+    monkeypatch.delenv("MCP_TOOL_SELECTION_MODE", raising=False)
     monkeypatch.delenv("OFFICE_MCP_TOOL_SELECTION_MODE", raising=False)
     off = govern_preselected_tool(**common)
     assert off == {

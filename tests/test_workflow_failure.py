@@ -187,6 +187,22 @@ def test_failure_from_step_result_does_not_publish_remote_details():
     assert failure.agent_id == "hr-agent"
 
 
+def test_clarification_question_is_preserved_as_bounded_safe_detail():
+    failure = failure_from_step_result(
+        "email_step",
+        "clarification required before execution",
+        {
+            "routing_decision": "CLARIFY",
+            "clarify": True,
+            "clarification": "请提供收件人邮箱。",
+            "reason_codes": ["MISSING_REQUIRED_FIELDS"],
+        },
+    )
+
+    assert failure.code == "CLARIFICATION_REQUIRED"
+    assert failure.details_safe["clarification"] == "请提供收件人邮箱。"
+
+
 def test_known_remote_validation_failure_has_concrete_chinese_reason():
     failure = failure_from_step_result(
         "travel_step",

@@ -449,6 +449,7 @@ def failure_from_step_result(
         key: values[key]
         for key in (
             "attempts",
+            "clarification",
             "logical_name",
             "reason_codes",
             "routing_decision",

@@ -2221,4 +2221,8 @@ async def skill(req: SkillRequest, authorization: Optional[str] = Header(default
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8011)
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=int(os.getenv("ANNUAL_LEAVE_REMOTE_TOOL_PORT", "8011")),
+    )
