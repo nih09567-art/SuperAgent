@@ -1,3 +1,5 @@
+import pytest
+
 from src.orchestrator.context_resolver import resolve_conversation_request
 
 
@@ -38,6 +40,29 @@ def test_clarification_answer_fills_field_without_becoming_task_boundary():
     assert resolved.entity_overrides["employee_name"] == "李娜"
     assert resolved.entity_overrides["location"] == "北京"
     assert all("李娜" not in item for item in [resolved.resolved_message])
+
+
+@pytest.mark.parametrize(
+    "answer",
+    ["员工李娜", "员工：李娜", "员工姓名是李娜", "姓名为李娜"],
+)
+def test_labeled_employee_clarification_answer_extracts_name(answer):
+    resolved = resolve_conversation_request(
+        current_message=answer,
+        turn_type="clarification_answer",
+        clarification_context={
+            "base_query": "查询工资",
+            "missing_fields": ["employee_or_criteria"],
+            "entities": {},
+        },
+    )
+
+    assert resolved.resolved_message == "查询工资"
+    assert resolved.entity_overrides == {
+        "employee_name": "李娜",
+        "people": ["李娜"],
+    }
+    assert resolved.unresolved_fields == []
 
 
 def test_recent_artifacts_are_only_candidates_for_semantic_resolution():

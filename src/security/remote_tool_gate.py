@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, timedelta
+import re
 from typing import Any, Iterable, Mapping
 
 from src.security.trusted_recipients import resolve_trusted_recipient_addresses
@@ -84,6 +85,34 @@ def _stable_arguments(task_profile: Mapping[str, Any], intent: str) -> dict[str,
     # no arguments, so two different operations cannot share one approval.
     arguments["intent"] = intent
     return arguments
+
+
+def _approved_recipient_label(task_profile: Mapping[str, Any]) -> Any:
+    """Recover an explicit send target from the confirmed request boundary.
+
+    Older confirmed TaskProfiles may predate recipient extraction fixes while
+    still retaining the exact user request.  This deterministic extraction is
+    used only to resolve a platform-controlled mailbox; unknown or ambiguous
+    labels continue to fail closed in ``resolve_trusted_recipient_addresses``.
+    """
+
+    entities = _as_mapping(task_profile.get("entities"))
+    explicit = entities.get("recipients") or entities.get("recipient")
+    if explicit not in (None, "", [], {}):
+        return explicit
+    for field in ("resolved_request", "raw_request", "business_goal"):
+        text = str(task_profile.get(field) or "").strip()
+        if not text:
+            continue
+        match = re.search(
+            r"(?:发送到|发送至|发到|发给|寄到|寄给|抄送到|抄送给|通知)\s*"
+            r"([\w.@\-\u4e00-\u9fff]{2,30}?)"
+            r"(?=$|[，。；;,.]|然后|并且)",
+            text,
+        )
+        if match:
+            return match.group(1).strip()
+    return None
 
 
 def _calendar_query_range(value: Any, *, today: date | None = None) -> dict[str, str]:
@@ -176,6 +205,10 @@ def required_remote_tool_authorizations(
                 entities = _as_mapping(profile.get("entities"))
                 arguments.update(_calendar_query_range(entities.get("time")))
             semantic_recipients = arguments.get("recipients") or arguments.get("recipient")
+            if tool_name == "remote_email_tool" and not semantic_recipients:
+                semantic_recipients = _approved_recipient_label(profile)
+                if semantic_recipients:
+                    arguments["recipient"] = semantic_recipients
             if (
                 agent_name in {
                     "RemoteCommunicationAgent",

@@ -149,6 +149,12 @@ def test_rule_negation_overrides_semantic_false_positive_send() -> None:
     assert profile.needs_clarification is False
 
 
+def test_recipient_email_entity_drops_business_mailbox_prefix() -> None:
+    entities = extract_entities("生成报告，发送给邮箱hr@example.test")
+
+    assert entities["recipient"] == "hr@example.test"
+
+
 def test_rule_and_semantic_agreement_uses_combined_source() -> None:
     provider = FakeSemanticProvider(
         _payload(
@@ -338,6 +344,66 @@ def test_public_research_report_requires_research_artifact() -> None:
 
     assert profile.required_business_data == ["research.markdown"]
     assert profile.expected_deliverables == ["report.markdown"]
+
+
+def test_inferred_public_research_is_removed_from_internal_risk_workflow() -> None:
+    query = "选择5家独角兽企业，分析他们的经营和风险状况，形成分析报告"
+    provider = FakeSemanticProvider(
+        _payload(
+            "information_research",
+            [
+                _candidate(
+                    "information_research",
+                    0.95,
+                    provenance="inferred",
+                    text_span="选择5家独角兽企业",
+                ),
+                _candidate("risk_analysis", 0.96, text_span="分析经营和风险状况"),
+                _candidate("report_generation", 0.94, text_span="形成分析报告"),
+            ],
+        )
+    )
+
+    result = _run(
+        HybridIntentRecognizer(mode="hybrid", semantic_provider=provider).recognize(
+            query
+        )
+    )
+
+    assert {item.name for item in result.executable_intents} == {
+        "risk_analysis",
+        "report_generation",
+    }
+    assert result.primary_intent == "risk_analysis"
+
+
+def test_explicit_public_research_is_preserved_for_risk_workflow() -> None:
+    query = "搜索5家独角兽企业的公开资料，分析经营风险并形成报告"
+    provider = FakeSemanticProvider(
+        _payload(
+            "information_research",
+            [
+                _candidate(
+                    "information_research",
+                    0.95,
+                    provenance="inferred",
+                    text_span="搜索公开资料",
+                ),
+                _candidate("risk_analysis", 0.96, text_span="分析经营风险"),
+                _candidate("report_generation", 0.94, text_span="形成报告"),
+            ],
+        )
+    )
+
+    result = _run(
+        HybridIntentRecognizer(mode="hybrid", semantic_provider=provider).recognize(
+            query
+        )
+    )
+
+    assert "information_research" in {
+        item.name for item in result.executable_intents
+    }
 
 
 def test_semantic_questions_still_block_generic_single_intent_task() -> None:

@@ -1,0 +1,654 @@
+{
+  "schema": "pptx_intake_index.v1",
+  "deck_count": 1,
+  "decks": [
+    {
+      "schema": "pptx_intake_profile.v1",
+      "stem": "汇报模板",
+      "source_pptx": "E:\\Program\\SuperAgent\\projects\\superagent-routing-governance-4slides_ppt169_20260811\\sources\\汇报模板.pptx",
+      "slide_count": 60,
+      "usage_contract": {
+        "standard_generation": "Use identity and slide-library fields as source facts and recommendation candidates only; do not preserve original page count, order, or coordinates unless the user selected the beautify profile or Fill Native PPTX route.",
+        "beautify": "Promote source text, page order, page count, colors, fonts, and font sizes into locked constraints after user confirmation.",
+        "template_fill": "Use slide slots, tables, charts, diagrams, and geometry as the native PPTX fill contract; diagrams are inventory-only and remain unchanged."
+      },
+      "artifacts": {
+        "identity": "汇报模板.identity.json",
+        "slide_library": "汇报模板.slide_library.json"
+      },
+      "canvas": {
+        "width_px": 1280,
+        "height_px": 720,
+        "aspect": 1.7778
+      },
+      "identity": {
+        "theme_palette": {
+          "background": "#FFFFFF",
+          "background_alt": "#E7E6E6",
+          "text": "#000000",
+          "text_alt": "#44546A",
+          "hyperlink": "#0563C1",
+          "accent1": "#4472C4",
+          "accent2": "#ED7D31",
+          "accent3": "#A5A5A5",
+          "accent4": "#FFC000",
+          "accent5": "#5B9BD5",
+          "accent6": "#70AD47",
+          "primary": "#4472C4"
+        },
+        "theme_fonts": {
+          "title": {
+            "latin": "等线 Light",
+            "scripts": {
+              "Jpan": "游ゴシック Light",
+              "Hang": "맑은 고딕",
+              "Hans": "等线 Light",
+              "Hant": "新細明體"
+            }
+          },
+          "body": {
+            "latin": "等线",
+            "scripts": {
+              "Jpan": "游ゴシック",
+              "Hang": "맑은 고딕",
+              "Hans": "等线",
+              "Hant": "新細明體"
+            }
+          }
+        },
+        "theme_sizes": {
+          "title": 44.0,
+          "body": 28.0,
+          "body_levels": [
+            28.0,
+            24.0,
+            20.0,
+            18.0,
+            18.0,
+            18.0,
+            18.0,
+            18.0,
+            18.0
+          ]
+        },
+        "observed_colors": [
+          {
+            "value": "#000000",
+            "count": 579
+          },
+          {
+            "value": "#2B2B2B",
+            "count": 153
+          },
+          {
+            "value": "#FFFFFF",
+            "count": 134
+          },
+          {
+            "value": "#015BAB",
+            "count": 115
+          },
+          {
+            "value": "#48BAF8",
+            "count": 95
+          },
+          {
+            "value": "#ADB9CA",
+            "count": 89
+          },
+          {
+            "value": "#FFDDB8",
+            "count": 54
+          },
+          {
+            "value": "#2F5EB2",
+            "count": 51
+          }
+        ],
+        "observed_fonts": {
+          "latin": [
+            {
+              "value": "微软雅黑",
+              "count": 872
+            },
+            {
+              "value": "微软雅黑 Light",
+              "count": 451
+            },
+            {
+              "value": "Calibri Light",
+              "count": 185
+            },
+            {
+              "value": "字魂105号-简雅黑",
+              "count": 173
+            },
+            {
+              "value": "Arial",
+              "count": 160
+            }
+          ],
+          "ea": [
+            {
+              "value": "微软雅黑",
+              "count": 938
+            },
+            {
+              "value": "微软雅黑 Light",
+              "count": 451
+            },
+            {
+              "value": "字魂105号-简雅黑",
+              "count": 153
+            },
+            {
+              "value": "宋体",
+              "count": 93
+            },
+            {
+              "value": "阿里巴巴普惠体",
+              "count": 51
+            }
+          ]
+        },
+        "observed_sizes_pt": [
+          {
+            "value": 10.0,
+            "count": 235
+          },
+          {
+            "value": 14.0,
+            "count": 185
+          },
+          {
+            "value": 30.0,
+            "count": 88
+          },
+          {
+            "value": 20.0,
+            "count": 83
+          },
+          {
+            "value": 16.0,
+            "count": 34
+          },
+          {
+            "value": 11.35,
+            "count": 20
+          },
+          {
+            "value": 13.25,
+            "count": 14
+          },
+          {
+            "value": 10.5,
+            "count": 13
+          }
+        ],
+        "layout_sizes_pt": []
+      },
+      "structure": {
+        "canvas_px": {
+          "width": 1280,
+          "height": 720
+        },
+        "page_types": [
+          {
+            "slide_index": 1,
+            "page_type": "cover_candidate",
+            "slot_count": 1,
+            "diagram_count": 0
+          },
+          {
+            "slide_index": 2,
+            "page_type": "chapter_candidate",
+            "slot_count": 3,
+            "diagram_count": 0
+          },
+          {
+            "slide_index": 3,
+            "page_type": "content_candidate",
+            "slot_count": 10,
+            "diagram_count": 0
+          },
+          {
+            "slide_index": 4,
+            "page_type": "content_candidate",
+            "slot_count": 29,
+            "diagram_count": 0
+          },
+          {
+            "slide_index": 5,
+            "page_type": "content_candidate",
+            "slot_count": 19,
+            "diagram_count": 0
+          },
+          {
+            "slide_index": 6,
+            "page_type": "chapter_candidate",
+            "slot_count": 3,
+            "diagram_count": 0
+          },
+          {
+            "slide_index": 7,
+            "page_type": "content_candidate",
+            "slot_count": 12,
+            "diagram_count": 0
+          },
+          {
+            "slide_index": 8,
+            "page_type": "content_candidate",
+            "slot_count": 20,
+            "diagram_count": 0
+          },
+          {
+            "slide_index": 9,
+            "page_type": "content_candidate",
+            "slot_count": 12,
+            "diagram_count": 0
+          },
+          {
+            "slide_index": 10,
+            "page_type": "content_candidate",
+            "slot_count": 8,
+            "diagram_count": 0
+          },
+          {
+            "slide_index": 11,
+            "page_type": "content_candidate",
+            "slot_count": 75,
+            "diagram_count": 0
+          },
+          {
+            "slide_index": 12,
+            "page_type": "chapter_candidate",
+            "slot_count": 3,
+            "diagram_count": 0
+          },
+          {
+            "slide_index": 13,
+            "page_type": "content_candidate",
+            "slot_count": 10,
+            "diagram_count": 0
+          },
+          {
+            "slide_index": 14,
+            "page_type": "content_candidate",
+            "slot_count": 21,
+            "diagram_count": 0
+          },
+          {
+            "slide_index": 15,
+            "page_type": "content_candidate",
+            "slot_count": 16,
+            "diagram_count": 0
+          },
+          {
+            "slide_index": 16,
+            "page_type": "content_candidate",
+            "slot_count": 19,
+            "diagram_count": 0
+          },
+          {
+            "slide_index": 17,
+            "page_type": "content_candidate",
+            "slot_count": 18,
+            "diagram_count": 0
+          },
+          {
+            "slide_index": 18,
+            "page_type": "chapter_candidate",
+            "slot_count": 3,
+            "diagram_count": 0
+          },
+          {
+            "slide_index": 19,
+            "page_type": "content_candidate",
+            "slot_count": 24,
+            "diagram_count": 0
+          },
+          {
+            "slide_index": 20,
+            "page_type": "content_candidate",
+            "slot_count": 34,
+            "diagram_count": 0
+          },
+          {
+            "slide_index": 21,
+            "page_type": "content_candidate",
+            "slot_count": 25,
+            "diagram_count": 0
+          },
+          {
+            "slide_index": 22,
+            "page_type": "content_candidate",
+            "slot_count": 24,
+            "diagram_count": 0
+          },
+          {
+            "slide_index": 23,
+            "page_type": "content_candidate",
+            "slot_count": 19,
+            "diagram_count": 0
+          },
+          {
+            "slide_index": 24,
+            "page_type": "content_candidate",
+            "slot_count": 24,
+            "diagram_count": 0
+          },
+          {
+            "slide_index": 25,
+            "page_type": "content_candidate",
+            "slot_count": 12,
+            "diagram_count": 0
+          },
+          {
+            "slide_index": 26,
+            "page_type": "content_candidate",
+            "slot_count": 18,
+            "diagram_count": 0
+          },
+          {
+            "slide_index": 27,
+            "page_type": "content_candidate",
+            "slot_count": 20,
+            "diagram_count": 0
+          },
+          {
+            "slide_index": 28,
+            "page_type": "content_candidate",
+            "slot_count": 16,
+            "diagram_count": 0
+          },
+          {
+            "slide_index": 29,
+            "page_type": "content_candidate",
+            "slot_count": 31,
+            "diagram_count": 0
+          },
+          {
+            "slide_index": 30,
+            "page_type": "content_candidate",
+            "slot_count": 26,
+            "diagram_count": 0
+          },
+          {
+            "slide_index": 31,
+            "page_type": "chapter_candidate",
+            "slot_count": 3,
+            "diagram_count": 0
+          },
+          {
+            "slide_index": 32,
+            "page_type": "content_candidate",
+            "slot_count": 24,
+            "diagram_count": 0
+          },
+          {
+            "slide_index": 33,
+            "page_type": "content_candidate",
+            "slot_count": 33,
+            "diagram_count": 0
+          },
+          {
+            "slide_index": 34,
+            "page_type": "content_candidate",
+            "slot_count": 24,
+            "diagram_count": 0
+          },
+          {
+            "slide_index": 35,
+            "page_type": "content_candidate",
+            "slot_count": 38,
+            "diagram_count": 0
+          },
+          {
+            "slide_index": 36,
+            "page_type": "content_candidate",
+            "slot_count": 19,
+            "diagram_count": 0
+          },
+          {
+            "slide_index": 37,
+            "page_type": "chapter_candidate",
+            "slot_count": 3,
+            "diagram_count": 0
+          },
+          {
+            "slide_index": 38,
+            "page_type": "content_candidate",
+            "slot_count": 117,
+            "diagram_count": 0
+          },
+          {
+            "slide_index": 39,
+            "page_type": "content_candidate",
+            "slot_count": 19,
+            "diagram_count": 0
+          },
+          {
+            "slide_index": 40,
+            "page_type": "content_candidate",
+            "slot_count": 35,
+            "diagram_count": 0
+          },
+          {
+            "slide_index": 41,
+            "page_type": "content_candidate",
+            "slot_count": 52,
+            "diagram_count": 0
+          },
+          {
+            "slide_index": 42,
+            "page_type": "content_candidate",
+            "slot_count": 28,
+            "diagram_count": 0
+          },
+          {
+            "slide_index": 43,
+            "page_type": "content_candidate",
+            "slot_count": 333,
+            "diagram_count": 0
+          },
+          {
+            "slide_index": 44,
+            "page_type": "chapter_candidate",
+            "slot_count": 3,
+            "diagram_count": 0
+          },
+          {
+            "slide_index": 45,
+            "page_type": "content_candidate",
+            "slot_count": 6,
+            "diagram_count": 0
+          },
+          {
+            "slide_index": 46,
+            "page_type": "content_candidate",
+            "slot_count": 20,
+            "diagram_count": 0
+          },
+          {
+            "slide_index": 47,
+            "page_type": "content_candidate",
+            "slot_count": 23,
+            "diagram_count": 0
+          },
+          {
+            "slide_index": 48,
+            "page_type": "content_candidate",
+            "slot_count": 20,
+            "diagram_count": 0
+          },
+          {
+            "slide_index": 49,
+            "page_type": "content_candidate",
+            "slot_count": 27,
+            "diagram_count": 0
+          },
+          {
+            "slide_index": 50,
+            "page_type": "content_candidate",
+            "slot_count": 34,
+            "diagram_count": 0
+          },
+          {
+            "slide_index": 51,
+            "page_type": "content_candidate",
+            "slot_count": 25,
+            "diagram_count": 0
+          },
+          {
+            "slide_index": 52,
+            "page_type": "content_candidate",
+            "slot_count": 60,
+            "diagram_count": 0
+          },
+          {
+            "slide_index": 53,
+            "page_type": "content_candidate",
+            "slot_count": 20,
+            "diagram_count": 0
+          },
+          {
+            "slide_index": 54,
+            "page_type": "content_candidate",
+            "slot_count": 22,
+            "diagram_count": 0
+          },
+          {
+            "slide_index": 55,
+            "page_type": "content_candidate",
+            "slot_count": 39,
+            "diagram_count": 0
+          },
+          {
+            "slide_index": 56,
+            "page_type": "content_candidate",
+            "slot_count": 29,
+            "diagram_count": 0
+          },
+          {
+            "slide_index": 57,
+            "page_type": "content_candidate",
+            "slot_count": 19,
+            "diagram_count": 0
+          },
+          {
+            "slide_index": 58,
+            "page_type": "content_candidate",
+            "slot_count": 49,
+            "diagram_count": 0
+          },
+          {
+            "slide_index": 59,
+            "page_type": "content_candidate",
+            "slot_count": 47,
+            "diagram_count": 0
+          },
+          {
+            "slide_index": 60,
+            "page_type": "ending_candidate",
+            "slot_count": 2,
+            "diagram_count": 0
+          }
+        ]
+      },
+      "tables": {
+        "table_count": 1,
+        "tables": [
+          {
+            "slide_index": 45,
+            "table_id": "s45_tbl32",
+            "row_count": 7,
+            "column_count": 5
+          }
+        ]
+      },
+      "charts": {
+        "chart_count": 5,
+        "series_count": 8,
+        "multi_plot_chart_count": 0,
+        "charts": [
+          {
+            "slide_index": 28,
+            "chart_id": "s28_ch2",
+            "chart_type": "doughnutChart",
+            "plot_types": [
+              "doughnutChart"
+            ],
+            "category_count": 2,
+            "series_count": 1,
+            "series_names": [
+              "Sales"
+            ]
+          },
+          {
+            "slide_index": 28,
+            "chart_id": "s28_ch3",
+            "chart_type": "doughnutChart",
+            "plot_types": [
+              "doughnutChart"
+            ],
+            "category_count": 2,
+            "series_count": 1,
+            "series_names": [
+              "Sales"
+            ]
+          },
+          {
+            "slide_index": 28,
+            "chart_id": "s28_ch4",
+            "chart_type": "doughnutChart",
+            "plot_types": [
+              "doughnutChart"
+            ],
+            "category_count": 2,
+            "series_count": 1,
+            "series_names": [
+              "Sales"
+            ]
+          },
+          {
+            "slide_index": 28,
+            "chart_id": "s28_ch5",
+            "chart_type": "doughnutChart",
+            "plot_types": [
+              "doughnutChart"
+            ],
+            "category_count": 2,
+            "series_count": 1,
+            "series_names": [
+              "Sales"
+            ]
+          },
+          {
+            "slide_index": 46,
+            "chart_id": "s46_ch2",
+            "chart_type": "areaChart",
+            "plot_types": [
+              "areaChart"
+            ],
+            "category_count": 0,
+            "series_count": 4,
+            "series_names": [
+              "系列1",
+              "系列2",
+              "系列3",
+              "系列4"
+            ]
+          }
+        ]
+      },
+      "diagrams": {
+        "diagram_count": 0,
+        "text_item_count": 0,
+        "unreadable_count": 0,
+        "warning_count": 0,
+        "slides_with_diagrams": [],
+        "diagrams": []
+      }
+    }
+  ]
+}

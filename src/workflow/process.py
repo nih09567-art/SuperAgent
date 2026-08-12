@@ -415,16 +415,28 @@ async def _trusted_registry_contract_data(
 
     await agent_manager.ensure_initialized()
     registered_agents = await agent_manager.agent_registry.list()
+    from src.orchestrator.department_router import build_agent_cards
+
+    available = get_user_available_agents(str(user_id))
+    authorized_ids = (
+        {agent.agent_name for agent in registered_agents}
+        if available == ["*"]
+        else set(available)
+    )
+    registered_cards = build_agent_cards(registered_agents)
     contracts = {
-        agent.agent_name: agent.agent_contract
-        for agent in registered_agents
-        if getattr(agent, "agent_contract", None) is not None
-        and (agent.user_id == "share" or agent.user_id == user_id)
+        card.agent_id: card.planning_agent_contract or card.agent_contract
+        for card in registered_cards
+        if card.agent_id in authorized_ids
+        and (card.planning_agent_contract or card.agent_contract) is not None
     }
     produces = {
-        agent.agent_name: list(getattr(agent, "produces", []) or [])
-        for agent in registered_agents
-        if agent.user_id == "share" or agent.user_id == user_id
+        card.agent_id: [
+            ref.name
+            for ref in (card.planning_agent_contract or card.agent_contract).produces
+        ]
+        for card in registered_cards
+        if card.agent_id in contracts
     }
     # Built-in contracts and live Agent Cards may enumerate the same logical
     # outputs in different orders. Preserve the server-owned catalog order when
@@ -564,6 +576,9 @@ async def _prepare_execution_graph(workflow_id: str, user_id: str, resume_step: 
     steps = _normalize_planning_steps(cache.get_planning_steps(workflow_id))
     if not steps:
         raise RuntimeError("no planning steps found for execution")
+    approved_task_profile = workflow.get("task_profile")
+    if not isinstance(approved_task_profile, dict) or not approved_task_profile:
+        raise RuntimeError("no approved task profile found for execution")
 
     await agent_manager.ensure_initialized()
     nodes = workflow.get("nodes") if isinstance(
@@ -849,6 +864,38 @@ async def _build_resource_catalog() -> str:
     return "\n".join(lines)
 
 
+def _enforce_profile_clarification_gate(
+    task_profile: Mapping[str, Any],
+    routing_decision: dict[str, Any],
+) -> bool:
+    """Keep missing user inputs from being overridden by contract closure.
+
+    Contract closure proves that Agents can produce the requested output types;
+    it does not prove that the request contains the employee, recipient, or
+    other business key needed to call those Agents safely.
+    """
+    missing_fields = [
+        str(item)
+        for item in task_profile.get("missing_fields") or []
+        if str(item).strip()
+    ]
+    needs_clarification = bool(task_profile.get("needs_clarification"))
+    if not missing_fields and not needs_clarification:
+        return False
+    routing_decision.update(
+        {
+            "selected_agent": None,
+            "decision": "CLARIFY",
+            "reason_codes": (
+                ["MISSING_REQUIRED_FIELDS"]
+                if missing_fields
+                else ["INTENT_CLARIFICATION_REQUIRED"]
+            ),
+        }
+    )
+    return True
+
+
 async def run_agent_workflow(
     user_id: str,
     user_input_messages: list,
@@ -941,6 +988,9 @@ async def run_agent_workflow(
             if error_text == "no planning steps found for execution":
                 reason_code = "PLAN_STEPS_UNAVAILABLE"
                 reason = "Confirmed planning steps could not be loaded for execution"
+            elif error_text == "no approved task profile found for execution":
+                reason_code = "APPROVED_TASK_PROFILE_MISSING"
+                reason = "The confirmed task profile could not be loaded for execution"
             elif error_text.startswith("missing agents for execution:"):
                 reason_code = "EXECUTION_AGENTS_UNAVAILABLE"
                 reason = "One or more planned agents are unavailable"
@@ -1001,6 +1051,10 @@ async def run_agent_workflow(
         identity_messages,
         memory_context,
     )
+    approved_task_profile = None
+    if workmode == "production":
+        workflow_snapshot = cache.cache.get(workflow_id) or {}
+        approved_task_profile = workflow_snapshot.get("task_profile")
     task_profile_model, agent_cards, routing_decision_model = await make_routing_decision(
         user_query=routing_query,
         task_id=task_id,
@@ -1016,6 +1070,11 @@ async def run_agent_workflow(
         context_artifacts=list(context_artifacts or []),
         conversation_context=dict(conversation_context or {}),
         raw_request=raw_request or routing_query,
+        # Production executes the exact task boundary that was planned and
+        # confirmed. Re-running semantic profiling here can infer new intents,
+        # resolve entities differently, or change operation modes, which makes
+        # the approved PlanSnapshot fail its own execution-time rebuild gate.
+        task_profile_override=approved_task_profile,
     )
     routing_decision = routing_decision_model.model_dump()
     task_profile = task_profile_model.to_legacy_scenario()
@@ -1084,7 +1143,20 @@ async def run_agent_workflow(
         ),
     )
     planning_catalog: list[dict[str, Any]] = []
-    if closure.complete:
+    clarification_required = _enforce_profile_clarification_gate(
+        task_profile,
+        routing_decision,
+    )
+    if clarification_required:
+        # Candidates may still be shown as diagnostic matches, but no Agent is
+        # dispatchable until the user answers the concrete clarification.
+        routed_member_ids = [
+            item.agent_id for item in routing_decision_model.candidate_agents
+        ]
+        planning_catalog = trusted_planning_catalog(
+            agent_cards, routed_member_ids
+        )
+    elif closure.complete:
         routed_member_ids = list(closure.selected_agent_ids)
         planning_catalog = trusted_planning_catalog(
             agent_cards, routed_member_ids
@@ -1918,7 +1990,10 @@ async def _process_workflow(
                     "no_graph": "TASK_GRAPH_MISSING",
                     "unknown": "OPERATION_MODE_UNCLASSIFIED",
                 }.get(category, "INTERNAL_SCHEDULER_ERROR")
-                failure = make_failure(gate_code)
+                failure = make_failure(
+                    gate_code,
+                    details_safe={"task_graph_rejection_reason": detail},
+                )
                 if hasattr(task_logger, "log_failure"):
                     task_logger.log_failure(failure.model_dump(mode="json"))
                 task_logger.log_workflow_terminal(

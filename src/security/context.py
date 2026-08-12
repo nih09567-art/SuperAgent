@@ -13,6 +13,7 @@ from config.s_abac_config import (
 )
 from config.s_abac_demo_users import get_demo_user
 from src.security.policy import Action, Object, Scenario, Subject
+from src.security.working_hours import is_within_working_hours
 
 
 class UnknownSecurityUserError(ValueError):
@@ -84,7 +85,11 @@ def _security_time(metadata: Dict[str, Any]) -> str:
         if override in {"working_hours", "off_hours"}:
             return override
 
-    return "working_hours" if 9 <= datetime.now().hour < 18 else "off_hours"
+    return (
+        "working_hours"
+        if is_within_working_hours(datetime.now())
+        else "off_hours"
+    )
 
 
 class SecurityContextBuilder:

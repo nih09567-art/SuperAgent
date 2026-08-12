@@ -127,6 +127,37 @@ def test_web_handles_all_scheduler_terminal_statuses():
         assert f'case "{status}"' in source
 
 
+def test_runtime_clarification_is_shown_and_can_be_answered():
+    source = _source()
+    clarify_branch = source[
+        source.index('case "CLARIFY_REQUIRED"') : source.index(
+            'case "APPROVAL_REQUIRED"'
+        )
+    ]
+
+    assert 'workflowData.clarification_fields' in clarify_branch
+    assert 'clarificationPending = true' in clarify_branch
+    assert 'pendingClarificationContext = {' in clarify_branch
+    assert 'missing_fields: missingFields' in clarify_branch
+    assert 'restart_workflow: true' in clarify_branch
+    assert 'activePendingPlan = null' in clarify_branch
+    assert 'showAssistantText(question)' in clarify_branch
+    assert 'appendActiveConversationMessage("assistant", question)' in clarify_branch
+    assert 'setStatus("等待补充信息", true)' in clarify_branch
+    assert 'terminalStatus === "CLARIFY_REQUIRED"' in source
+    assert 'outcomeStatus: "clarify_required"' in source
+    assert 'pendingClarificationContext?.restart_workflow' in source
+
+
+def test_clarification_failure_has_actionable_chinese_presentation():
+    source = _source()
+
+    assert 'code === "CLARIFICATION_REQUIRED"' in source
+    assert 'title: "需要补充信息"' in source
+    assert 'clarification: "需要补充"' in source
+    assert 'clarification_field: "补充字段"' in source
+
+
 def test_web_treats_approval_as_paused_instead_of_retry_blocked():
     source = _source()
 
@@ -170,6 +201,25 @@ def test_failed_execution_routes_to_manual_review_instead_of_prohibition_copy():
         assert prohibited_copy not in source
 
 
+def test_failed_review_entry_opens_security_queue_before_task_history():
+    source = _source()
+    branch = source[
+        source.index('if (activePendingPlan?.status === "recovery_review_required")'):
+        source.index('if (String(activePendingPlan?.status || "").startsWith("reconciliation_"))')
+    ]
+
+    assert 'switchTab("security")' in branch
+    assert "focusRecoveryReview" in branch
+    assert 'switchTab("tasks")' not in branch
+    assert "/start" not in branch
+
+    security_source = (
+        Path(__file__).resolve().parents[1] / "web" / "security.js"
+    ).read_text(encoding="utf-8")
+    assert "async function focusRecoveryReview(taskId)" in security_source
+    assert "开始审核并查看检查点" in security_source
+
+
 def test_web_prefers_structured_failure_and_keeps_legacy_error_fallback():
     source = _source()
 
@@ -178,6 +228,8 @@ def test_web_prefers_structured_failure_and_keeps_legacy_error_fallback():
     assert "data.failure || (status && status !== \"SUCCEEDED\")" in source
     assert "errorStepCard(content, card, data.failure)" in source
     assert 'data?.error || "该步骤未返回可展示的结果。"' in source
+    assert 'task_graph_rejection_reason: "任务图拒绝原因"' in source
+    assert "failure.details?.task_graph_rejection_reason" in source
 
 
 def test_web_failure_display_covers_actionable_categories_and_escapes_fields():

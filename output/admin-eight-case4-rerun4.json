@@ -1,0 +1,355 @@
+[
+  {
+    "case": 4,
+    "instruction": "查询王经理下周的日程，安排一次和李娜的会议，并通知参会人",
+    "workflow_id": "admin:08e6bd132d672543e9a94a049174484b",
+    "task_id": "exec-3bff1c6c901ae07b92a8930cd00c4091",
+    "status": "PARTIAL_FAILED",
+    "failed_steps": [
+      "arrange_meeting_with_lina"
+    ],
+    "blocked_steps": [
+      "notify_participants"
+    ],
+    "steps": [
+      {
+        "step_id": "query_manager_schedule",
+        "agent": "scheduler【RemoteHRCalendarAgent】",
+        "status": "SUCCEEDED",
+        "error": null,
+        "failure": null
+      },
+      {
+        "step_id": "arrange_meeting_with_lina",
+        "agent": "scheduler【RemoteMeetingManagerAgent】",
+        "status": "FAILED",
+        "error": null,
+        "failure": {
+          "code": "AGENT_DISPATCH_DENIED",
+          "category": "permission",
+          "message": "权限策略拒绝了当前操作，但没有返回可进一步细分的规则原因。",
+          "retryable": false,
+          "action": "请管理员补充对应角色、授权项或资源权限后，再从该步骤重试。",
+          "step_id": "arrange_meeting_with_lina",
+          "agent_id": "RemoteMeetingManagerAgent",
+          "parameter_name": null,
+          "source_step": null,
+          "source_output": null,
+          "blocked_by": [],
+          "details_safe": {}
+        }
+      },
+      {
+        "step_id": "notify_participants",
+        "agent": "scheduler【RemoteEmailDispatchAgent】",
+        "status": "SKIPPED",
+        "error": null,
+        "failure": {
+          "code": "UPSTREAM_STEP_FAILED",
+          "category": "artifact",
+          "message": "Step was not executed because an upstream step failed.",
+          "retryable": false,
+          "action": "Fix the blocked upstream steps, then resume from a safe checkpoint.",
+          "step_id": "notify_participants",
+          "agent_id": null,
+          "parameter_name": null,
+          "source_step": null,
+          "source_output": null,
+          "blocked_by": [
+            "arrange_meeting_with_lina"
+          ],
+          "details_safe": {}
+        }
+      }
+    ],
+    "governance_failure_events": [
+      {
+        "event": "permission_denied",
+        "data": {
+          "subject": {
+            "subject_type": "user",
+            "id": "admin",
+            "attributes": {
+              "role": "UniversalAssistant",
+              "department": "System",
+              "job_role": "system_orchestrator",
+              "clearance_level": 5,
+              "trust_level": "HIGH",
+              "grants": [
+                "all"
+              ],
+              "display_name": "Admin (System Admin)"
+            }
+          },
+          "object": {
+            "object_type": "agent",
+            "id": "RemoteMeetingManagerAgent",
+            "attributes": {
+              "type": "agent",
+              "protocol": "remote",
+              "sensitivity": "MEDIUM",
+              "allowed_roles": [
+                "UniversalAssistant",
+                "OperationAgent"
+              ],
+              "allowed_job_roles": [
+                "office_operator",
+                "office_manager",
+                "system_orchestrator"
+              ],
+              "allowed_operation_modes": [
+                "delegate",
+                "write"
+              ],
+              "scenario_tags": [
+                "meeting_management",
+                "office_operation"
+              ],
+              "expected_capabilities": [
+                "Operations"
+              ],
+              "department_domain": "Office",
+              "capability_domain": "Operations",
+              "owner_agent": "",
+              "requires_approval": false,
+              "grants_required": []
+            }
+          },
+          "scenario": {
+            "task_scenario": {
+              "stage": "PRODUCTION",
+              "goal": "查询王经理下周的日程，安排一次和李娜的会议，并通知参会人",
+              "business_goal": "安排会议",
+              "task_type": "MEETING",
+              "data_scope": "calendar.meeting",
+              "operation_mode": "write",
+              "scenario_tags": [
+                "meeting_management"
+              ],
+              "expected_capabilities": [
+                "Meeting",
+                "Office"
+              ],
+              "risk_profile": "HIGH",
+              "scenario_fit_result": {
+                "fit": "mismatch",
+                "confidence": 1.0,
+                "reason": "subtask_2 capabilities do not match trusted resource; subtask_2 task type does not match trusted resource",
+                "source": "trusted_task_profile_and_resource_registry"
+              }
+            },
+            "environment": {
+              "time": "off_hours",
+              "network_zone": "internal",
+              "authentication_strength": "MFA"
+            },
+            "business_context": {
+              "workflow_id": "admin:08e6bd132d672543e9a94a049174484b",
+              "task_id": "exec-3bff1c6c901ae07b92a8930cd00c4091",
+              "current_step": null,
+              "delegation_chain": []
+            }
+          },
+          "action": {
+            "verb": "orchestrate",
+            "attributes": {
+              "action_type": "delegate",
+              "target_agent": "RemoteMeetingManagerAgent",
+              "irreversible": false,
+              "operation_mode": "delegate"
+            }
+          },
+          "policy_result": {
+            "allowed": false,
+            "reason": "subtask_2 capabilities do not match trusted resource; subtask_2 task type does not match trusted resource",
+            "audit_id": "audit_1786367058950",
+            "timestamp": "2026-08-10T21:04:18.950290",
+            "human_review_required": false,
+            "approval_level": null,
+            "decision": "DENY"
+          },
+          "workflow_id": "admin:08e6bd132d672543e9a94a049174484b",
+          "task_id": "exec-3bff1c6c901ae07b92a8930cd00c4091",
+          "step_id": "arrange_meeting_with_lina",
+          "error": "权限策略拒绝了当前操作，但没有返回可进一步细分的规则原因。"
+        }
+      }
+    ],
+    "terminal": {
+      "workflow_id": "admin:08e6bd132d672543e9a94a049174484b",
+      "task_id": "exec-3bff1c6c901ae07b92a8930cd00c4091",
+      "mode": "scheduler",
+      "status": "PARTIAL_FAILED",
+      "failed_steps": [
+        "arrange_meeting_with_lina"
+      ],
+      "blocked_steps": [
+        "notify_participants"
+      ],
+      "failures": [
+        {
+          "code": "AGENT_DISPATCH_DENIED",
+          "category": "permission",
+          "message": "权限策略拒绝了当前操作，但没有返回可进一步细分的规则原因。",
+          "retryable": false,
+          "action": "请管理员补充对应角色、授权项或资源权限后，再从该步骤重试。",
+          "step_id": "arrange_meeting_with_lina",
+          "agent_id": "RemoteMeetingManagerAgent",
+          "parameter_name": null,
+          "source_step": null,
+          "source_output": null,
+          "blocked_by": [],
+          "details_safe": {}
+        },
+        {
+          "code": "UPSTREAM_STEP_FAILED",
+          "category": "artifact",
+          "message": "Step was not executed because an upstream step failed.",
+          "retryable": false,
+          "action": "Fix the blocked upstream steps, then resume from a safe checkpoint.",
+          "step_id": "notify_participants",
+          "agent_id": null,
+          "parameter_name": null,
+          "source_step": null,
+          "source_output": null,
+          "blocked_by": [
+            "arrange_meeting_with_lina"
+          ],
+          "details_safe": {}
+        }
+      ],
+      "rejected_steps": [],
+      "clarifications": [],
+      "approval_required_steps": [],
+      "needs_reconciliation": [],
+      "results": {
+        "query_manager_schedule": "SUCCEEDED",
+        "arrange_meeting_with_lina": "FAILED",
+        "notify_participants": "SKIPPED"
+      },
+      "skill_execution_evidence": {
+        "schema_version": 1,
+        "task_id": "exec-3bff1c6c901ae07b92a8930cd00c4091",
+        "workflow_id": "admin:08e6bd132d672543e9a94a049174484b",
+        "execution_mode": "scheduler",
+        "workflow_status": "PARTIAL_FAILED",
+        "technical_success": false,
+        "business_success": false,
+        "step_coverage": 1.0,
+        "business_outcome_coverage": 1.0,
+        "steps": [
+          {
+            "step_id": "query_manager_schedule",
+            "agent_name": "RemoteHRCalendarAgent",
+            "planned_agent": "RemoteHRCalendarAgent",
+            "executed_agent": "RemoteHRCalendarAgent",
+            "operation_mode": "read",
+            "risk_level": "LOW",
+            "technical_success": true,
+            "business_success": true,
+            "outcome_status": "success",
+            "verification_status": "not_required",
+            "verification_method": "technical_read_success",
+            "verification_evidence_ref": null,
+            "schema_valid": true,
+            "artifact_refs": [
+              {
+                "artifact_id": "ad3dcc05fd084b0494243b72936b27ac",
+                "version": 1,
+                "selector": null,
+                "expected_schema_ref": "structured_agent_result@v1"
+              }
+            ],
+            "resource_ids": [],
+            "external_operation_id": null,
+            "idempotency_key": null,
+            "receipt_status": null,
+            "needs_reconciliation": false,
+            "error": null
+          },
+          {
+            "step_id": "arrange_meeting_with_lina",
+            "agent_name": "RemoteMeetingManagerAgent",
+            "planned_agent": "RemoteMeetingManagerAgent",
+            "executed_agent": "RemoteMeetingManagerAgent",
+            "operation_mode": "write",
+            "risk_level": "LOW",
+            "technical_success": false,
+            "business_success": false,
+            "outcome_status": "unknown",
+            "verification_status": "failed",
+            "verification_method": null,
+            "verification_evidence_ref": null,
+            "schema_valid": null,
+            "artifact_refs": [],
+            "resource_ids": [],
+            "external_operation_id": null,
+            "idempotency_key": null,
+            "receipt_status": null,
+            "needs_reconciliation": false,
+            "error": null
+          },
+          {
+            "step_id": "notify_participants",
+            "agent_name": "RemoteEmailDispatchAgent",
+            "planned_agent": "RemoteEmailDispatchAgent",
+            "executed_agent": "RemoteEmailDispatchAgent",
+            "operation_mode": "send",
+            "risk_level": "LOW",
+            "technical_success": false,
+            "business_success": false,
+            "outcome_status": "unknown",
+            "verification_status": "failed",
+            "verification_method": null,
+            "verification_evidence_ref": null,
+            "schema_valid": null,
+            "artifact_refs": [],
+            "resource_ids": [],
+            "external_operation_id": null,
+            "idempotency_key": null,
+            "receipt_status": null,
+            "needs_reconciliation": false,
+            "error": null
+          }
+        ],
+        "task_graph": {
+          "schema_version": 1,
+          "steps": [
+            {
+              "step_id": "query_manager_schedule",
+              "depends_on": [],
+              "operation_mode": "read",
+              "risk_level": "LOW",
+              "agent_name": "RemoteHRCalendarAgent",
+              "required_capabilities": [],
+              "input_names": []
+            },
+            {
+              "step_id": "arrange_meeting_with_lina",
+              "depends_on": [
+                "query_manager_schedule"
+              ],
+              "operation_mode": "write",
+              "risk_level": "LOW",
+              "agent_name": "RemoteMeetingManagerAgent",
+              "required_capabilities": []
+            },
+            {
+              "step_id": "notify_participants",
+              "depends_on": [
+                "arrange_meeting_with_lina"
+              ],
+              "operation_mode": "send",
+              "risk_level": "LOW",
+              "agent_name": "RemoteEmailDispatchAgent",
+              "required_capabilities": []
+            }
+          ],
+          "graph_hash": "1b069e3f9f733834459c830b26e83d71621a63223139daa34abab653e8f62d1a"
+        },
+        "planning_steps": [],
+        "created_at": "2026-08-10T13:04:18.989010+00:00"
+      }
+    }
+  }
+]

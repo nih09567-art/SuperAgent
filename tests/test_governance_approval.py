@@ -201,6 +201,9 @@ def test_runtime_persists_uncertain_side_effect_for_manual_reconciliation(
         "user_id": "u1",
         "task_graph": graph,
         "messages": [],
+        # A resumed run may carry a non-zero event counter. Resume identity
+        # must still use the stable graph position, not this dynamic counter.
+        "current_step": 7,
     }
 
     async def collect():
@@ -227,6 +230,7 @@ def test_runtime_persists_uncertain_side_effect_for_manual_reconciliation(
     )
     assert len(queued) == 1
     assert queued[0]["step_id"] == "write-1"
+    assert queued[0]["resume_step"] == 1
     assert queued[0]["idempotency_key"]
     assert queued[0]["claim_id"]
 

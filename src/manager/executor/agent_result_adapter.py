@@ -208,6 +208,26 @@ def normalize_agent_result(
         if isinstance(agent_contract, AgentContract)
         else AgentContract.model_validate(agent_contract)
     )
+    # An Agent contract describes every datum the Agent can produce, while a
+    # scheduler step may intentionally request only one of them. Requiredness
+    # at the publication boundary must therefore be scoped to the current
+    # step. Otherwise a salary-only HR step is rejected merely because the
+    # Agent's broader contract also marks employee.info as required.
+    requested_outputs = {
+        str(name).strip() for name in (expected_outputs or []) if str(name).strip()
+    }
+    declared_outputs = {ref.name for ref in contract.produces}
+    scoped_outputs = requested_outputs & declared_outputs
+    if scoped_outputs:
+        contract = contract.model_copy(
+            update={
+                "produces": [
+                    ref.model_copy(update={"required": ref.name in scoped_outputs})
+                    for ref in contract.produces
+                ],
+                "output_schema_refs": dict(contract.output_schema_refs),
+            }
+        )
     # The contract catalog is part of the platform protocol and must be
     # available on every validation path, including callers that provide a
     # custom registry. Existing structural schemas are preserved, while the

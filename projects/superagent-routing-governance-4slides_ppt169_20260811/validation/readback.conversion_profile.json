@@ -1,0 +1,33 @@
+{
+  "schema": "ppt-master.source_to_md.profile.v1",
+  "converter": "ppt_to_md.py",
+  "conversion_type": "pptx",
+  "source": {
+    "path": "E:/Program/SuperAgent/projects/superagent-routing-governance-4slides_ppt169_20260811/exports/SuperAgent_主Agent决策路由与权限治理_20260811_202425.pptx",
+    "name": "SuperAgent_主Agent决策路由与权限治理_20260811_202425.pptx",
+    "suffix": ".pptx",
+    "kind": "file",
+    "exists": true,
+    "size_bytes": 1722968
+  },
+  "outputs": {
+    "markdown": "readback.md",
+    "asset_dir": "",
+    "image_manifest": "",
+    "image_count": 0
+  },
+  "markdown": {
+    "line_count": 162,
+    "char_count": 3300,
+    "heading_count": 9,
+    "table_count": 1,
+    "image_ref_count": 0,
+    "link_count": 0
+  },
+  "warnings": [
+    "Slide 1: SmartArt scan failed: Missing required PPTX part: ppt/slides/slide1.xml",
+    "Slide 2: SmartArt scan failed: Missing required PPTX part: ppt/slides/slide2.xml",
+    "Slide 3: SmartArt scan failed: Missing required PPTX part: ppt/slides/slide3.xml",
+    "Slide 4: SmartArt scan failed: Missing required PPTX part: ppt/slides/slide4.xml"
+  ]
+}

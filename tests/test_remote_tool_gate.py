@@ -311,6 +311,23 @@ def test_email_authorization_uses_platform_trusted_recipient_resolution():
     ]
 
 
+def test_email_authorization_recovers_recipient_from_confirmed_request():
+    resolved = required_remote_tool_authorizations(
+        agent_name="RemoteEmailDispatchAgent",
+        intents=["message_or_email_send"],
+        task_profile={
+            "entities": {},
+            "resolved_request": "把分析报告发送到行长秘书邮箱",
+        },
+        operation_mode="send",
+    )
+
+    assert resolved[0].arguments["recipient"] == "行长秘书邮箱"
+    assert resolved[0].arguments["resolved_recipient_addresses"] == [
+        "limishu@ccb.com"
+    ]
+
+
 def test_trusted_administrator_email_uses_concrete_tool():
     resolved = required_remote_tool_authorizations(
         agent_name="RemoteEmailDispatchAgent",
@@ -452,6 +469,71 @@ def test_email_dispatch_canonicalizes_trusted_semantic_recipient(monkeypatch):
     ]
 
 
+def test_email_dispatch_accepts_equivalent_mailbox_label_suffix(monkeypatch):
+    import httpx
+
+    forwarded = []
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"result": {"status": "success", "message_id": "mail-2"}}
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, *_args, **kwargs):
+            forwarded.append(kwargs["json"]["arguments"])
+            return FakeResponse()
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **_kwargs: FakeClient())
+    token = bind_authorized_remote_tools(
+        {
+            "authorized_remote_tools": [
+                {
+                    "tool_name": "remote_email_tool",
+                    "arguments": {
+                        "recipient": "行长秘书邮箱",
+                        "resolved_recipient_addresses": ["limishu@ccb.com"],
+                    },
+                }
+            ]
+        }
+    )
+    try:
+        result = asyncio.run(
+            BaseRemoteAgent.call_tool(
+                object(),
+                "remote_email_tool",
+                {"to": "行长秘书", "subject": "report", "body": "content"},
+            )
+        )
+    finally:
+        reset_authorized_remote_tools(token)
+
+    assert result["message_id"] == "mail-2"
+    assert forwarded[0]["to"] == "limishu@ccb.com"
+
+
+def test_manifest_rejection_is_marked_pre_side_effect():
+    error = BaseRemoteAgent.execution_error(
+        PermissionError("manifest mismatch"),
+        tool_name="remote_email_tool",
+    )
+
+    assert error.code == "REMOTE_TOOL_AUTHORIZATION_FAILED"
+    assert error.retryable is False
+    assert error.details["safe_to_retry"] is True
+    assert error.details["side_effect_started"] is False
+    assert error.details["failure_phase"] == "authorization"
+
+
 def test_email_dispatch_rejects_conflicting_authorized_and_forwarded_recipient(
     monkeypatch,
 ):
@@ -524,8 +606,17 @@ def test_trusted_recipient_resolves_unique_name_title_alias():
     ]
 
 
+def test_trusted_recipient_accepts_business_mailbox_suffix():
+    assert resolve_trusted_recipient_addresses("行长秘书邮箱") == [
+        "limishu@ccb.com"
+    ]
+
+
 def test_trusted_recipient_accepts_non_routable_demo_hr_mailbox():
     assert resolve_trusted_recipient_addresses("hr@example.test") == [
+        "hr@example.test"
+    ]
+    assert resolve_trusted_recipient_addresses("邮箱hr@example.test") == [
         "hr@example.test"
     ]
     assert resolve_trusted_recipient_addresses("人事部门") == [

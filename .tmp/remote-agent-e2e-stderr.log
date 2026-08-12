@@ -1,0 +1,5 @@
+2026-08-12 14:04:36,642 - __main__ - INFO - Loaded remote agent config: model=qwen3.7-plus, base_url=https://opencode.ai/zen/go/v1
+INFO:     Started server process [27040]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8010 (Press CTRL+C to quit)

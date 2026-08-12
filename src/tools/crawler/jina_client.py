@@ -19,5 +19,17 @@ class JinaClient:
                 "Jina API key is not set. Provide your own key to access a higher rate limit. See https://jina.ai/reader for more information."
             )
         data = {"url": url}
-        response = requests.post("https://r.jina.ai/", headers=headers, json=data)
+        connect_timeout = max(
+            0.1, float(os.getenv("JINA_CONNECT_TIMEOUT_SECONDS", "5"))
+        )
+        read_timeout = max(
+            0.1, float(os.getenv("JINA_READ_TIMEOUT_SECONDS", "20"))
+        )
+        response = requests.post(
+            "https://r.jina.ai/",
+            headers=headers,
+            json=data,
+            timeout=(connect_timeout, read_timeout),
+        )
+        response.raise_for_status()
         return response.text

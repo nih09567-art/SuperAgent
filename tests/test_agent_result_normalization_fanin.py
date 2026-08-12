@@ -63,6 +63,37 @@ def test_contract_envelope_is_normalized_and_schema_checked():
     assert normalized.legacy is False
 
 
+def test_step_expected_outputs_scope_broader_agent_requiredness():
+    contract = AgentContract(
+        produces=[
+            DataContractRef(name="employee.info", schema_ref="employee.info@v1"),
+            DataContractRef(
+                name="employee.salary",
+                schema_ref="employee.salary@v1",
+                required=False,
+            ),
+        ]
+    )
+    normalized = normalize_agent_result(
+        _ok(
+            _envelope(
+                "RemoteHRAssistantAgent",
+                {
+                    "employee.salary": {
+                        "records": [{"employee_id": "E001", "amount": 100}],
+                        "matched_count": 1,
+                    }
+                },
+            )
+        ),
+        agent_contract=contract,
+        expected_outputs=["employee.salary"],
+        producer_agent="RemoteHRAssistantAgent",
+    )
+
+    assert set(normalized.outputs) == {"employee.salary"}
+
+
 def test_contract_envelope_rejects_mismatched_producer_agent():
     with pytest.raises(AgentResultNormalizationError) as exc:
         normalize_agent_result(

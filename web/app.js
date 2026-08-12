@@ -11,6 +11,11 @@ const getWorkflowRequestHeaders = (userId) => ({
   ...jsonRequestHeaders,
   "X-Authenticated-User": String(userId || "").trim(),
 });
+const getWorkflowOwnerId = (workflowId) => {
+  const normalized = String(workflowId || "").trim();
+  if (!normalized.includes(":")) return "";
+  return normalized.split(":", 1)[0].trim();
+};
 
 const getExecutionAuthorizationHeaders = (userId, confirmationRequestId) => {
   return {
@@ -483,6 +488,7 @@ let instructionHistory = [];
 let originalUserQuery = "";
 let currentRunContext = null;
 let executionInProgress = false;
+let executionAuthorizationInProgress = false;
 let currentRunHasError = false;
 let answerSyncFrame = null;
 let currentChatLifecycle = null;
@@ -734,14 +740,9 @@ const setChatPlanActionsDisabled = (disabled) => {
 
 async function confirmChatPlanExecution() {
   if (activePendingPlan?.status === "recovery_review_required") {
-    switchTab("tasks");
-    await fetchTasks();
-    if (activePendingPlan.taskId) {
-      await selectTask({
-        task_id: activePendingPlan.taskId,
-        workflow_id: activePendingPlan.workflowId,
-      });
-    }
+    const taskId = String(activePendingPlan.taskId || "");
+    switchTab("security");
+    await window.SecurityModule?.focusRecoveryReview?.(taskId);
     return;
   }
   if (String(activePendingPlan?.status || "").startsWith("reconciliation_")) {
@@ -2151,6 +2152,7 @@ const beginConversationRuntime = (kind = "workflow") => {
     taskId: "",
     terminalReceived: false,
     terminalStatus: "",
+    recoveryReviewRequired: false,
     recoveryRequired: false,
   };
   activeConversationRuntime = runtime;
@@ -2361,6 +2363,9 @@ const clearChatHistory = async () => {
   if (window.SecurityModule?.loadSecurityApprovals) {
     await window.SecurityModule.loadSecurityApprovals();
   }
+  if (window.SecurityModule?.loadSecurityRecoveryReviews) {
+    await window.SecurityModule.loadSecurityRecoveryReviews();
+  }
 };
 
 const conversationTaskIds = (conversation) => [...new Set([
@@ -2408,6 +2413,7 @@ const deleteConversation = async (conversation) => {
   renderChatHistory();
   window.SecurityModule?.loadSecurityReconciliations?.();
   window.SecurityModule?.loadSecurityApprovals?.();
+  window.SecurityModule?.loadSecurityRecoveryReviews?.();
 };
 
 const resetActiveConversation = (userId = userIdInput.value.trim()) => {
@@ -2615,10 +2621,13 @@ const updateConfirmExecuteState = () => {
   if (confirmExecuteBtn) {
     const hasPlan = planSteps.length > 0;
     const hasWorkflowId = workflowIdInput && workflowIdInput.value.trim();
-    confirmExecuteBtn.disabled = recoveryLocked || executionInProgress || !(hasPlan && hasWorkflowId);
+    confirmExecuteBtn.disabled = recoveryLocked
+      || executionInProgress
+      || executionAuthorizationInProgress
+      || !(hasPlan && hasWorkflowId);
     confirmExecuteBtn.textContent = recoveryLocked
       ? "需要恢复执行"
-      : (executionInProgress ? "执行中..." : "确认执行");
+      : (executionInProgress || executionAuthorizationInProgress ? "执行中..." : "确认执行");
   }
   if (nlPlanEditBtn) {
     nlPlanEditBtn.disabled = recoveryLocked || executionInProgress;
@@ -3192,6 +3201,13 @@ const normalizeFailure = (failure, legacyError = "") => {
 const getFailurePresentation = (failure) => {
   const code = failure.code;
   const category = failure.category;
+  if (code === "CLARIFICATION_REQUIRED") {
+    return {
+      title: "需要补充信息",
+      guidance: "请回答系统提出的问题，系统会带上补充信息重新规划。",
+      state: "blocked",
+    };
+  }
   if (code === "CLARIFICATION_BLOCKED") {
     return {
       title: "等待补充信息，当前步骤未执行",
@@ -3263,7 +3279,10 @@ const formatFailureDetails = (failure) => {
     expected_schema_ref: "期望 Schema",
     actual_schema_ref: "实际 Schema",
     missing_outputs: "缺少输出",
+    task_graph_rejection_reason: "任务图拒绝原因",
     undeclared_outputs: "未声明输出",
+    clarification: "需要补充",
+    clarification_field: "补充字段",
   };
   const safeDetails = Object.entries(failure.details || {})
     .filter(([key, value]) => Object.prototype.hasOwnProperty.call(detailLabels, key)
@@ -3562,9 +3581,15 @@ const renderWorkflowFailureSummaryInto = (summary, parent) => {
   const section = document.createElement("section");
   section.className = "workflow-failure-summary";
   section.setAttribute("aria-label", "工作流失败摘要");
-  const failureItems = failures.map((failure) => (
-    `<li><code>${escapeHtml(failure.code)}</code><span>${escapeHtml(failure.message)}</span></li>`
-  )).join("");
+  const failureItems = failures.map((failure) => {
+    const rejectionReason = failure.code === "TASK_GRAPH_INVALID"
+      ? String(failure.details?.task_graph_rejection_reason || "").trim()
+      : "";
+    const message = rejectionReason
+      ? `${failure.message} 原因：${rejectionReason}`
+      : failure.message;
+    return `<li><code>${escapeHtml(failure.code)}</code><span>${escapeHtml(message)}</span></li>`;
+  }).join("");
   const blockedItems = blockedSteps.map((step) => {
     const stepId = typeof step === "object" && step !== null
       ? step.step_id || step.id || "unknown"
@@ -4184,6 +4209,7 @@ const ROUTING_REASON_LABELS_ZH = Object.freeze({
   MISSING_REQUIRED_FIELDS: "缺少必要字段",
   INTENT_CLARIFICATION_REQUIRED: "需要澄清任务意图",
   COMPOSITE_ROUTE_COVERED: "复合任务已完整覆盖",
+  COMPOSITE_ROUTE_INCOMPLETE: "复合任务缺少可执行 Agent",
   HIGH_CONFIDENCE_ROUTE: "高置信度匹配",
   CAPABLE_ROUTE: "已找到可执行 Agent",
   NO_CAPABLE_AGENT: "未找到可执行 Agent",
@@ -4646,16 +4672,31 @@ const applyPlannerStepsFromBuffer = (buffer, options = {}) => {
       const validationErrors = Array.isArray(parsed?.validation_errors)
         ? parsed.validation_errors.filter(Boolean)
         : [];
+      const route = latestRoutingDecision?.routing_decision || {};
+      const routeDecision = String(route.decision || "").toUpperCase();
+      const routeReasonCodes = Array.isArray(route.reason_codes)
+        ? route.reason_codes.filter(Boolean)
+        : [];
+      const routeRejected = routeDecision === "REJECT";
+      const routeRejectedByPermission = routeReasonCodes.some(
+        (reasonCode) => String(reasonCode).toUpperCase() === "PERMISSION_DENIED"
+      );
+      const routeRejectionMessage = routeRejected
+        ? `${routeRejectedByPermission ? "权限治理拒绝" : "主 Agent 拒绝执行"}：${
+          routeReasonCodes.map(localizeRoutingReasonCode).join("；")
+          || "未找到完整的可执行 Agent 组合"
+        }`
+        : "";
       const emptyStepsMessage = "Planner returned valid JSON, but no executable steps were generated.";
       const invalidJsonMessage = "Planner output is not valid JSON steps.";
-      const validationMessage = validationErrors.length
+      const validationMessage = routeRejectionMessage || (validationErrors.length
         ? `Plan validation failed: ${validationErrors.join("; ")}`
-        : (parsed ? emptyStepsMessage : invalidJsonMessage);
-      latestPlanningFailureMessage = validationErrors.length
+        : (parsed ? emptyStepsMessage : invalidJsonMessage));
+      latestPlanningFailureMessage = routeRejectionMessage || (validationErrors.length
         ? `规划未生成可执行结果，原因：${validationErrors.map(String).join("；")}`
         : parsed
           ? "规划未生成可执行结果：Planner 返回了空步骤列表。"
-          : "规划未生成可执行结果：Planner 输出无法解析为有效的 JSON 步骤。";
+          : "规划未生成可执行结果：Planner 输出无法解析为有效的 JSON 步骤。");
       showPlanHint(validationMessage, true);
       showPlanValidationHint(validationMessage, true);
       if (plannerOnlyMode) {
@@ -5162,6 +5203,9 @@ const handleEvent = (eventName, payload) => {
     if (currentRunContext === "executing" && activeConversationRuntime) {
       activeConversationRuntime.terminalReceived = true;
       activeConversationRuntime.terminalStatus = status || "COMPLETED";
+      activeConversationRuntime.recoveryReviewRequired = Boolean(
+        workflowData.recovery_review_required
+      );
     }
     if (plannerOnlyMode) {
       if (!plannerOnlyStepsUpdated) {
@@ -5219,11 +5263,32 @@ const handleEvent = (eventName, payload) => {
         break;
       case "CLARIFY_REQUIRED": {
         currentRunHasError = true;
-        const qs = (payload.data && payload.data.clarifications || []).join("; ");
-        showSummaryHint("Clarification required.", true);
-        showPlanNlHint(qs ? `Clarification required: ${qs}` : "Clarification required before execution.", true);
-        updateChatExecutionProgress("error", "执行前需要补充信息。");
-        setStatus("Clarification Required", false);
+        const questions = Array.isArray(workflowData.clarifications)
+          ? workflowData.clarifications.map(String).filter(Boolean)
+          : [];
+        const missingFields = Array.isArray(workflowData.clarification_fields)
+          ? workflowData.clarification_fields.map(String).filter(Boolean)
+          : [];
+        const question = questions.join("；") || "请补充执行该步骤所需的信息。";
+        clarificationPending = true;
+        pendingClarificationContext = {
+          base_query: currentResolvedRequest || currentRequestQuery || originalUserQuery,
+          resolved_message: currentResolvedRequest || currentRequestQuery || originalUserQuery,
+          entities: { ...currentRequestEntities },
+          missing_fields: missingFields,
+          questions,
+          workflow_id: "",
+          restart_workflow: true,
+        };
+        activePendingPlan = null;
+        showAssistantText(question);
+        appendActiveConversationMessage("assistant", question);
+        showSummaryHint("等待你补充信息。", true);
+        showPlanNlHint(`需要补充信息：${question}`, true);
+        updateChatExecutionProgress("error", `需要补充信息：${question}`);
+        setStatus("等待补充信息", true);
+        saveActiveConversation();
+        document.getElementById("chatMessage")?.focus();
         break;
       }
       case "APPROVAL_REQUIRED":
@@ -5439,11 +5504,13 @@ const runWorkflow = async () => {
     ? { ...pendingClarificationContext }
     : null;
   const clarificationWorkflowId = isClarificationAnswer
-    ? (
+    ? (pendingClarificationContext?.restart_workflow
+      ? null
+      : (
       pendingClarificationContext?.workflow_id
       || workflowIdInput?.value.trim()
       || null
-    )
+      ))
     : null;
 
   activeConversationUserId = userId;
@@ -5480,7 +5547,10 @@ const runWorkflow = async () => {
     : message;
   currentRunContext = "planning";
   currentRunHasError = false;
-  if (workflowIdInput && !isClarificationAnswer) {
+  if (
+    workflowIdInput
+    && (!isClarificationAnswer || clarificationContextForRequest?.restart_workflow)
+  ) {
     workflowIdInput.value = "";
   }
   runBtn.disabled = true;
@@ -5590,6 +5660,7 @@ const runWorkflow = async () => {
 };
 
 const runExecution = async () => {
+  if (executionAuthorizationInProgress) return;
   const recoveryLocked = Boolean(
     activePendingPlan?.interruptedFrom === "executing"
     && isExecutionPlanLockedStatus(activePendingPlan?.status)
@@ -5612,6 +5683,17 @@ const runExecution = async () => {
     showPlanValidationHint("Workflow ID is required before execution.", true);
     return;
   }
+  const workflowOwnerId = getWorkflowOwnerId(workflowId);
+  if (workflowOwnerId && workflowOwnerId !== userId) {
+    const message = `当前计划属于用户 ${workflowOwnerId}，当前运行用户为 ${userId}。请切换回原用户，或用当前用户重新生成计划。`;
+    showPlanValidationHint(message, true);
+    setStatus("执行身份不匹配", false);
+    if (currentChatLifecycle) {
+      currentChatLifecycle.confirmPlanButton.textContent = "确认执行";
+      setChatPlanActionsDisabled(false);
+    }
+    return;
+  }
   if (!planSteps.length) {
     showPlanValidationHint("Plan is empty, so execution cannot start.", true);
     return;
@@ -5629,6 +5711,8 @@ const runExecution = async () => {
   saveActiveConversation();
 
   let executionIdentity;
+  executionAuthorizationInProgress = true;
+  updateConfirmExecuteState();
   try {
     executionIdentity = await createExecutionIdentity(
       userId,
@@ -5678,6 +5762,9 @@ const runExecution = async () => {
       setStatus("Plan ready", true);
     }
     return;
+  } finally {
+    executionAuthorizationInProgress = false;
+    updateConfirmExecuteState();
   }
   activePendingPlan = {
     steps: planSteps.map((step) => normalizeStep(step)),
@@ -5870,17 +5957,31 @@ const runExecution = async () => {
         outcomeStatus: "needs_reconciliation",
         outcomeMessage: "任务已暂停，等待人工核对。",
       });
-    } else if (!terminalSucceeded) {
+    } else if (terminalStatus === "CLARIFY_REQUIRED") {
+      activePendingPlan = null;
+      saveActiveConversation();
+      captureAssistantConversationContext({
+        outcomeStatus: "clarify_required",
+        outcomeMessage: "执行需要补充信息，等待用户回复后重新规划。",
+      });
+    } else if (!terminalSucceeded && runtime.recoveryReviewRequired) {
       activePendingPlan = {
         ...executionIdentityState,
         status: "recovery_review_required",
-        recoveryMessage: `原任务已返回 ${terminalStatus || "UNKNOWN"}。请人工审核已完成步骤和外部操作状态，再从任务历史选择检查点恢复执行。`,
+        recoveryMessage: `任务执行未完成（${terminalStatus || "UNKNOWN"}），已自动进入失败恢复审核队列。请人工审核已完成步骤和外部操作状态，再从任务历史选择检查点恢复执行。`,
         serverStatus: terminalStatus || "UNKNOWN",
       };
       saveActiveConversation();
       captureAssistantConversationContext({
         outcomeStatus: terminalStatus || "failed",
-        outcomeMessage: "执行未成功，请在 Task History 中核对原任务后再决定后续操作。",
+        outcomeMessage: "执行未成功，已进入失败恢复审核队列。",
+      });
+    } else if (!terminalSucceeded) {
+      activePendingPlan = null;
+      saveActiveConversation();
+      captureAssistantConversationContext({
+        outcomeStatus: terminalStatus || "failed",
+        outcomeMessage: "执行失败；该错误需要修复 Agent、契约、Schema 或任务计划，不能通过人工审核放行。",
       });
     } else if (latestFinalResultText || !currentRunHasError) {
       activePendingPlan = null;
@@ -8529,6 +8630,12 @@ const selectTask = async (task) => {
   await loadTaskGovernance(task.task_id);
   // Load log
   await loadTaskLog(task.task_id);
+};
+
+window.openRecoveryReviewTask = async (task) => {
+  switchTab("tasks");
+  await fetchTasks();
+  await selectTask(task);
 };
 
 const loadTaskCheckpoints = async (taskId) => {

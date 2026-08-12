@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from config.s_abac_config import S_ABAC_POLICIES, SENSITIVITY_LEVELS
+from src.security.working_hours import is_within_working_hours
 
 
 @dataclass
@@ -129,8 +130,7 @@ class Scenario:
         explicit = self.environment.get("time")
         if explicit:
             return explicit == "working_hours"
-        now = datetime.now().time()
-        return datetime.strptime("09:00", "%H:%M").time() <= now <= datetime.strptime("18:00", "%H:%M").time()
+        return is_within_working_hours()
 
     def is_internal_network(self) -> bool:
         return self.environment.get("network_zone", "internal") == "internal"

@@ -1,0 +1,25 @@
+[
+  {
+    "case": 8,
+    "instruction": "查询北京明天天气，结合出差行程给出提醒",
+    "workflow_id": "admin:0d51b2a7117d9cde1357301856a49405",
+    "status": "PLANNING_FAILED",
+    "terminal": {
+      "workflow_id": "admin:0d51b2a7117d9cde1357301856a49405",
+      "task_id": "admin_0d51b2a7117d9cde1357301856a49405__20260810_163815",
+      "status": "SUCCEEDED",
+      "messages": [
+        {
+          "role": "user",
+          "content": "workflow completed"
+        }
+      ],
+      "skill_execution_evidence": null
+    },
+    "failure_events": [
+      {
+        "message": "persisted plan is missing"
+      }
+    ]
+  }
+]

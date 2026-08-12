@@ -1,0 +1,143 @@
+[
+  {
+    "case": 8,
+    "instruction": "查询北京明天天气，结合出差行程给出提醒",
+    "workflow_id": "admin:0d51b2a7117d9cde1357301856a49405",
+    "task_id": "exec-1b8f15773b30f017df25a5f437459dee",
+    "status": "SUCCEEDED",
+    "failed_steps": [],
+    "blocked_steps": [],
+    "steps": [
+      {
+        "step_id": "step_weather_query",
+        "agent": "scheduler【RemoteWeatherAgent】",
+        "status": "SUCCEEDED",
+        "error": null,
+        "failure": null
+      },
+      {
+        "step_id": "step_travel_query",
+        "agent": "scheduler【RemoteOfficeAssistantAgent】",
+        "status": "SUCCEEDED",
+        "error": null,
+        "failure": null
+      }
+    ],
+    "governance_failure_events": [],
+    "terminal": {
+      "workflow_id": "admin:0d51b2a7117d9cde1357301856a49405",
+      "task_id": "exec-1b8f15773b30f017df25a5f437459dee",
+      "mode": "scheduler",
+      "status": "SUCCEEDED",
+      "failed_steps": [],
+      "blocked_steps": [],
+      "failures": [],
+      "rejected_steps": [],
+      "clarifications": [],
+      "approval_required_steps": [],
+      "needs_reconciliation": [],
+      "results": {
+        "step_weather_query": "SUCCEEDED",
+        "step_travel_query": "SUCCEEDED"
+      },
+      "skill_execution_evidence": {
+        "schema_version": 1,
+        "task_id": "exec-1b8f15773b30f017df25a5f437459dee",
+        "workflow_id": "admin:0d51b2a7117d9cde1357301856a49405",
+        "execution_mode": "scheduler",
+        "workflow_status": "SUCCEEDED",
+        "technical_success": true,
+        "business_success": true,
+        "step_coverage": 1.0,
+        "business_outcome_coverage": 1.0,
+        "steps": [
+          {
+            "step_id": "step_weather_query",
+            "agent_name": "RemoteWeatherAgent",
+            "planned_agent": "RemoteWeatherAgent",
+            "executed_agent": "RemoteWeatherAgent",
+            "operation_mode": "read",
+            "risk_level": "LOW",
+            "technical_success": true,
+            "business_success": true,
+            "outcome_status": "success",
+            "verification_status": "not_required",
+            "verification_method": "technical_read_success",
+            "verification_evidence_ref": null,
+            "schema_valid": true,
+            "artifact_refs": [
+              {
+                "artifact_id": "ac27b15e43604f0e84e5199411965027",
+                "version": 1,
+                "selector": null,
+                "expected_schema_ref": "structured_agent_result@v1"
+              }
+            ],
+            "resource_ids": [],
+            "external_operation_id": null,
+            "idempotency_key": null,
+            "receipt_status": null,
+            "needs_reconciliation": false,
+            "error": null
+          },
+          {
+            "step_id": "step_travel_query",
+            "agent_name": "RemoteOfficeAssistantAgent",
+            "planned_agent": "RemoteOfficeAssistantAgent",
+            "executed_agent": "RemoteOfficeAssistantAgent",
+            "operation_mode": "read",
+            "risk_level": "LOW",
+            "technical_success": true,
+            "business_success": true,
+            "outcome_status": "success",
+            "verification_status": "not_required",
+            "verification_method": "technical_read_success",
+            "verification_evidence_ref": null,
+            "schema_valid": true,
+            "artifact_refs": [
+              {
+                "artifact_id": "353da89f02fc488091c0daeec9c5de3c",
+                "version": 1,
+                "selector": null,
+                "expected_schema_ref": "structured_agent_result@v1"
+              }
+            ],
+            "resource_ids": [],
+            "external_operation_id": null,
+            "idempotency_key": null,
+            "receipt_status": null,
+            "needs_reconciliation": false,
+            "error": null
+          }
+        ],
+        "task_graph": {
+          "schema_version": 1,
+          "steps": [
+            {
+              "step_id": "step_weather_query",
+              "depends_on": [],
+              "operation_mode": "read",
+              "risk_level": "LOW",
+              "agent_name": "RemoteWeatherAgent",
+              "required_capabilities": [],
+              "input_names": []
+            },
+            {
+              "step_id": "step_travel_query",
+              "depends_on": [
+                "step_weather_query"
+              ],
+              "operation_mode": "read",
+              "risk_level": "LOW",
+              "agent_name": "RemoteOfficeAssistantAgent",
+              "required_capabilities": []
+            }
+          ],
+          "graph_hash": "8bf8bf8bddfb934c94ab283d0962090186a1170c8ec092b5dd422d41d71b7283"
+        },
+        "planning_steps": [],
+        "created_at": "2026-08-10T11:45:02.784029+00:00"
+      }
+    }
+  }
+]

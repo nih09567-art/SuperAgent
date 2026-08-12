@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" data-pptx-page-role="content" font-family="Microsoft YaHei, Arial, sans-serif">
+  <rect id="background" data-pptx-role="background" x="0" y="0" width="1280" height="720" fill="#FFFFFF"/>
+  <g id="title-block" data-pptx-bounds="52 42 1170 92">
+    <text x="58" y="76" font-family="Arial, Microsoft YaHei, sans-serif" font-size="16" font-weight="bold" letter-spacing="1.4" fill="#F28C28">EXECUTIVE ANSWER</text>
+    <text x="58" y="116" font-size="38" font-weight="bold" fill="#1E2A36">四个模块共同回答：做什么、谁来做、如何继续、是否允许</text>
+  </g>
+  <g id="execution-spine" data-pptx-bounds="86 168 1102 102">
+    <line x1="126" y1="218" x2="1142" y2="218" stroke="#DCE5EF" stroke-width="12" stroke-linecap="round"/>
+    <line x1="126" y1="218" x2="1108" y2="218" stroke="#0B5CAD" stroke-width="5" stroke-linecap="round"/>
+    <polygon points="1142,218 1114,204 1114,232" fill="#0B5CAD"/>
+    <circle cx="126" cy="218" r="30" fill="#FFFFFF" stroke="#0B5CAD" stroke-width="5"/>
+    <circle cx="465" cy="218" r="30" fill="#FFFFFF" stroke="#0B5CAD" stroke-width="5"/>
+    <circle cx="804" cy="218" r="30" fill="#FFFFFF" stroke="#0B5CAD" stroke-width="5"/>
+    <circle cx="1142" cy="218" r="30" fill="#FFFFFF" stroke="#F28C28" stroke-width="5"/>
+    <text x="126" y="225" text-anchor="middle" font-family="Arial, Microsoft YaHei, sans-serif" font-size="18" font-weight="bold" fill="#0B5CAD">01</text>
+    <text x="465" y="225" text-anchor="middle" font-family="Arial, Microsoft YaHei, sans-serif" font-size="18" font-weight="bold" fill="#0B5CAD">02</text>
+    <text x="804" y="225" text-anchor="middle" font-family="Arial, Microsoft YaHei, sans-serif" font-size="18" font-weight="bold" fill="#0B5CAD">03</text>
+    <text x="1142" y="225" text-anchor="middle" font-family="Arial, Microsoft YaHei, sans-serif" font-size="18" font-weight="bold" fill="#F28C28">04</text>
+  </g>
+  <g id="module-map" data-pptx-bounds="58 288 1164 248">
+    <rect x="58" y="288" width="270" height="236" fill="#F3F7FB"/>
+    <rect x="347" y="288" width="270" height="236" fill="#F3F7FB"/>
+    <rect x="636" y="288" width="270" height="236" fill="#F3F7FB"/>
+    <rect x="925" y="288" width="297" height="236" fill="#FFF7EE"/>
+    <rect x="58" y="288" width="8" height="236" fill="#0B5CAD"/>
+    <rect x="347" y="288" width="8" height="236" fill="#4CA6C6"/>
+    <rect x="636" y="288" width="8" height="236" fill="#0B5CAD"/>
+    <rect x="925" y="288" width="8" height="236" fill="#F28C28"/>
+    <text x="82" y="326" font-size="22" font-weight="bold" fill="#0B5CAD">主 Agent：语义</text>
+    <text x="371" y="326" font-size="22" font-weight="bold" fill="#0B5CAD">多 Agent：执行</text>
+    <text x="660" y="326" font-size="22" font-weight="bold" fill="#0B5CAD">Memory / Skill：状态</text>
+    <text x="949" y="326" font-size="22" font-weight="bold" fill="#F28C28">S-ABAC：治理</text>
+    <text x="82" y="370" font-size="18" fill="#1E2A36">自然语言 → TaskProfile</text>
+    <text x="82" y="402" font-size="18" fill="#1E2A36">授权候选 → 可解释路由</text>
+    <text x="82" y="466" font-family="Arial, Microsoft YaHei, sans-serif" font-size="30" font-weight="bold" fill="#0B5CAD">33</text>
+    <text x="133" y="466" font-size="16" fill="#516273">条意图用例</text>
+    <text x="371" y="370" font-size="18" fill="#1E2A36">TaskGraph → 调度与恢复</text>
+    <text x="371" y="402" font-size="18" fill="#1E2A36">48 工具 → 2.17 候选</text>
+    <text x="371" y="466" font-family="Arial, Microsoft YaHei, sans-serif" font-size="30" font-weight="bold" fill="#0B5CAD">40.0%</text>
+    <text x="371" y="494" font-size="16" fill="#516273">B2 任务闭环率</text>
+    <text x="660" y="370" font-size="18" fill="#1E2A36">上下文 / 事实 / 程序经验</text>
+    <text x="660" y="402" font-size="18" fill="#1E2A36">分通道写入与失效</text>
+    <text x="660" y="466" font-family="Arial, Microsoft YaHei, sans-serif" font-size="30" font-weight="bold" fill="#0B5CAD">64 / 64</text>
+    <text x="660" y="494" font-size="16" fill="#516273">Memory 确定性用例</text>
+    <text x="949" y="370" font-size="18" fill="#1E2A36">四道 PEP × 三态决策</text>
+    <text x="949" y="402" font-size="18" fill="#1E2A36">模型之外强制执行</text>
+    <text x="949" y="466" font-family="Arial, Microsoft YaHei, sans-serif" font-size="30" font-weight="bold" fill="#F28C28">105 / 105</text>
+    <text x="949" y="494" font-size="16" fill="#7A5A38">权限核心测试</text>
+  </g>
+  <g id="defense-rhythm" data-pptx-bounds="58 558 1164 78">
+    <text x="58" y="582" font-size="16" font-weight="bold" fill="#516273">30 MIN DEFENSE RHYTHM</text>
+    <rect x="58" y="598" width="649" height="20" fill="#0B5CAD"/>
+    <rect x="707" y="598" width="205" height="20" fill="#4CA6C6"/>
+    <rect x="912" y="598" width="310" height="20" fill="#F28C28"/>
+    <text x="382" y="614" text-anchor="middle" font-family="Arial, Microsoft YaHei, sans-serif" font-size="14" font-weight="bold" fill="#FFFFFF">PPT 16–18 min</text>
+    <text x="809" y="614" text-anchor="middle" font-family="Arial, Microsoft YaHei, sans-serif" font-size="14" font-weight="bold" fill="#FFFFFF">DEMO 5 min</text>
+    <text x="1067" y="614" text-anchor="middle" font-family="Arial, Microsoft YaHei, sans-serif" font-size="14" font-weight="bold" fill="#FFFFFF">Q&amp;A 7–9 min</text>
+  </g>
+  <g id="footer" data-pptx-bounds="58 650 1164 42">
+    <text x="58" y="677" font-size="14" fill="#7B8B9B">结论：四层职责不能由一个 Prompt 互相替代</text>
+    <circle cx="1194" cy="670" r="22" fill="#F28C28"/>
+    <text x="1194" y="676" text-anchor="middle" font-family="Arial, Microsoft YaHei, sans-serif" font-size="16" font-weight="bold" fill="#FFFFFF">02</text>
+  </g>
+</svg>

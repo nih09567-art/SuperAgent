@@ -1,0 +1,195 @@
+[
+  {
+    "case": 6,
+    "instruction": "查询客户授信风险，生成风险分析报告，并发送给合规负责人",
+    "workflow_id": "admin:78fcf01e5d7fb5d13fdbb0b520be9488",
+    "task_id": "exec-00442c82159743edda0875debad99820",
+    "status": "SUCCEEDED",
+    "failed_steps": [],
+    "blocked_steps": [],
+    "steps": [
+      {
+        "step_id": "step_risk_query",
+        "agent": "scheduler【RemoteBusinessRiskAgent】",
+        "status": "SUCCEEDED",
+        "error": null,
+        "failure": null
+      },
+      {
+        "step_id": "step_report_generation",
+        "agent": "scheduler【RemoteReportAgent】",
+        "status": "SUCCEEDED",
+        "error": null,
+        "failure": null
+      },
+      {
+        "step_id": "step_email_dispatch",
+        "agent": "scheduler【RemoteEmailDispatchAgent】",
+        "status": "SUCCEEDED",
+        "error": null,
+        "failure": null
+      }
+    ],
+    "governance_failure_events": [],
+    "terminal": {
+      "workflow_id": "admin:78fcf01e5d7fb5d13fdbb0b520be9488",
+      "task_id": "exec-00442c82159743edda0875debad99820",
+      "mode": "scheduler",
+      "status": "SUCCEEDED",
+      "failed_steps": [],
+      "blocked_steps": [],
+      "failures": [],
+      "rejected_steps": [],
+      "clarifications": [],
+      "approval_required_steps": [],
+      "needs_reconciliation": [],
+      "results": {
+        "step_risk_query": "SUCCEEDED",
+        "step_report_generation": "SUCCEEDED",
+        "step_email_dispatch": "SUCCEEDED"
+      },
+      "skill_execution_evidence": {
+        "schema_version": 1,
+        "task_id": "exec-00442c82159743edda0875debad99820",
+        "workflow_id": "admin:78fcf01e5d7fb5d13fdbb0b520be9488",
+        "execution_mode": "scheduler",
+        "workflow_status": "SUCCEEDED",
+        "technical_success": true,
+        "business_success": true,
+        "step_coverage": 1.0,
+        "business_outcome_coverage": 1.0,
+        "steps": [
+          {
+            "step_id": "step_risk_query",
+            "agent_name": "RemoteBusinessRiskAgent",
+            "planned_agent": "RemoteBusinessRiskAgent",
+            "executed_agent": "RemoteBusinessRiskAgent",
+            "operation_mode": "read",
+            "risk_level": "LOW",
+            "technical_success": true,
+            "business_success": true,
+            "outcome_status": "success",
+            "verification_status": "not_required",
+            "verification_method": "technical_read_success",
+            "verification_evidence_ref": null,
+            "schema_valid": true,
+            "artifact_refs": [
+              {
+                "artifact_id": "ae9fa5e4c73e4fb7b173d50f476a576f",
+                "version": 1,
+                "selector": null,
+                "expected_schema_ref": "structured_agent_result@v1"
+              }
+            ],
+            "resource_ids": [],
+            "external_operation_id": null,
+            "idempotency_key": null,
+            "receipt_status": null,
+            "needs_reconciliation": false,
+            "error": null
+          },
+          {
+            "step_id": "step_report_generation",
+            "agent_name": "RemoteReportAgent",
+            "planned_agent": "RemoteReportAgent",
+            "executed_agent": "RemoteReportAgent",
+            "operation_mode": "generate",
+            "risk_level": "LOW",
+            "technical_success": true,
+            "business_success": true,
+            "outcome_status": "unknown",
+            "verification_status": "not_required",
+            "verification_method": "technical_read_success",
+            "verification_evidence_ref": null,
+            "schema_valid": true,
+            "artifact_refs": [
+              {
+                "artifact_id": "db0eac40c4d148eaabbaacbd81188f79",
+                "version": 1,
+                "selector": null,
+                "expected_schema_ref": "report.markdown@v1"
+              }
+            ],
+            "resource_ids": [
+              "report-93ccd8ae17010da22dab2575c5b0c5b76e3374b688978da927bd0a31c7141454"
+            ],
+            "external_operation_id": "report-93ccd8ae17010da22dab2575c5b0c5b76e3374b688978da927bd0a31c7141454",
+            "idempotency_key": null,
+            "receipt_status": null,
+            "needs_reconciliation": false,
+            "error": null
+          },
+          {
+            "step_id": "step_email_dispatch",
+            "agent_name": "RemoteEmailDispatchAgent",
+            "planned_agent": "RemoteEmailDispatchAgent",
+            "executed_agent": "RemoteEmailDispatchAgent",
+            "operation_mode": "send",
+            "risk_level": "LOW",
+            "technical_success": true,
+            "business_success": true,
+            "outcome_status": "simulated",
+            "verification_status": "verified",
+            "verification_method": "provider_receipt",
+            "verification_evidence_ref": null,
+            "schema_valid": true,
+            "artifact_refs": [
+              {
+                "artifact_id": "f5a1d3dbf1904928b7d367df051bb45a",
+                "version": 1,
+                "selector": null,
+                "expected_schema_ref": "email.dispatch.receipt@v1"
+              }
+            ],
+            "resource_ids": [
+              "email-0004",
+              "not_required"
+            ],
+            "external_operation_id": "email-0004",
+            "idempotency_key": "2f4fca2abcfa98fa7afa48e1f3d3fc53348538217b17ca22e06158011f5d73d3",
+            "receipt_status": "SUCCEEDED",
+            "needs_reconciliation": false,
+            "error": null
+          }
+        ],
+        "task_graph": {
+          "schema_version": 1,
+          "steps": [
+            {
+              "step_id": "step_risk_query",
+              "depends_on": [],
+              "operation_mode": "read",
+              "risk_level": "LOW",
+              "agent_name": "RemoteBusinessRiskAgent",
+              "required_capabilities": [],
+              "input_names": []
+            },
+            {
+              "step_id": "step_report_generation",
+              "depends_on": [
+                "step_risk_query"
+              ],
+              "operation_mode": "generate",
+              "risk_level": "LOW",
+              "agent_name": "RemoteReportAgent",
+              "required_capabilities": []
+            },
+            {
+              "step_id": "step_email_dispatch",
+              "depends_on": [
+                "step_report_generation"
+              ],
+              "operation_mode": "send",
+              "risk_level": "LOW",
+              "agent_name": "RemoteEmailDispatchAgent",
+              "required_capabilities": []
+            }
+          ],
+          "graph_hash": "1be2f25d1ce0b6724c87c2045e276114cfbba95a97dd6405daea8bad3ea1d3b8"
+        },
+        "planning_steps": [],
+        "created_at": "2026-08-10T07:51:31.853962+00:00"
+      }
+    }
+  }
+]

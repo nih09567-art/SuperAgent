@@ -73,6 +73,37 @@ def _project_employee_info(record: Any) -> Dict[str, Any]:
     return projected
 
 
+def _string_values(value: Any) -> set[str]:
+    if isinstance(value, str):
+        return {value.strip()} if value.strip() else set()
+    if isinstance(value, (list, tuple, set)):
+        return {str(item).strip() for item in value if str(item).strip()}
+    return set()
+
+
+def _salary_requested_by_steps(steps: Any) -> bool | None:
+    """Return a trusted step-level decision when the brief declares scope."""
+
+    if isinstance(steps, dict):
+        steps = [steps]
+    if not isinstance(steps, list):
+        return None
+
+    has_structured_scope = False
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        outputs = _string_values(
+            step.get("expected_outputs") or step.get("produces")
+        )
+        intents = _string_values(step.get("intents") or step.get("intent"))
+        if outputs or intents:
+            has_structured_scope = True
+        if "employee.salary" in outputs or "salary_query" in intents:
+            return True
+    return False if has_structured_scope else None
+
+
 def _salary_requested(messages: List[Dict[str, Any]]) -> bool:
     """Detect salary intent from the current execution brief or latest user turn.
 
@@ -92,12 +123,26 @@ def _salary_requested(messages: List[Dict[str, Any]]) -> bool:
             except (TypeError, ValueError, json.JSONDecodeError):
                 brief = {}
             step = brief.get("step") if isinstance(brief, dict) else {}
+            assigned_steps = (
+                brief.get("assigned_steps") if isinstance(brief, dict) else []
+            )
+            scoped_steps = assigned_steps or ([step] if step else [])
+            structured_decision = _salary_requested_by_steps(scoped_steps)
+            if structured_decision is not None:
+                return structured_decision
             current_text = " ".join(
                 str(value)
                 for value in (
                     brief.get("original_user_query") if isinstance(brief, dict) else "",
-                    step.get("title") if isinstance(step, dict) else "",
-                    step.get("description") if isinstance(step, dict) else "",
+                    *(
+                        field
+                        for assigned_step in scoped_steps
+                        if isinstance(assigned_step, dict)
+                        for field in (
+                            assigned_step.get("title"),
+                            assigned_step.get("description"),
+                        )
+                    ),
                 )
                 if value
             ).lower()

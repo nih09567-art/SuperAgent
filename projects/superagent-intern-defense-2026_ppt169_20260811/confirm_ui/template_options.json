@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "phase": "template",
+  "lang": "zh",
+  "default_mode": "templates",
+  "explicit_workspace_roots": []
+}

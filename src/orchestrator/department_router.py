@@ -118,20 +118,31 @@ def _composite_candidate_coverage(
         return 0.0
     candidate_ids = {item.agent_id for item in candidates}
     candidate_cards = [card for card in agent_cards if card.agent_id in candidate_ids]
-    covered = 0
-    for subtask in subtasks:
-        intent = _normalized([subtask.get("intent")])
-        capabilities = _normalized(subtask.get("expected_capabilities") or [])
-        scenario_tags = _normalized(subtask.get("scenario_tags") or [])
-        for card in candidate_cards:
-            if (
-                intent & _normalized(card.intents)
-                or capabilities & _normalized(card.capabilities)
-                or scenario_tags & _normalized(card.scenario_tags + card.intents)
-            ):
-                covered += 1
-                break
-    return covered / len(subtasks)
+    uncovered = _uncovered_composite_subtasks(task_profile, candidate_cards)
+    return (len(subtasks) - len(uncovered)) / len(subtasks)
+
+
+def _card_covers_subtask(card: AgentCard, subtask: dict[str, Any]) -> bool:
+    intent = _normalized([subtask.get("intent")])
+    capabilities = _normalized(subtask.get("expected_capabilities") or [])
+    scenario_tags = _normalized(subtask.get("scenario_tags") or [])
+    return bool(
+        intent & _normalized(card.intents)
+        or capabilities & _normalized(card.capabilities)
+        or scenario_tags & _normalized(card.scenario_tags + card.intents)
+    )
+
+
+def _uncovered_composite_subtasks(
+    task_profile: TaskProfile,
+    cards: Iterable[AgentCard],
+) -> list[dict[str, Any]]:
+    available_cards = list(cards)
+    return [
+        subtask
+        for subtask in list(getattr(task_profile, "subtasks", []) or [])
+        if not any(_card_covers_subtask(card, subtask) for card in available_cards)
+    ]
 
 
 def _tool_names(agent: Any) -> list[str]:
@@ -270,7 +281,12 @@ def route_task(
 ) -> RoutingDecision:
     candidates: list[RoutingCandidate] = []
     excluded: list[ExcludedAgent] = []
-    composite_task = len(_normalized(task_profile.expected_capabilities)) > 1
+    subtasks = list(getattr(task_profile, "subtasks", []) or [])
+    composite_task = bool(
+        getattr(task_profile, "is_composite", False)
+        or len(subtasks) > 1
+        or len(_normalized(task_profile.expected_capabilities)) > 1
+    )
 
     for card in agent_cards:
         if card.agent_id not in authorized_agent_ids:
@@ -322,7 +338,6 @@ def route_task(
             [task_profile.intent] + list(getattr(task_profile, "sub_intents", []) or [])
         )
         card_intents = _normalized(card.intents)
-        subtasks = list(getattr(task_profile, "subtasks", []) or [])
         if composite_task and subtasks:
             intent_score = _coverage_score(subtasks, "intent", card.intents)
             capability_score = _coverage_score(subtasks, "expected_capabilities", card.capabilities)
@@ -381,10 +396,11 @@ def route_task(
         )
 
     candidates.sort(key=lambda item: (-item.score, item.agent_id))
+    eligible_candidates = list(candidates)
     candidates = candidates[:top_k]
     top_score = candidates[0].score if candidates else 0.0
     composite_coverage = (
-        _composite_candidate_coverage(task_profile, candidates, agent_cards)
+        _composite_candidate_coverage(task_profile, eligible_candidates, agent_cards)
         if composite_task
         else 0.0
     )
@@ -395,9 +411,32 @@ def route_task(
             if task_profile.missing_fields
             else ["INTENT_CLARIFICATION_REQUIRED"]
         )
-    elif composite_task and composite_coverage >= 0.80:
-        decision = "DISPATCH"
-        reason_codes = ["COMPOSITE_ROUTE_COVERED"]
+    elif composite_task and subtasks:
+        if composite_coverage >= 1.0:
+            decision = "DISPATCH"
+            reason_codes = ["COMPOSITE_ROUTE_COVERED"]
+        else:
+            decision = "REJECT"
+            reason_codes = ["COMPOSITE_ROUTE_INCOMPLETE"]
+            candidate_ids = {item.agent_id for item in eligible_candidates}
+            candidate_cards = [
+                card for card in agent_cards if card.agent_id in candidate_ids
+            ]
+            uncovered_subtasks = _uncovered_composite_subtasks(
+                task_profile, candidate_cards
+            )
+            permission_blocked = any(
+                card.agent_id not in authorized_agent_ids
+                and card.status == "ONLINE"
+                and any(
+                    _card_covers_subtask(card, subtask)
+                    for subtask in uncovered_subtasks
+                )
+                for card in agent_cards
+            )
+            reason_codes.append(
+                "PERMISSION_DENIED" if permission_blocked else "NO_CAPABLE_AGENT"
+            )
     elif top_score >= 0.80:
         decision = "DISPATCH"
         reason_codes = ["HIGH_CONFIDENCE_ROUTE"]

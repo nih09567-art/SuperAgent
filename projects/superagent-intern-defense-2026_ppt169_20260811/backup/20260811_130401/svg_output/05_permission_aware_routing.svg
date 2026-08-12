@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" data-pptx-page-role="content" font-family="Microsoft YaHei, Arial, sans-serif">
+  <rect id="background" data-pptx-role="background" x="0" y="0" width="1280" height="720" fill="#FFFFFF"/>
+  <g id="title-block" data-pptx-bounds="52 34 1170 98">
+    <text x="58" y="64" font-family="Arial, Microsoft YaHei, sans-serif" font-size="16" font-weight="bold" letter-spacing="1.3" fill="#F28C28">01 / ROUTING CONTRACT</text>
+    <text x="58" y="112" font-size="42" font-weight="bold" fill="#1E2A36">权限先硬过滤，再谈语义匹配</text>
+  </g>
+  <g id="score-formula" data-pptx-bounds="616 46 606 76">
+    <rect x="616" y="46" width="606" height="76" fill="#F3F7FB"/>
+    <text x="638" y="74" font-family="Consolas, Microsoft YaHei, monospace" font-size="15" font-weight="bold" fill="#0B5CAD">RouteScore</text>
+    <text x="638" y="102" font-family="Consolas, Microsoft YaHei, monospace" font-size="12" fill="#1E2A36">0.35 intent + 0.25 capability + 0.15 scenario + 0.10 scope + 0.10 history + 0.05 availability</text>
+  </g>
+  <g id="routing-pipeline" data-pptx-bounds="58 168 1164 240">
+    <line x1="166" y1="264" x2="1080" y2="264" stroke="#DCE5EF" stroke-width="10" stroke-linecap="round"/>
+    <line x1="166" y1="264" x2="1050" y2="264" stroke="#0B5CAD" stroke-width="4"/>
+    <polygon points="1080,264 1050,249 1050,279" fill="#0B5CAD"/>
+    <rect x="58" y="204" width="190" height="120" fill="#F3F7FB" stroke="#DCE5EF" stroke-width="2"/>
+    <rect x="288" y="180" width="220" height="168" fill="#FFFFFF" stroke="#0B5CAD" stroke-width="4"/>
+    <rect x="548" y="204" width="214" height="120" fill="#F3F7FB" stroke="#DCE5EF" stroke-width="2"/>
+    <rect x="802" y="204" width="190" height="120" fill="#F3F7FB" stroke="#DCE5EF" stroke-width="2"/>
+    <rect x="1032" y="204" width="190" height="120" fill="#FFF7EE" stroke="#F28C28" stroke-width="3"/>
+    <text x="153" y="246" text-anchor="middle" font-size="19" font-weight="bold" fill="#1E2A36">用户请求</text>
+    <text x="153" y="280" text-anchor="middle" font-size="16" fill="#516273">自然语言 + 会话状态</text>
+    <text x="398" y="218" text-anchor="middle" font-family="Consolas, Microsoft YaHei, monospace" font-size="20" font-weight="bold" fill="#0B5CAD">TaskProfile</text>
+    <text x="310" y="252" font-size="15" fill="#1E2A36">意图 / 子意图 / 实体 / 动作</text>
+    <text x="310" y="280" font-size="15" fill="#1E2A36">数据范围 / 风险 / 否定 / 依赖</text>
+    <text x="310" y="318" font-family="Consolas, Microsoft YaHei, monospace" font-size="14" fill="#F28C28">authorized_agent_ids</text>
+    <text x="655" y="246" text-anchor="middle" font-size="19" font-weight="bold" fill="#1E2A36">AgentCard 硬过滤</text>
+    <text x="655" y="278" text-anchor="middle" font-size="15" fill="#516273">授权 · 在线 · 动作 · 范围 · 风险</text>
+    <text x="897" y="246" text-anchor="middle" font-size="19" font-weight="bold" fill="#1E2A36">可解释评分</text>
+    <text x="897" y="278" text-anchor="middle" font-size="15" fill="#516273">Top-K + 排除原因</text>
+    <text x="1127" y="246" text-anchor="middle" font-size="19" font-weight="bold" fill="#F28C28">终态</text>
+    <text x="1127" y="278" text-anchor="middle" font-family="Consolas, Microsoft YaHei, monospace" font-size="14" fill="#1E2A36">ROUTE / CLARIFY</text>
+    <text x="1127" y="302" text-anchor="middle" font-family="Consolas, Microsoft YaHei, monospace" font-size="14" fill="#1E2A36">REJECT</text>
+  </g>
+  <g id="filtered-branch" data-pptx-bounds="544 354 430 92">
+    <line x1="655" y1="324" x2="655" y2="390" stroke="#AAB7C4" stroke-width="3"/>
+    <polygon points="655,408 644,388 666,388" fill="#AAB7C4"/>
+    <rect x="544" y="408" width="430" height="38" fill="#EEF2F6"/>
+    <text x="759" y="433" text-anchor="middle" font-size="16" fill="#68798A">被过滤候选：保留 reason_codes，但绝不进入评分</text>
+  </g>
+  <g id="three-terminals" data-pptx-bounds="58 478 1164 168">
+    <rect x="58" y="478" width="358" height="128" fill="#EAF4FB"/>
+    <rect x="435" y="478" width="358" height="128" fill="#FFF7EE"/>
+    <rect x="812" y="478" width="410" height="128" fill="#F8EEEE"/>
+    <text x="82" y="518" font-family="Consolas, Microsoft YaHei, monospace" font-size="21" font-weight="bold" fill="#0B5CAD">ROUTE</text>
+    <text x="82" y="552" font-size="17" fill="#1E2A36">合法候选明确 → 进入 Planner</text>
+    <text x="459" y="518" font-family="Consolas, Microsoft YaHei, monospace" font-size="21" font-weight="bold" fill="#F28C28">CLARIFY</text>
+    <text x="459" y="552" font-size="17" fill="#1E2A36">对象 / 范围缺失 → 先问清楚</text>
+    <text x="836" y="518" font-family="Consolas, Microsoft YaHei, monospace" font-size="21" font-weight="bold" fill="#D95C5C">REJECT / NO_CAPABLE_AGENT</text>
+    <text x="836" y="552" font-size="17" fill="#1E2A36">无合法候选 → 失败关闭，不降级越权</text>
+    <text x="58" y="630" font-size="18" font-weight="bold" fill="#F28C28">关键约束：权限不能被更高语义分“抵消”。</text>
+  </g>
+  <g id="footer" data-pptx-bounds="58 650 1164 42">
+    <text x="58" y="677" font-size="14" fill="#7B8B9B">内部契约：TaskProfile / AgentCard / RoutingDecision</text>
+    <circle cx="1194" cy="670" r="22" fill="#F28C28"/>
+    <text x="1194" y="676" text-anchor="middle" font-family="Arial, Microsoft YaHei, sans-serif" font-size="16" font-weight="bold" fill="#FFFFFF">05</text>
+  </g>
+</svg>

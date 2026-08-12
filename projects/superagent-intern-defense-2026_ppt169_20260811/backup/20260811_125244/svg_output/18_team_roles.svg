@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" data-pptx-page-role="ending" font-family="Microsoft YaHei, Arial, sans-serif">
+  <rect id="background" data-pptx-role="background" x="0" y="0" width="1280" height="720" fill="#FFFFFF"/>
+  <g id="title-block" data-pptx-bounds="52 34 1170 100">
+    <text x="58" y="64" font-family="Arial, Microsoft YaHei, sans-serif" font-size="16" font-weight="bold" letter-spacing="1.3" fill="#F28C28">TEAM OWNERSHIP</text>
+    <text x="58" y="114" font-size="40" font-weight="bold" fill="#1E2A36">人员分工：四个模块各有主责，接口与评测共同收敛</text>
+  </g>
+  <g id="team-roles" data-pptx-bounds="58 166 1164 418">
+    <rect x="58" y="166" width="276" height="418" fill="#EAF4FB" stroke="#0B5CAD" stroke-width="4"/>
+    <rect x="354" y="166" width="276" height="418" fill="#F3F7FB"/>
+    <rect x="650" y="166" width="276" height="418" fill="#F3F7FB"/>
+    <rect x="946" y="166" width="276" height="418" fill="#FFF7EE"/>
+    <rect x="58" y="166" width="276" height="62" fill="#0B5CAD"/>
+    <rect x="354" y="166" width="276" height="62" fill="#4CA6C6"/>
+    <rect x="650" y="166" width="276" height="62" fill="#0B5CAD"/>
+    <rect x="946" y="166" width="276" height="62" fill="#F28C28"/>
+    <text x="80" y="206" font-size="24" font-weight="bold" fill="#FFFFFF">刘建杰</text>
+    <text x="376" y="205" font-size="20" font-weight="bold" fill="#FFFFFF">成员姓名待补充 A</text>
+    <text x="672" y="205" font-size="20" font-weight="bold" fill="#FFFFFF">成员姓名待补充 B</text>
+    <text x="968" y="205" font-size="20" font-weight="bold" fill="#FFFFFF">成员姓名待补充 C</text>
+    <text x="80" y="266" font-size="18" font-weight="bold" fill="#0B5CAD">主 Agent + 权限治理</text>
+    <text x="80" y="304" font-size="15" fill="#1E2A36">· TaskProfile / RoutingDecision</text>
+    <text x="80" y="334" font-size="15" fill="#1E2A36">· S-ABAC / 四道 PEP</text>
+    <text x="80" y="364" font-size="15" fill="#1E2A36">· 系统集成 / 治理台</text>
+    <line x1="80" y1="392" x2="310" y2="392" stroke="#B9CADB" stroke-width="2"/>
+    <text x="80" y="426" font-size="15" font-weight="bold" fill="#516273">交付证据</text>
+    <text x="80" y="454" font-size="14" fill="#1E2A36">意图指标 · 权限测试 · 截图</text>
+    <text x="80" y="500" font-size="15" font-weight="bold" fill="#F28C28">Q&amp;A</text>
+    <text x="80" y="528" font-size="14" fill="#1E2A36">路由、权限模型、生产边界</text>
+    <text x="376" y="266" font-size="18" font-weight="bold" fill="#0B5CAD">多 Agent 编排</text>
+    <text x="376" y="304" font-size="15" fill="#1E2A36">· TaskGraph / Scheduler</text>
+    <text x="376" y="334" font-size="15" fill="#1E2A36">· Tool Resolver</text>
+    <text x="376" y="364" font-size="15" fill="#1E2A36">· Pause / Resume</text>
+    <line x1="376" y1="392" x2="606" y2="392" stroke="#B9CADB" stroke-width="2"/>
+    <text x="376" y="426" font-size="15" font-weight="bold" fill="#516273">交付证据</text>
+    <text x="376" y="454" font-size="14" fill="#1E2A36">工具选择 · 恢复对照实验</text>
+    <text x="376" y="500" font-size="15" font-weight="bold" fill="#F28C28">Q&amp;A</text>
+    <text x="376" y="528" font-size="14" fill="#1E2A36">工具收敛、恢复与副作用</text>
+    <text x="672" y="266" font-size="18" font-weight="bold" fill="#0B5CAD">Memory + Skill</text>
+    <text x="672" y="304" font-size="15" fill="#1E2A36">· 上下文压缩</text>
+    <text x="672" y="334" font-size="15" fill="#1E2A36">· 长期记忆</text>
+    <text x="672" y="364" font-size="15" fill="#1E2A36">· Step / Agent Skill</text>
+    <line x1="672" y1="392" x2="902" y2="392" stroke="#B9CADB" stroke-width="2"/>
+    <text x="672" y="426" font-size="15" font-weight="bold" fill="#516273">交付证据</text>
+    <text x="672" y="454" font-size="14" fill="#1E2A36">64 Memory · 36 Skill · 缺陷复盘</text>
+    <text x="672" y="500" font-size="15" font-weight="bold" fill="#F28C28">Q&amp;A</text>
+    <text x="672" y="528" font-size="14" fill="#1E2A36">评测口径、隔离与复用门禁</text>
+    <text x="968" y="266" font-size="18" font-weight="bold" fill="#F28C28">前端 + 演示 + 材料</text>
+    <text x="968" y="304" font-size="15" fill="#1E2A36">· 前端原型 / 演示场景</text>
+    <text x="968" y="334" font-size="15" fill="#1E2A36">· 自动化回归</text>
+    <text x="968" y="364" font-size="15" fill="#1E2A36">· PPT / 报告整合</text>
+    <line x1="968" y1="392" x2="1198" y2="392" stroke="#E2C7A8" stroke-width="2"/>
+    <text x="968" y="426" font-size="15" font-weight="bold" fill="#7A5A38">交付证据</text>
+    <text x="968" y="454" font-size="14" fill="#1E2A36">现场演示 · 回归报告 · 答辩材料</text>
+    <text x="968" y="500" font-size="15" font-weight="bold" fill="#F28C28">Q&amp;A</text>
+    <text x="968" y="528" font-size="14" fill="#1E2A36">现场操作与测试证据</text>
+  </g>
+  <g id="shared-responsibility" data-pptx-bounds="58 606 1164 44">
+    <rect x="58" y="606" width="1164" height="44" fill="#1E2A36"/>
+    <text x="640" y="634" text-anchor="middle" font-size="16" font-weight="bold" fill="#FFFFFF">共享职责：统一 Agent / Tool / Artifact 契约 · 统一评测口径 · 集成联调 · 演示演练 · 材料复核</text>
+  </g>
+  <g id="name-reminder" data-pptx-bounds="58 656 1050 28">
+    <text x="58" y="678" font-size="14" font-weight="bold" fill="#F28C28">答辩前请替换 3 处“成员姓名待补充”占位。</text>
+  </g>
+  <g id="footer" data-pptx-bounds="1120 650 102 42">
+    <circle cx="1194" cy="670" r="22" fill="#F28C28"/>
+    <text x="1194" y="676" text-anchor="middle" font-family="Arial, Microsoft YaHei, sans-serif" font-size="16" font-weight="bold" fill="#FFFFFF">18</text>
+  </g>
+</svg>

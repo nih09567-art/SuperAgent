@@ -1,0 +1,201 @@
+[
+  {
+    "case": 1,
+    "instruction": "查询员工李娜的基本信息，生成收入证明，然后发给王经理",
+    "workflow_id": "admin:0fc9f10d4b7b2577fcec3e1e8ead74d3",
+    "task_id": "exec-34c28fe4110cbcdc168bfbcbd12c685d",
+    "status": "SUCCEEDED",
+    "failed_steps": [],
+    "blocked_steps": [],
+    "steps": [
+      {
+        "step_id": "step_hr_query",
+        "agent": "scheduler【RemoteHRAssistantAgent】",
+        "status": "SUCCEEDED",
+        "error": null,
+        "failure": null
+      },
+      {
+        "step_id": "step_doc_generate",
+        "agent": "scheduler【RemoteDocumentGeneratorAgent】",
+        "status": "SUCCEEDED",
+        "error": null,
+        "failure": null
+      },
+      {
+        "step_id": "step_email_send",
+        "agent": "scheduler【RemoteEmailDispatchAgent】",
+        "status": "SUCCEEDED",
+        "error": null,
+        "failure": null
+      }
+    ],
+    "governance_failure_events": [],
+    "terminal": {
+      "workflow_id": "admin:0fc9f10d4b7b2577fcec3e1e8ead74d3",
+      "task_id": "exec-34c28fe4110cbcdc168bfbcbd12c685d",
+      "mode": "scheduler",
+      "status": "SUCCEEDED",
+      "failed_steps": [],
+      "blocked_steps": [],
+      "failures": [],
+      "rejected_steps": [],
+      "clarifications": [],
+      "approval_required_steps": [],
+      "needs_reconciliation": [],
+      "results": {
+        "step_hr_query": "SUCCEEDED",
+        "step_doc_generate": "SUCCEEDED",
+        "step_email_send": "SUCCEEDED"
+      },
+      "skill_execution_evidence": {
+        "schema_version": 1,
+        "task_id": "exec-34c28fe4110cbcdc168bfbcbd12c685d",
+        "workflow_id": "admin:0fc9f10d4b7b2577fcec3e1e8ead74d3",
+        "execution_mode": "scheduler",
+        "workflow_status": "SUCCEEDED",
+        "technical_success": true,
+        "business_success": true,
+        "step_coverage": 1.0,
+        "business_outcome_coverage": 1.0,
+        "steps": [
+          {
+            "step_id": "step_hr_query",
+            "agent_name": "RemoteHRAssistantAgent",
+            "planned_agent": "RemoteHRAssistantAgent",
+            "executed_agent": "RemoteHRAssistantAgent",
+            "operation_mode": "read",
+            "risk_level": "LOW",
+            "technical_success": true,
+            "business_success": true,
+            "outcome_status": "unknown",
+            "verification_status": "not_required",
+            "verification_method": "technical_read_success",
+            "verification_evidence_ref": null,
+            "schema_valid": true,
+            "artifact_refs": [
+              {
+                "artifact_id": "82640b5603b748b897ed8afddc01651b",
+                "version": 1,
+                "selector": null,
+                "expected_schema_ref": "employee.info@v1"
+              },
+              {
+                "artifact_id": "c54dda6c5b924c6eb4e1f76c1378e6ba",
+                "version": 1,
+                "selector": null,
+                "expected_schema_ref": "employee.salary@v1"
+              }
+            ],
+            "resource_ids": [],
+            "external_operation_id": null,
+            "idempotency_key": null,
+            "receipt_status": null,
+            "needs_reconciliation": false,
+            "error": null
+          },
+          {
+            "step_id": "step_doc_generate",
+            "agent_name": "RemoteDocumentGeneratorAgent",
+            "planned_agent": "RemoteDocumentGeneratorAgent",
+            "executed_agent": "RemoteDocumentGeneratorAgent",
+            "operation_mode": "generate",
+            "risk_level": "LOW",
+            "technical_success": true,
+            "business_success": true,
+            "outcome_status": "success",
+            "verification_status": "not_required",
+            "verification_method": "technical_read_success",
+            "verification_evidence_ref": null,
+            "schema_valid": true,
+            "artifact_refs": [
+              {
+                "artifact_id": "746c0aa54ceb40b892bcc7a902d88797",
+                "version": 1,
+                "selector": null,
+                "expected_schema_ref": "document_generation_result@v1"
+              }
+            ],
+            "resource_ids": [
+              "E:\\Program\\SuperAgent\\output\\income_proof_李娜.docx"
+            ],
+            "external_operation_id": "E:\\Program\\SuperAgent\\output\\income_proof_李娜.docx",
+            "idempotency_key": "a0eb2e0fdbebb8c258b2f43df2251a6d208ebe4a5d24b447506b920f2a845121",
+            "receipt_status": "SUCCEEDED",
+            "needs_reconciliation": false,
+            "error": null
+          },
+          {
+            "step_id": "step_email_send",
+            "agent_name": "RemoteEmailDispatchAgent",
+            "planned_agent": "RemoteEmailDispatchAgent",
+            "executed_agent": "RemoteEmailDispatchAgent",
+            "operation_mode": "send",
+            "risk_level": "LOW",
+            "technical_success": true,
+            "business_success": true,
+            "outcome_status": "simulated",
+            "verification_status": "verified",
+            "verification_method": "provider_receipt",
+            "verification_evidence_ref": null,
+            "schema_valid": true,
+            "artifact_refs": [
+              {
+                "artifact_id": "20f0138bca0d416598910745ce8e9ddf",
+                "version": 1,
+                "selector": null,
+                "expected_schema_ref": "email.dispatch.receipt@v1"
+              }
+            ],
+            "resource_ids": [
+              "email-0001",
+              "not_required"
+            ],
+            "external_operation_id": "email-0001",
+            "idempotency_key": "0a78d5a90ff248a011c3d7a3710eaa638c4006b7c7d96a8b086629ba0d99a4c0",
+            "receipt_status": "SUCCEEDED",
+            "needs_reconciliation": false,
+            "error": null
+          }
+        ],
+        "task_graph": {
+          "schema_version": 1,
+          "steps": [
+            {
+              "step_id": "step_hr_query",
+              "depends_on": [],
+              "operation_mode": "read",
+              "risk_level": "LOW",
+              "agent_name": "RemoteHRAssistantAgent",
+              "required_capabilities": [],
+              "input_names": []
+            },
+            {
+              "step_id": "step_doc_generate",
+              "depends_on": [
+                "step_hr_query"
+              ],
+              "operation_mode": "generate",
+              "risk_level": "LOW",
+              "agent_name": "RemoteDocumentGeneratorAgent",
+              "required_capabilities": []
+            },
+            {
+              "step_id": "step_email_send",
+              "depends_on": [
+                "step_doc_generate"
+              ],
+              "operation_mode": "send",
+              "risk_level": "LOW",
+              "agent_name": "RemoteEmailDispatchAgent",
+              "required_capabilities": []
+            }
+          ],
+          "graph_hash": "75a2ce7d6332d91c2c53adf12e9cadc739d1f384765a89fb4e384236c88bd511"
+        },
+        "planning_steps": [],
+        "created_at": "2026-08-10T06:25:51.231216+00:00"
+      }
+    }
+  }
+]

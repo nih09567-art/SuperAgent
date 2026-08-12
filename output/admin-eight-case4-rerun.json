@@ -1,0 +1,25 @@
+[
+  {
+    "case": 4,
+    "instruction": "查询王经理下周的日程，安排一次和李娜的会议，并通知参会人",
+    "workflow_id": "admin:08e6bd132d672543e9a94a049174484b",
+    "status": "PLANNING_FAILED",
+    "terminal": {
+      "workflow_id": "admin:08e6bd132d672543e9a94a049174484b",
+      "task_id": "admin_08e6bd132d672543e9a94a049174484b__20260810_201445",
+      "status": "SUCCEEDED",
+      "messages": [
+        {
+          "role": "user",
+          "content": "workflow completed"
+        }
+      ],
+      "skill_execution_evidence": null
+    },
+    "failure_events": [
+      {
+        "message": "persisted plan is missing"
+      }
+    ]
+  }
+]

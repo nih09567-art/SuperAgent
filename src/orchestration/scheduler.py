@@ -87,6 +87,18 @@ def _is_trusted_recipient_resolution_error(exc: BaseException) -> bool:
     return isinstance(exc, TrustedRecipientResolutionError)
 
 
+def _trusted_recipient_clarification(exc: BaseException) -> str:
+    """Return a concrete, platform-owned question for recipient lookup errors."""
+
+    try:
+        from src.security.trusted_recipients import AmbiguousTrustedRecipientError
+    except Exception:  # noqa: BLE001 - optional security dependencies
+        AmbiguousTrustedRecipientError = ()  # type: ignore[assignment,misc]
+    if isinstance(exc, AmbiguousTrustedRecipientError):
+        return "该收件人匹配到多个受信任邮箱，请提供唯一的完整邮箱地址。"
+    return "收件人不在受信任联系人目录中，请提供已登记的收件人姓名、角色或完整邮箱地址。"
+
+
 # Optional authorization hook. It runs after routing/context construction but
 # before a side-effect receipt is claimed, so an approval pause never leaves a
 # misleading STARTED receipt behind.
@@ -203,6 +215,7 @@ class WorkflowResult(dict):
         *,
         terminal_status: WorkflowStatus,
         clarifications: Optional[List[str]] = None,
+        clarification_fields: Optional[List[str]] = None,
         approval_required_steps: Optional[List[str]] = None,
         rejected_steps: Optional[List[str]] = None,
         needs_reconciliation: Optional[List[str]] = None,
@@ -212,6 +225,7 @@ class WorkflowResult(dict):
         super().__init__(step_results or {})
         self.terminal_status = terminal_status
         self.clarifications = list(clarifications or [])
+        self.clarification_fields = list(clarification_fields or [])
         self.approval_required_steps = list(approval_required_steps or [])
         self.rejected_steps = list(rejected_steps or [])
         self.needs_reconciliation = list(needs_reconciliation or [])
@@ -652,6 +666,23 @@ class TaskScheduler:
             for sid, r in results.items()
             if (r.metrics or {}).get("approval_required")
         ]
+        clarify_steps = [
+            sid for sid, r in results.items() if (r.metrics or {}).get("clarify")
+        ]
+        clarifications = list(
+            dict.fromkeys(
+                str((results[sid].metrics or {}).get("clarification") or "").strip()
+                for sid in clarify_steps
+                if str((results[sid].metrics or {}).get("clarification") or "").strip()
+            )
+        )
+        clarification_fields = list(
+            dict.fromkeys(
+                str((results[sid].metrics or {}).get("clarification_field") or "").strip()
+                for sid in clarify_steps
+                if str((results[sid].metrics or {}).get("clarification_field") or "").strip()
+            )
+        )
         failed = [sid for sid, r in results.items() if r.status != StepStatus.SUCCEEDED]
         primary_failed = [
             sid for sid, r in results.items() if r.status == StepStatus.FAILED
@@ -664,6 +695,8 @@ class TaskScheduler:
             status = WorkflowStatus.NEEDS_RECONCILIATION
         elif approval_required:
             status = WorkflowStatus.APPROVAL_REQUIRED
+        elif clarify_steps:
+            status = WorkflowStatus.CLARIFY_REQUIRED
         elif not failed:
             status = WorkflowStatus.SUCCEEDED
         elif succeeded:
@@ -676,6 +709,8 @@ class TaskScheduler:
         return WorkflowResult(
             results,
             terminal_status=status,
+            clarifications=clarifications,
+            clarification_fields=clarification_fields,
             approval_required_steps=approval_required,
             rejected_steps=rejected,
             needs_reconciliation=needs_recon,
@@ -1493,19 +1528,19 @@ class TaskScheduler:
                 if governed is not None:
                     return governed
                 if _is_trusted_recipient_resolution_error(exc):
+                    clarification = _trusted_recipient_clarification(exc)
                     return StepResult(
                         step_id=step.step_id,
                         status=StepStatus.FAILED,
-                        error=(
-                            "recipient identity requires human review before "
-                            "the side effect can be executed"
-                        ),
+                        error=clarification,
                         metrics={
                             "failure_code": "CLARIFICATION_REQUIRED",
                             "clarify": True,
                             "safe_to_retry": True,
                             "side_effect_started": False,
                             "failure_phase": "authorization",
+                            "clarification": clarification,
+                            "clarification_field": "recipient",
                             "selected_agent": selected_agent,
                         },
                     )

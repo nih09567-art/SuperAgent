@@ -1,0 +1,147 @@
+{
+  "schema": "template_fill_pptx_plan.v1",
+  "status": "confirmed",
+  "source_pptx": "E:\\Program\\SuperAgent\\projects\\superagent-routing-governance-4slides_ppt169_20260811\\sources\\汇报模板.pptx",
+  "accepted_warnings": [],
+  "slides": [
+    {
+      "source_slide": 45,
+      "purpose": "调研与同类方案对比",
+      "layout_rationale": {
+        "layout_pattern": "5列对比表",
+        "why_fit": "一页对齐三类主流多 Agent 编排框架与 SuperAgent，用统一维度展示选型差异。",
+        "risk": "表格字段必须保持短语化，详细说明放入演讲备注。"
+      },
+      "notes": "调研表明，OpenAI Agents SDK 和 LangGraph 都支持中央调度，AutoGen 更偏向会话式的下一 Agent 选择。SuperAgent 借鉴这些编排思路，但把权限候选、数据范围、Artifact 所有权和副作用安全一并收口到主 Agent。\n\n[Sources]\n• https://openai.github.io/openai-agents-python/multi_agent/\n• https://langchain-ai.github.io/langgraphjs/reference/modules/langgraph-supervisor.html\n• https://microsoft.github.io/autogen/dev/user-guide/agentchat-user-guide/selector-group-chat.html",
+      "replacements": [
+        {"slot_id": "s45_sh28", "text": "框架对比"},
+        {"slot_id": "s45_sh33", "text": "结论：借鉴中央调度与持久化，但将权限作为候选硬约束，并把 Artifact、审批与副作用安全纳入同一 trace。"}
+      ],
+      "table_edits": [
+        {
+          "table_id": "s45_tbl32",
+          "cells": [
+            {"row": 0, "col": 0, "text": "对比维度"},
+            {"row": 0, "col": 1, "text": "OpenAI Agents SDK"},
+            {"row": 0, "col": 2, "text": "LangGraph"},
+            {"row": 0, "col": 3, "text": "AutoGen"},
+            {"row": 0, "col": 4, "text": "SuperAgent"},
+            {"row": 1, "col": 0, "text": "编排定位"},
+            {"row": 1, "col": 1, "text": "Manager / Handoff"},
+            {"row": 1, "col": 2, "text": "图状态机 / Supervisor"},
+            {"row": 1, "col": 3, "text": "Selector GroupChat"},
+            {"row": 1, "col": 4, "text": "主 Agent 受控调度"},
+            {"row": 2, "col": 0, "text": "决策方式"},
+            {"row": 2, "col": 1, "text": "LLM + 代码编排"},
+            {"row": 2, "col": 2, "text": "节点与边显式控制"},
+            {"row": 2, "col": 3, "text": "模型选下一发言者"},
+            {"row": 2, "col": 4, "text": "硬过滤 + 可解释评分"},
+            {"row": 3, "col": 0, "text": "权限边界"},
+            {"row": 3, "col": 1, "text": "Guardrail / 审批扩展"},
+            {"row": 3, "col": 2, "text": "HITL / Guardrail 可扩展"},
+            {"row": 3, "col": 3, "text": "Candidate function 约束"},
+            {"row": 3, "col": 4, "text": "S-ABAC + 四道 PEP"},
+            {"row": 4, "col": 0, "text": "状态恢复"},
+            {"row": 4, "col": 1, "text": "Session / 耐久引擎集成"},
+            {"row": 4, "col": 2, "text": "Checkpoint / HITL"},
+            {"row": 4, "col": 3, "text": "消息状态 / 终止条件"},
+            {"row": 4, "col": 4, "text": "Checkpoint + 幂等回执"},
+            {"row": 5, "col": 0, "text": "审计粒度"},
+            {"row": 5, "col": 1, "text": "Run / Trace"},
+            {"row": 5, "col": 2, "text": "State / Graph"},
+            {"row": 5, "col": 3, "text": "消息 / 选人过程"},
+            {"row": 5, "col": 4, "text": "Task / Agent / Tool / Artifact"},
+            {"row": 6, "col": 0, "text": "适用结论"},
+            {"row": 6, "col": 1, "text": "通用 Agent SDK"},
+            {"row": 6, "col": 2, "text": "耐久工作流"},
+            {"row": 6, "col": 3, "text": "多 Agent 协作原型"},
+            {"row": 6, "col": 4, "text": "数字员工治理闭环"}
+          ]
+        }
+      ],
+      "chart_edits": []
+    },
+    {
+      "source_slide": 55,
+      "purpose": "主 Agent 决策与路由成果",
+      "layout_rationale": {
+        "layout_pattern": "四级递进阶梯",
+        "why_fit": "从语义理解、候选收缩、路由决策到执行闭环，符合递进链路。",
+        "risk": "权重与契约字段较多，只在第三级保留关键权重。"
+      },
+      "notes": "主 Agent 不直接凭一次模型输出选 Agent，而是先把请求变成可校验的 TaskProfile，再以权限与能力硬过滤收缩候选。权限不进入加权总分，因为高匹配度不能抵消越权；最终 RoutingDecision 同时输出分数、排除原因和 trace_id。\n\n[Sources]\n• E:/Program/SuperAgent/docs/答辩重点稿-意图识别-多Agent编排-权限治理.md\n• E:/Program/SuperAgent/src/orchestrator/task_profiler.py\n• E:/Program/SuperAgent/src/orchestrator/department_router.py",
+      "replacements": [
+        {"slot_id": "s55_sh82", "text": "决策路由"},
+        {"slot_id": "s55_sh70", "text": "01 任务画像"},
+        {"slot_id": "s55_sh69", "text": "规则+语义生成 TaskProfile，保留显式、隐式、否定与条件意图。"},
+        {"slot_id": "s55_sh73", "text": "02 合法候选"},
+        {"slot_id": "s55_sh72", "text": "AgentCard 按意图、动作、数据范围和风险上限硬过滤。"},
+        {"slot_id": "s55_sh76", "text": "03 路由评分"},
+        {"slot_id": "s55_sh75", "text": "意图35%、能力25%、场景15%、数据10%、成功率10%、成本5%。"},
+        {"slot_id": "s55_sh79", "text": "04 执行闭环"},
+        {"slot_id": "s55_sh78", "text": "生成 TaskGraph，将依赖、重试、改派、Artifact 与 Receipt 统一追踪。"}
+      ],
+      "table_edits": [],
+      "chart_edits": []
+    },
+    {
+      "source_slide": 48,
+      "purpose": "权限治理成果",
+      "layout_rationale": {
+        "layout_pattern": "四闸门循环",
+        "why_fit": "四个执行前后检查点共享同一 task/trace，用闭环形式体现每次调用都重新鉴权。",
+        "risk": "循环图容易被误解为任意顺序，用 01–04 明确执行次序。"
+      },
+      "notes": "权限治理不是写在 Prompt 里要求模型自律，而是在路由、派发、工具和结果四个位置部署确定性执行闸门。这一设计对应 ABAC 的主体、对象、操作和环境属性，也对应零信任的逐请求最小权限、OPA 的 PDP/PEP 分离与 RFC 8693 的委托语义。\n\n[Sources]\n• https://csrc.nist.gov/pubs/sp/800/162/upd2/final\n• https://csrc.nist.gov/pubs/sp/800/207/final\n• https://www.openpolicyagent.org/docs/deploy\n• https://www.rfc-editor.org/info/rfc8693/",
+      "replacements": [
+        {"slot_id": "s48_sh29", "text": "权限治理"},
+        {"slot_id": "s48_sh2", "text": "01"},
+        {"slot_id": "s48_sh3", "text": "02"},
+        {"slot_id": "s48_sh5", "text": "03"},
+        {"slot_id": "s48_sh4", "text": "04"},
+        {"slot_id": "s48_sh16", "text": "路由预检"},
+        {"slot_id": "s48_sh15", "text": "用户是否可见、可用该 Agent；无合法候选则直接拒绝。"},
+        {"slot_id": "s48_sh19", "text": "工具闸门"},
+        {"slot_id": "s48_sh18", "text": "校验工具归属、Grant、参数指纹、场景与审批状态。"},
+        {"slot_id": "s48_sh22", "text": "任务授权"},
+        {"slot_id": "s48_sh21", "text": "校验动作、数据、用途与风险，签发绑定 task/trace 的 Grant。"},
+        {"slot_id": "s48_sh25", "text": "结果守卫"},
+        {"slot_id": "s48_sh24", "text": "检查 Artifact 所有权、敏感度、Schema 完整性与输出范围。"}
+      ],
+      "table_edits": [],
+      "chart_edits": []
+    },
+    {
+      "source_slide": 59,
+      "purpose": "成果评测与量化",
+      "layout_rationale": {
+        "layout_pattern": "八指标环绕中心",
+        "why_fit": "将用户给出的九行意图指标合并 Precision/Recall 为一组，保留八个可对读指标，另补充权限专项证据。",
+        "risk": "指标多，每项只保留数值和一句口径，不在页内展开公式。"
+      },
+      "notes": "这些数字来自三十三条固定标注样本，指标口径彼此独立：严格整例要求全部标注字段同时正确，因此明显低于单字段准确率。权限部分只表述为核心链路专项回归一百零二项全部通过，不延伸为生产级安全认证。\n\n[Sources]\n• E:/Program/SuperAgent/docs/答辩重点稿-意图识别-多Agent编排-权限治理.md\n• E:/Program/SuperAgent/tests/intent_eval_cases.json\n• E:/Program/SuperAgent/tests/evaluations/permission_governance_eval.json",
+      "replacements": [
+        {"slot_id": "s59_sh94", "text": "评测量化"},
+        {"slot_id": "s59_sh31", "text": "原型实测"},
+        {"slot_id": "s59_sh57", "text": "01 严格整例"},
+        {"slot_id": "s59_sh58", "text": "60.61%（20/33）；任一标注字段错误即整例失败。"},
+        {"slot_id": "s59_sh60", "text": "02 主意图"},
+        {"slot_id": "s59_sh61", "text": "93.94%（31/33）；顶层业务域判断较稳定。"},
+        {"slot_id": "s59_sh63", "text": "03 主目标"},
+        {"slot_id": "s59_sh64", "text": "100%（9/9）；有主目标标注的样本全部正确。"},
+        {"slot_id": "s59_sh66", "text": "04 子意图 P/R"},
+        {"slot_id": "s59_sh67", "text": "100% / 98.48%；没有多执行，少量隐含意图漏召回。"},
+        {"slot_id": "s59_sh81", "text": "05 实体字段"},
+        {"slot_id": "s59_sh82", "text": "96.46%；按样本逐字段得分后宏平均。"},
+        {"slot_id": "s59_sh84", "text": "06 依赖完全"},
+        {"slot_id": "s59_sh85", "text": "92.31%（24/26）；整套依赖边必须完全相等。"},
+        {"slot_id": "s59_sh87", "text": "07 澄清判断"},
+        {"slot_id": "s59_sh88", "text": "75%（6/8）；模糊与边界表达是当前主要短板。"},
+        {"slot_id": "s59_sh90", "text": "08 安全治理"},
+        {"slot_id": "s59_sh91", "text": "否定动作误执行 0%（0/5）；权限核心回归 102/102，治理矩阵 21 条。"}
+      ],
+      "table_edits": [],
+      "chart_edits": []
+    }
+  ]
+}

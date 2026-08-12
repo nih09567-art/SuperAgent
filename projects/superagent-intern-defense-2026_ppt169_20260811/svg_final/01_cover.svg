@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" data-pptx-page-role="cover" font-family="Microsoft YaHei, Arial, sans-serif">
+  <rect id="background" data-pptx-role="background" x="0" y="0" width="1280" height="720" fill="#FFFFFF" />
+  <g id="cover-heading" data-pptx-bounds="58 68 690 400">
+    <text x="62" y="92" font-family="Arial, Microsoft YaHei, sans-serif" font-size="18" font-weight="bold" letter-spacing="1.6" fill="#F28C28">SUPERAGENT / INTERN DEFENSE 2026</text>
+    <rect x="62" y="118" width="72" height="5" fill="#F28C28" />
+    <text x="62" y="208" font-size="48" font-weight="bold" fill="#0B5CAD">把开放式 Agent 变成</text>
+    <text x="62" y="274" font-size="48" font-weight="bold" fill="#1E2A36">可治理的数字员工执行闭环</text>
+    <text fill="#516273" font-size="23" x="62" y="344">主 Agent 决策与路由  ×  多 Agent 协同编排与工具选择</text><text fill="#516273" font-size="23" x="62" y="382">记忆与 Skill  ×  权限治理</text><text x="62" y="448" font-size="18" fill="#7B8B9B">SuperAgent 数字员工智能任务执行关键技术研究组</text>
+  </g>
+  <g id="closed-loop-visual" data-pptx-bounds="760 86 452 510">
+    <circle cx="988" cy="336" r="196" fill="none" stroke="#DCE5EF" stroke-width="2" />
+    <circle cx="942" cy="312" r="152" fill="none" stroke="#0B5CAD" stroke-width="22" opacity="0.92" />
+    <circle cx="1035" cy="362" r="128" fill="none" stroke="#F28C28" stroke-width="15" opacity="0.92" />
+    <line x1="847" y1="205" x2="1068" y2="212" stroke="#4CA6C6" stroke-width="3" />
+    <line x1="1068" y1="212" x2="1147" y2="404" stroke="#4CA6C6" stroke-width="3" />
+    <line x1="1147" y1="404" x2="955" y2="505" stroke="#4CA6C6" stroke-width="3" />
+    <line x1="955" y1="505" x2="847" y2="205" stroke="#4CA6C6" stroke-width="3" />
+    <circle cx="847" cy="205" r="34" fill="#FFFFFF" stroke="#0B5CAD" stroke-width="5" />
+    <circle cx="1068" cy="212" r="34" fill="#FFFFFF" stroke="#0B5CAD" stroke-width="5" />
+    <circle cx="1147" cy="404" r="34" fill="#FFFFFF" stroke="#F28C28" stroke-width="5" />
+    <circle cx="955" cy="505" r="34" fill="#FFFFFF" stroke="#0B5CAD" stroke-width="5" />
+    <text x="847" y="212" text-anchor="middle" font-size="17" font-weight="bold" fill="#0B5CAD">决策</text>
+    <text x="1068" y="219" text-anchor="middle" font-size="17" font-weight="bold" fill="#0B5CAD">编排</text>
+    <text x="1147" y="411" text-anchor="middle" font-size="17" font-weight="bold" fill="#F28C28">治理</text>
+    <text x="955" y="512" text-anchor="middle" font-size="17" font-weight="bold" fill="#0B5CAD">状态</text>
+    <circle cx="988" cy="336" r="45" fill="#0B5CAD" />
+    <text x="988" y="330" text-anchor="middle" font-family="Arial, Microsoft YaHei, sans-serif" font-size="17" font-weight="bold" fill="#FFFFFF">TRUSTED</text>
+    <text x="988" y="354" text-anchor="middle" font-size="15" fill="#FFFFFF">闭环</text>
+  </g>
+  <g id="cover-footer" data-pptx-bounds="58 628 1164 54">
+    <line x1="62" y1="642" x2="1136" y2="642" stroke="#DCE5EF" stroke-width="2" />
+    <text x="62" y="674" font-size="17" fill="#516273">实习课题答辩  ·  2026.08.13</text>
+    <circle cx="1194" cy="656" r="26" fill="#F28C28" />
+    <text x="1194" y="663" text-anchor="middle" font-family="Arial, Microsoft YaHei, sans-serif" font-size="18" font-weight="bold" fill="#FFFFFF">01</text>
+  </g>
+</svg>

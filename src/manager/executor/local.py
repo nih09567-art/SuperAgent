@@ -16,6 +16,7 @@ class LocalExecutor(AgentExecutor):
 
     _RESEARCH_TOOL_CALL_BUDGET = 6
     _REPEATED_TOOL_CALL_LIMIT = 2
+    _EMPTY_SEARCH_RESULT_LIMIT = 2
 
     def __init__(self):
         super().__init__()
@@ -111,6 +112,32 @@ class LocalExecutor(AgentExecutor):
                 )
         return signatures
 
+    @staticmethod
+    def _tool_call_names(messages: List[Any]) -> Dict[str, str]:
+        names: Dict[str, str] = {}
+        for message in messages:
+            for call in getattr(message, "tool_calls", []) or []:
+                if not isinstance(call, dict):
+                    continue
+                call_id = str(call.get("id") or "")
+                if call_id:
+                    names[call_id] = str(call.get("name") or "")
+        return names
+
+    @staticmethod
+    def _is_empty_tool_result(content: Any) -> bool:
+        if content in (None, "", [], {}):
+            return True
+        if not isinstance(content, str):
+            return False
+        rendered = content.strip()
+        if not rendered:
+            return True
+        try:
+            return json.loads(rendered) in (None, "", [], {})
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return False
+
     async def _invoke_bounded_research_agent(
         self,
         *,
@@ -126,6 +153,7 @@ class LocalExecutor(AgentExecutor):
         latest_state: Dict[str, Any] = state
         observed_tool_messages: set[str] = set()
         repeated_result_counts: Dict[str, int] = {}
+        consecutive_empty_search_results = 0
         stop_reason = ""
 
         async for snapshot in react_agent.astream(
@@ -135,6 +163,7 @@ class LocalExecutor(AgentExecutor):
                 latest_state = snapshot
             messages = list(latest_state.get("messages") or [])
             call_signatures = self._tool_call_signatures(messages)
+            call_names = self._tool_call_names(messages)
 
             for message in messages:
                 if not isinstance(message, ToolMessage):
@@ -147,9 +176,13 @@ class LocalExecutor(AgentExecutor):
                 if message_key in observed_tool_messages:
                     continue
                 observed_tool_messages.add(message_key)
-                signature = call_signatures.get(
-                    str(getattr(message, "tool_call_id", "") or "")
-                )
+                tool_call_id = str(getattr(message, "tool_call_id", "") or "")
+                signature = call_signatures.get(tool_call_id)
+                if call_names.get(tool_call_id) == "tavily_tool":
+                    if self._is_empty_tool_result(getattr(message, "content", "")):
+                        consecutive_empty_search_results += 1
+                    else:
+                        consecutive_empty_search_results = 0
                 if signature:
                     result_payload = json.dumps(
                         getattr(message, "content", ""),
@@ -176,6 +209,14 @@ class LocalExecutor(AgentExecutor):
             ):
                 stop_reason = (
                     "检测到相同研究工具、参数和返回内容重复，未产生新信息"
+                )
+            elif (
+                consecutive_empty_search_results
+                >= self._EMPTY_SEARCH_RESULT_LIMIT
+            ):
+                stop_reason = (
+                    f"连续 {self._EMPTY_SEARCH_RESULT_LIMIT} 次公网搜索无结果，"
+                    "已触发快速熔断"
                 )
 
             # 只在 ToolMessage 已经返回后停止，保证每个 assistant tool_call

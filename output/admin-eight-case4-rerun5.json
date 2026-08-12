@@ -1,0 +1,261 @@
+[
+  {
+    "case": 4,
+    "instruction": "查询王经理下周的日程，安排一次和李娜的会议，并通知参会人",
+    "workflow_id": "admin:08e6bd132d672543e9a94a049174484b",
+    "task_id": "exec-1c9f0d812bfa5aae0c27c426307d1ba6",
+    "status": "NEEDS_RECONCILIATION",
+    "failed_steps": [
+      "schedule_meeting_with_lina"
+    ],
+    "blocked_steps": [
+      "notify_participants"
+    ],
+    "steps": [
+      {
+        "step_id": "query_manager_schedule",
+        "agent": "scheduler【RemoteHRCalendarAgent】",
+        "status": "SUCCEEDED",
+        "error": null,
+        "failure": null
+      },
+      {
+        "step_id": "schedule_meeting_with_lina",
+        "agent": "scheduler【RemoteMeetingManagerAgent】",
+        "status": "FAILED",
+        "error": null,
+        "failure": {
+          "code": "SIDE_EFFECT_UNCONFIRMED",
+          "category": "reconciliation",
+          "message": "The outcome of a side effect could not be confirmed.",
+          "retryable": false,
+          "action": "Verify the external operation manually; do not resend automatically.",
+          "step_id": "schedule_meeting_with_lina",
+          "agent_id": "RemoteMeetingManagerAgent",
+          "parameter_name": null,
+          "source_step": null,
+          "source_output": null,
+          "blocked_by": [],
+          "details_safe": {}
+        }
+      },
+      {
+        "step_id": "notify_participants",
+        "agent": "scheduler【RemoteEmailDispatchAgent】",
+        "status": "SKIPPED",
+        "error": null,
+        "failure": {
+          "code": "UPSTREAM_STEP_FAILED",
+          "category": "artifact",
+          "message": "Step was not executed because an upstream step failed.",
+          "retryable": false,
+          "action": "Fix the blocked upstream steps, then resume from a safe checkpoint.",
+          "step_id": "notify_participants",
+          "agent_id": null,
+          "parameter_name": null,
+          "source_step": null,
+          "source_output": null,
+          "blocked_by": [
+            "schedule_meeting_with_lina"
+          ],
+          "details_safe": {}
+        }
+      }
+    ],
+    "governance_failure_events": [
+      {
+        "event": "reconciliation_required",
+        "data": {
+          "reconciliation_id": "recon_exec-1c9f0d812bfa5aae0c27c426307d1ba6_schedule_meeting_with_lina_1786367593656",
+          "status": "pending",
+          "task_id": "exec-1c9f0d812bfa5aae0c27c426307d1ba6",
+          "workflow_id": "admin:08e6bd132d672543e9a94a049174484b",
+          "step_id": "schedule_meeting_with_lina",
+          "resume_step": 2,
+          "agent_name": "RemoteMeetingManagerAgent",
+          "error": "Failed after 1 retries: [WinError 10053] 你的主机中的软件中止了一个已建立的连接。",
+          "idempotency_key": "075cf7fe1ffad339f296eb499d2b7a6800a505224de93aa13ac4360f13887706",
+          "external_operation_id": ""
+        }
+      }
+    ],
+    "terminal": {
+      "workflow_id": "admin:08e6bd132d672543e9a94a049174484b",
+      "task_id": "exec-1c9f0d812bfa5aae0c27c426307d1ba6",
+      "mode": "scheduler",
+      "status": "NEEDS_RECONCILIATION",
+      "failed_steps": [
+        "schedule_meeting_with_lina"
+      ],
+      "blocked_steps": [
+        "notify_participants"
+      ],
+      "failures": [
+        {
+          "code": "SIDE_EFFECT_UNCONFIRMED",
+          "category": "reconciliation",
+          "message": "The outcome of a side effect could not be confirmed.",
+          "retryable": false,
+          "action": "Verify the external operation manually; do not resend automatically.",
+          "step_id": "schedule_meeting_with_lina",
+          "agent_id": "RemoteMeetingManagerAgent",
+          "parameter_name": null,
+          "source_step": null,
+          "source_output": null,
+          "blocked_by": [],
+          "details_safe": {}
+        },
+        {
+          "code": "UPSTREAM_STEP_FAILED",
+          "category": "artifact",
+          "message": "Step was not executed because an upstream step failed.",
+          "retryable": false,
+          "action": "Fix the blocked upstream steps, then resume from a safe checkpoint.",
+          "step_id": "notify_participants",
+          "agent_id": null,
+          "parameter_name": null,
+          "source_step": null,
+          "source_output": null,
+          "blocked_by": [
+            "schedule_meeting_with_lina"
+          ],
+          "details_safe": {}
+        }
+      ],
+      "rejected_steps": [],
+      "clarifications": [],
+      "approval_required_steps": [],
+      "needs_reconciliation": [
+        "schedule_meeting_with_lina"
+      ],
+      "results": {
+        "query_manager_schedule": "SUCCEEDED",
+        "schedule_meeting_with_lina": "FAILED",
+        "notify_participants": "SKIPPED"
+      },
+      "skill_execution_evidence": {
+        "schema_version": 1,
+        "task_id": "exec-1c9f0d812bfa5aae0c27c426307d1ba6",
+        "workflow_id": "admin:08e6bd132d672543e9a94a049174484b",
+        "execution_mode": "scheduler",
+        "workflow_status": "NEEDS_RECONCILIATION",
+        "technical_success": false,
+        "business_success": false,
+        "step_coverage": 1.0,
+        "business_outcome_coverage": 1.0,
+        "steps": [
+          {
+            "step_id": "query_manager_schedule",
+            "agent_name": "RemoteHRCalendarAgent",
+            "planned_agent": "RemoteHRCalendarAgent",
+            "executed_agent": "RemoteHRCalendarAgent",
+            "operation_mode": "read",
+            "risk_level": "LOW",
+            "technical_success": true,
+            "business_success": true,
+            "outcome_status": "success",
+            "verification_status": "not_required",
+            "verification_method": "technical_read_success",
+            "verification_evidence_ref": null,
+            "schema_valid": true,
+            "artifact_refs": [
+              {
+                "artifact_id": "0d15988187c647479b0b9d81512d2031",
+                "version": 1,
+                "selector": null,
+                "expected_schema_ref": "structured_agent_result@v1"
+              }
+            ],
+            "resource_ids": [],
+            "external_operation_id": null,
+            "idempotency_key": null,
+            "receipt_status": null,
+            "needs_reconciliation": false,
+            "error": null
+          },
+          {
+            "step_id": "schedule_meeting_with_lina",
+            "agent_name": "RemoteMeetingManagerAgent",
+            "planned_agent": "RemoteMeetingManagerAgent",
+            "executed_agent": "RemoteMeetingManagerAgent",
+            "operation_mode": "write",
+            "risk_level": "LOW",
+            "technical_success": false,
+            "business_success": false,
+            "outcome_status": "unknown",
+            "verification_status": "failed",
+            "verification_method": null,
+            "verification_evidence_ref": null,
+            "schema_valid": null,
+            "artifact_refs": [],
+            "resource_ids": [],
+            "external_operation_id": null,
+            "idempotency_key": "075cf7fe1ffad339f296eb499d2b7a6800a505224de93aa13ac4360f13887706",
+            "receipt_status": "STARTED",
+            "needs_reconciliation": true,
+            "error": null
+          },
+          {
+            "step_id": "notify_participants",
+            "agent_name": "RemoteEmailDispatchAgent",
+            "planned_agent": "RemoteEmailDispatchAgent",
+            "executed_agent": "RemoteEmailDispatchAgent",
+            "operation_mode": "send",
+            "risk_level": "LOW",
+            "technical_success": false,
+            "business_success": false,
+            "outcome_status": "unknown",
+            "verification_status": "failed",
+            "verification_method": null,
+            "verification_evidence_ref": null,
+            "schema_valid": null,
+            "artifact_refs": [],
+            "resource_ids": [],
+            "external_operation_id": null,
+            "idempotency_key": null,
+            "receipt_status": null,
+            "needs_reconciliation": false,
+            "error": null
+          }
+        ],
+        "task_graph": {
+          "schema_version": 1,
+          "steps": [
+            {
+              "step_id": "query_manager_schedule",
+              "depends_on": [],
+              "operation_mode": "read",
+              "risk_level": "LOW",
+              "agent_name": "RemoteHRCalendarAgent",
+              "required_capabilities": [],
+              "input_names": []
+            },
+            {
+              "step_id": "schedule_meeting_with_lina",
+              "depends_on": [
+                "query_manager_schedule"
+              ],
+              "operation_mode": "write",
+              "risk_level": "LOW",
+              "agent_name": "RemoteMeetingManagerAgent",
+              "required_capabilities": []
+            },
+            {
+              "step_id": "notify_participants",
+              "depends_on": [
+                "schedule_meeting_with_lina"
+              ],
+              "operation_mode": "send",
+              "risk_level": "LOW",
+              "agent_name": "RemoteEmailDispatchAgent",
+              "required_capabilities": []
+            }
+          ],
+          "graph_hash": "b0c93e8e1ebc777f0ee3c328a84ff72412286308c15bc8a047bf441ad6c17552"
+        },
+        "planning_steps": [],
+        "created_at": "2026-08-10T13:13:13.684585+00:00"
+      }
+    }
+  }
+]

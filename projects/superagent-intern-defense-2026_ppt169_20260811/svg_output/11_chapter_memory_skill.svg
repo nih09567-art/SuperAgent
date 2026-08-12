@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" data-pptx-page-role="section" font-family="Microsoft YaHei, Arial, sans-serif">
+  <rect id="background" data-pptx-role="background" x="0" y="0" width="1280" height="720" fill="#FFFFFF"/>
+  <g id="chapter-heading" data-pptx-bounds="62 92 690 444">
+    <text x="64" y="238" font-family="Arial, Microsoft YaHei, sans-serif" font-size="128" font-weight="bold" fill="#E5EEF7">03</text>
+    <rect x="72" y="276" width="76" height="6" fill="#F28C28"/>
+    <text x="72" y="354" font-size="54" font-weight="bold" fill="#0B5CAD">记忆与 Skill</text>
+    <text x="72" y="426" font-size="23" fill="#516273">上下文压缩｜长期记忆｜步骤 / 智能体 Skill</text>
+    <text x="72" y="474" font-size="21" font-weight="bold" fill="#1E2A36">三种“记住”必须分治，才能同时控制 Token、隐私和复用风险。</text>
+  </g>
+  <g id="three-memory-streams" data-pptx-bounds="762 104 458 466">
+    <circle cx="1080" cy="336" r="124" fill="none" stroke="#0B5CAD" stroke-width="16"/>
+    <circle cx="1100" cy="360" r="88" fill="none" stroke="#F28C28" stroke-width="11"/>
+    <line x1="798" y1="206" x2="1000" y2="296" stroke="#0B5CAD" stroke-width="8" stroke-linecap="round"/>
+    <line x1="798" y1="336" x2="972" y2="336" stroke="#4CA6C6" stroke-width="8" stroke-linecap="round"/>
+    <line x1="798" y1="466" x2="1000" y2="376" stroke="#F28C28" stroke-width="8" stroke-linecap="round"/>
+    <circle cx="798" cy="206" r="30" fill="#FFFFFF" stroke="#0B5CAD" stroke-width="5"/>
+    <circle cx="798" cy="336" r="30" fill="#FFFFFF" stroke="#4CA6C6" stroke-width="5"/>
+    <circle cx="798" cy="466" r="30" fill="#FFFFFF" stroke="#F28C28" stroke-width="5"/>
+    <text x="842" y="212" font-size="17" font-weight="bold" fill="#0B5CAD">会话</text>
+    <text x="842" y="342" font-size="17" font-weight="bold" fill="#0B5CAD">长期事实</text>
+    <text x="842" y="472" font-size="17" font-weight="bold" fill="#F28C28">程序经验</text>
+    <text x="1080" y="330" text-anchor="middle" font-size="17" font-weight="bold" fill="#0B5CAD">仅注入</text>
+    <text x="1080" y="354" text-anchor="middle" font-size="17" font-weight="bold" fill="#0B5CAD">主 Agent</text>
+    <text x="1080" y="390" text-anchor="middle" font-size="14" fill="#516273">不直接污染远端 Agent</text>
+  </g>
+  <g id="chapter-claim" data-pptx-bounds="64 568 1040 68">
+    <line x1="72" y1="586" x2="302" y2="586" stroke="#DCE5EF" stroke-width="2"/>
+    <text x="72" y="624" font-size="25" font-weight="bold" fill="#1E2A36">状态的来源、生命周期与失效规则，决定它能否安全复用。</text>
+  </g>
+  <g id="footer" data-pptx-bounds="1120 646 102 46">
+    <circle cx="1194" cy="670" r="22" fill="#F28C28"/>
+    <text x="1194" y="676" text-anchor="middle" font-family="Arial, Microsoft YaHei, sans-serif" font-size="16" font-weight="bold" fill="#FFFFFF">11</text>
+  </g>
+</svg>

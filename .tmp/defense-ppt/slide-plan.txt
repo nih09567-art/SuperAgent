@@ -1,0 +1,28 @@
+Communication job: By the end, internship reviewers should understand that SuperAgent turns open-ended model capability into a verifiable, recoverable, governable digital-employee execution loop, and should be able to judge the evidence and current limits of each module.
+
+Audience: internship defense reviewers with mixed research, engineering, and governance backgrounds.
+Pacing: approximately 18 minutes slides, 5 minutes demonstration, 7 minutes questions.
+Visual source: the supplied 17-page CCB interim-results PDF. Reuse its white canvas, blue/orange accent pair, overlapping title dots, chapter dividers, evidence tables, and restrained bottom-right page marker; do not reuse the CCB logo or business content.
+
+01 Title — research topic and four modules.
+02 Answer first — one execution loop and four layers of evidence.
+03 Agenda — four requested chapters.
+04 Section divider — Main Agent decision and routing.
+05 Benchmark — OpenAI Agents SDK, AutoGen, LangGraph, and SuperAgent by capability dimension.
+06 Method — TaskProfile, permission hard filter, AgentCard, and auditable scoring.
+07 Evaluation — 33-case intent benchmark, findings, and next improvements.
+08 Section divider — Multi-Agent orchestration and tool selection.
+09 Benchmark — ReAct, AutoGen, LangGraph, A2A, and SuperAgent by enterprise execution dimension.
+10 Method — candidate-plan trust pipeline plus control/data-plane separation.
+11 Tool strategy — 48 to 2.17 candidate funnel, Top-K, ABSTAIN, and fixed-set metrics.
+12 Interruption — safe-point pause/resume, Checkpoint, idempotency/Receipt, and recovery benchmark.
+13 Section divider — Memory and Skill.
+14 Benchmark — OpenAI Sessions, LangGraph Memory, Mem0, Voyager, and SuperAgent.
+15 Method — context, long-term memory, and Step/Agent Skill as three governed state channels.
+16 Evaluation — context token reduction, Memory 64/64, Skill 31/36 and the discovered normalization defect.
+17 Section divider — Permission governance.
+18 Benchmark — ACL/RBAC, ABAC/ReBAC, OPA/Cedar, OpenAI Guardrails, and SuperAgent S-ABAC.
+19 Method — four enforcement gates, three-state decision, Artifact Guard, Receipt, and fail-closed behavior.
+20 Results/demo — decision console and governance dashboard screenshots plus regression evidence.
+21 Team split — known owner plus three editable name placeholders; close on the shared deliverable.
+

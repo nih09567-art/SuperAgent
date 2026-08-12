@@ -59,6 +59,7 @@ def test_scheduler_assigned_step_carries_memory_constraints():
         title="Generate report",
         description="Generate the requested report",
         intents=["report_generation"],
+        expected_outputs=["report.markdown"],
         note="Use concise Chinese output",
         memory_constraints=[
             "Output language: Chinese",
@@ -68,6 +69,7 @@ def test_scheduler_assigned_step_carries_memory_constraints():
 
     payload = _scheduler_assigned_step_payload(step)
 
+    assert payload["expected_outputs"] == ["report.markdown"]
     assert payload["note"] == "Use concise Chinese output"
     assert payload["memory_constraints"] == [
         "Output language: Chinese",

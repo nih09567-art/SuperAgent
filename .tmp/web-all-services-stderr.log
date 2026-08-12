@@ -1,0 +1,19 @@
+INFO:     Started server process [23980]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8001 (Press CTRL+C to quit)
+2026-08-12 12:17:04 - src.workflow.coor_task - INFO - Coordinator talking. 
+
+2026-08-12 12:17:06 - src.workflow.coor_task - INFO - ============================================================
+2026-08-12 12:17:06 - src.workflow.coor_task - INFO - PLANNER PERFORMANCE TRACKING START
+2026-08-12 12:17:06 - src.workflow.coor_task - INFO - Mode: WorkMode.LAUNCH
+2026-08-12 12:17:06 - src.workflow.coor_task - INFO - ============================================================
+2026-08-12 12:17:06 - src.workflow.coor_task - INFO - [PERF] Prompt preparation: 0.02s
+2026-08-12 12:17:06 - src.workflow.coor_task - INFO - [PERF] Starting LLM call (model: basic)...
+2026-08-12 12:17:12 - src.workflow.coor_task - INFO - [PERF] LLM call completed: 6.29s
+2026-08-12 12:17:12 - src.workflow.coor_task - INFO - [PERF] JSON parsing: 0.00s
+2026-08-12 12:17:12 - src.workflow.coor_task - INFO - [PERF] Plan validation: 0.00s
+2026-08-12 12:17:12 - src.workflow.coor_task - INFO - scheduler wiring: task_graph built and snapshot persisted (1 steps)
+2026-08-12 12:17:12 - src.workflow.coor_task - INFO - ============================================================
+2026-08-12 12:17:12 - src.workflow.coor_task - INFO - [PERF] PLANNER TOTAL TIME: 6.31s (mode: WorkMode.LAUNCH)
+2026-08-12 12:17:12 - src.workflow.coor_task - INFO - ============================================================

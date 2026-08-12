@@ -1,0 +1,25 @@
+[
+  {
+    "case": 3,
+    "instruction": "搜索李娜的公开信息，整理成一份简短报告",
+    "workflow_id": "admin:1df45d0b8c19ebe7c6b86ee010dc9833",
+    "status": "PLANNING_FAILED",
+    "terminal": {
+      "workflow_id": "admin:1df45d0b8c19ebe7c6b86ee010dc9833",
+      "task_id": "admin_1df45d0b8c19ebe7c6b86ee010dc9833__20260810_194539",
+      "status": "SUCCEEDED",
+      "messages": [
+        {
+          "role": "user",
+          "content": "workflow completed"
+        }
+      ],
+      "skill_execution_evidence": null
+    },
+    "failure_events": [
+      {
+        "message": "persisted plan is missing"
+      }
+    ]
+  }
+]

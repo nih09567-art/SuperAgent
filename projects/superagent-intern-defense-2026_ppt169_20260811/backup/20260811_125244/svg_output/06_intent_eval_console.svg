@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" data-pptx-page-role="content" font-family="Microsoft YaHei, Arial, sans-serif">
+  <rect id="background" data-pptx-role="background" x="0" y="0" width="1280" height="720" fill="#FFFFFF"/>
+  <g id="title-block" data-pptx-bounds="52 32 1170 126">
+    <text x="58" y="62" font-family="Arial, Microsoft YaHei, sans-serif" font-size="16" font-weight="bold" letter-spacing="1.3" fill="#F28C28">01 / EVALUATION + WORKING PROTOTYPE</text>
+    <text x="58" y="106" font-size="34" font-weight="bold" fill="#1E2A36">关键字段已过 90% 目标线，但严格整例仍暴露</text>
+    <text x="58" y="144" font-size="32" font-weight="bold" fill="#0B5CAD">澄清与边界问题</text>
+  </g>
+  <g id="intent-metrics" data-pptx-bounds="58 180 586 400">
+    <text x="58" y="202" font-size="16" font-weight="bold" fill="#516273">33 条固定用例 · 统一 0–100% 刻度</text>
+    <g id="intent-metrics-chartArea">
+      <line x1="210" y1="232" x2="610" y2="232" stroke="#DCE5EF" stroke-width="2"/>
+      <line x1="210" y1="552" x2="610" y2="552" stroke="#DCE5EF" stroke-width="2"/>
+      <line x1="210" y1="224" x2="210" y2="560" stroke="#DCE5EF" stroke-width="2"/>
+      <line x1="410" y1="224" x2="410" y2="560" stroke="#E8EEF4" stroke-width="2"/>
+      <line x1="570" y1="224" x2="570" y2="560" stroke="#F28C28" stroke-width="2" stroke-dasharray="6,3"/>
+      <line x1="610" y1="224" x2="610" y2="560" stroke="#DCE5EF" stroke-width="2"/>
+      <text x="210" y="218" text-anchor="middle" font-size="14" fill="#7B8B9B">0</text>
+      <text x="410" y="218" text-anchor="middle" font-size="14" fill="#7B8B9B">50</text>
+      <text x="570" y="218" text-anchor="middle" font-size="14" font-weight="bold" fill="#F28C28">90</text>
+      <text x="610" y="218" text-anchor="middle" font-size="14" fill="#7B8B9B">100%</text>
+      <!-- chart-plot-area: object=intent-metrics | 210,236,610,548 -->
+      <rect x="210" y="242" width="375.76" height="40" fill="#0B5CAD"/>
+      <rect x="210" y="294" width="385.84" height="40" fill="#0B5CAD"/>
+      <rect x="210" y="346" width="369.24" height="40" fill="#0B5CAD"/>
+      <rect x="210" y="398" width="393.92" height="40" fill="#4CA6C6"/>
+      <rect x="210" y="450" width="242.44" height="40" fill="#F28C28"/>
+      <rect x="210" y="502" width="300" height="40" fill="#F28C28"/>
+    </g>
+    <text x="58" y="270" font-size="16" fill="#1E2A36">主意图</text>
+    <text x="58" y="322" font-size="16" fill="#1E2A36">实体字段</text>
+    <text x="58" y="374" font-size="16" fill="#1E2A36">依赖完整</text>
+    <text x="58" y="426" font-size="16" fill="#1E2A36">子意图 Recall</text>
+    <text x="58" y="478" font-size="16" font-weight="bold" fill="#F28C28">严格整例</text>
+    <text x="58" y="530" font-size="16" font-weight="bold" fill="#F28C28">澄清触发</text>
+    <text x="598" y="270" text-anchor="end" font-family="Arial, Microsoft YaHei, sans-serif" font-size="16" font-weight="bold" fill="#0B5CAD">93.94%</text>
+    <text x="598" y="322" text-anchor="end" font-family="Arial, Microsoft YaHei, sans-serif" font-size="16" font-weight="bold" fill="#0B5CAD">96.46%</text>
+    <text x="598" y="374" text-anchor="end" font-family="Arial, Microsoft YaHei, sans-serif" font-size="16" font-weight="bold" fill="#0B5CAD">92.31%</text>
+    <text x="598" y="426" text-anchor="end" font-family="Arial, Microsoft YaHei, sans-serif" font-size="16" font-weight="bold" fill="#4CA6C6">98.48%</text>
+    <text x="598" y="478" text-anchor="end" font-family="Arial, Microsoft YaHei, sans-serif" font-size="16" font-weight="bold" fill="#F28C28">60.61%</text>
+    <text x="598" y="530" text-anchor="end" font-family="Arial, Microsoft YaHei, sans-serif" font-size="16" font-weight="bold" fill="#F28C28">75.00%</text>
+  </g>
+  <g id="routing-console-evidence" data-pptx-bounds="682 180 540 400">
+    <rect x="682" y="180" width="540" height="400" fill="#F3F7FB" stroke="#DCE5EF" stroke-width="2"/>
+    <image id="routing-console-image" href="../images/image_006.png" x="714" y="198" width="476" height="366" preserveAspectRatio="xMidYMid meet"/>
+    <rect x="970" y="188" width="220" height="36" fill="#F28C28"/>
+    <text x="1080" y="212" text-anchor="middle" font-size="15" font-weight="bold" fill="#FFFFFF">真实决策台 / 完整截图</text>
+  </g>
+  <g id="metric-interpretation" data-pptx-bounds="58 598 1164 52">
+    <rect x="58" y="598" width="1164" height="52" fill="#F3F7FB"/>
+    <text x="78" y="631" font-size="18" font-weight="bold" fill="#1E2A36">不能用 96.46% 实体准确率替代 60.61% 严格整例通过率；否定动作误执行保持 0%。</text>
+  </g>
+  <g id="footer" data-pptx-bounds="58 654 1164 38">
+    <text x="58" y="678" font-size="14" fill="#7B8B9B">来源：FINAL_EVALUATION_REPORT.md · 主 Agent 评测集</text>
+    <circle cx="1194" cy="670" r="22" fill="#F28C28"/>
+    <text x="1194" y="676" text-anchor="middle" font-family="Arial, Microsoft YaHei, sans-serif" font-size="16" font-weight="bold" fill="#FFFFFF">06</text>
+  </g>
+</svg>

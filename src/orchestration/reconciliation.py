@@ -91,6 +91,36 @@ class ReconciliationStore:
                 expected_schema_refs=dict(expected_schema_refs or {}),
             )
             self._save(request)
+            # A new uncertain attempt replaces the manual decision that was
+            # just consumed to launch it. Keep the old record for audit, but
+            # remove it from the actionable queue so users cannot resume the
+            # same historical decision again and create an endless loop.
+            for path in self.base_dir.glob("*.json"):
+                if path == self._path(request.reconciliation_id):
+                    continue
+                try:
+                    previous = ReconciliationRequest(
+                        **json.loads(path.read_text(encoding="utf-8"))
+                    )
+                except Exception:
+                    continue
+                if (
+                    previous.task_id != task_id
+                    or previous.step_id != step_id
+                    or previous.status
+                    not in {"retry_ready", "confirmed_succeeded", "resuming"}
+                ):
+                    continue
+                previous.status = "consumed"
+                previous.updated_at = now
+                previous.resolution = {
+                    **dict(previous.resolution or {}),
+                    "resume_succeeded": False,
+                    "resume_superseded": True,
+                    "superseded_by_reconciliation_id": request.reconciliation_id,
+                    "superseded_at": now,
+                }
+                self._save(previous)
             return request
 
     def list(
@@ -392,6 +422,13 @@ class ReconciliationStore:
         with self._lock, FileLock(self._file_lock_path):
             self._recover_transaction_unlocked()
             request = self._require(reconciliation_id)
+            if (
+                request.status == "consumed"
+                and request.resolution.get("resume_superseded") is True
+                and str(request.resolution.get("resume_claim_id") or "")
+                == str(resume_claim_id or "")
+            ):
+                return request
             self._require_resume_claim(request, resume_claim_id)
             now = time.time()
             effective_lease_seconds = self._resume_lease_seconds(lease_seconds)
@@ -417,8 +454,9 @@ class ReconciliationStore:
         *,
         resume_claim_id: str,
         succeeded: bool,
+        superseded: bool = False,
     ) -> ReconciliationRequest:
-        """Consume a successful resume or restore its ready state on failure."""
+        """Finish a resume, consuming records replaced by a newer verdict."""
 
         with self._lock, FileLock(self._file_lock_path):
             self._recover_transaction_unlocked()
@@ -433,12 +471,15 @@ class ReconciliationStore:
             previous_status = str(
                 request.resolution.get("resume_from_status") or "retry_ready"
             )
-            request.status = "consumed" if succeeded else previous_status
+            request.status = (
+                "consumed" if succeeded or superseded else previous_status
+            )
             request.updated_at = datetime.now().isoformat()
             request.resolution = {
                 **dict(request.resolution or {}),
                 "resume_finished_at": request.updated_at,
                 "resume_succeeded": bool(succeeded),
+                "resume_superseded": bool(superseded),
             }
             self._save(request)
             return request

@@ -1,0 +1,187 @@
+[
+  {
+    "case": 3,
+    "instruction": "搜索李娜的公开信息，整理成一份简短报告",
+    "workflow_id": "admin:1df45d0b8c19ebe7c6b86ee010dc9833",
+    "task_id": "exec-17bb037a142e0c9bdd80c735168ffc27",
+    "status": "FAILED",
+    "failed_steps": [
+      "step_generate_report"
+    ],
+    "blocked_steps": [],
+    "steps": [
+      {
+        "step_id": "step_research_li_na",
+        "agent": "scheduler【researcher】",
+        "status": "SUCCEEDED",
+        "error": null,
+        "failure": null
+      },
+      {
+        "step_id": "step_generate_report",
+        "agent": "scheduler【RemoteReportAgent】",
+        "status": "FAILED",
+        "error": null,
+        "failure": {
+          "code": "ARTIFACT_SCHEMA_INVALID",
+          "category": "schema",
+          "message": "An upstream Artifact was not Schema-valid.",
+          "retryable": false,
+          "action": "Fix and republish the upstream output.",
+          "step_id": "step_generate_report",
+          "agent_id": "RemoteReportAgent",
+          "parameter_name": "report.sources",
+          "source_step": null,
+          "source_output": null,
+          "blocked_by": [],
+          "details_safe": {}
+        }
+      },
+      {
+        "step_id": "step_generate_report",
+        "agent": "scheduler【RemoteReportAgent】",
+        "status": "FAILED",
+        "error": null,
+        "failure": {
+          "code": "ARTIFACT_SCHEMA_INVALID",
+          "category": "schema",
+          "message": "An upstream Artifact was not Schema-valid.",
+          "retryable": false,
+          "action": "Fix and republish the upstream output.",
+          "step_id": "step_generate_report",
+          "agent_id": "RemoteReportAgent",
+          "parameter_name": "report.sources",
+          "source_step": null,
+          "source_output": null,
+          "blocked_by": [],
+          "details_safe": {}
+        }
+      }
+    ],
+    "governance_failure_events": [],
+    "terminal": {
+      "workflow_id": "admin:1df45d0b8c19ebe7c6b86ee010dc9833",
+      "task_id": "exec-17bb037a142e0c9bdd80c735168ffc27",
+      "mode": "scheduler",
+      "status": "FAILED",
+      "failed_steps": [
+        "step_generate_report"
+      ],
+      "blocked_steps": [],
+      "failures": [
+        {
+          "code": "ARTIFACT_SCHEMA_INVALID",
+          "category": "schema",
+          "message": "An upstream Artifact was not Schema-valid.",
+          "retryable": false,
+          "action": "Fix and republish the upstream output.",
+          "step_id": "step_generate_report",
+          "agent_id": "RemoteReportAgent",
+          "parameter_name": "report.sources",
+          "source_step": null,
+          "source_output": null,
+          "blocked_by": [],
+          "details_safe": {}
+        }
+      ],
+      "rejected_steps": [],
+      "clarifications": [],
+      "approval_required_steps": [],
+      "needs_reconciliation": [],
+      "results": {
+        "step_generate_report": "FAILED"
+      },
+      "skill_execution_evidence": {
+        "schema_version": 1,
+        "task_id": "exec-17bb037a142e0c9bdd80c735168ffc27",
+        "workflow_id": "admin:1df45d0b8c19ebe7c6b86ee010dc9833",
+        "execution_mode": "scheduler",
+        "workflow_status": "FAILED",
+        "technical_success": false,
+        "business_success": false,
+        "step_coverage": 1.0,
+        "business_outcome_coverage": 1.0,
+        "steps": [
+          {
+            "step_id": "step_research_li_na",
+            "agent_name": "researcher",
+            "planned_agent": "researcher",
+            "executed_agent": "researcher",
+            "operation_mode": "read",
+            "risk_level": "LOW",
+            "technical_success": true,
+            "business_success": true,
+            "outcome_status": "unknown",
+            "verification_status": "not_required",
+            "verification_method": "technical_read_success",
+            "verification_evidence_ref": null,
+            "schema_valid": null,
+            "artifact_refs": [
+              {
+                "artifact_id": "7f7aabadea684664b4fa7ee963e9149e",
+                "version": 1,
+                "selector": null,
+                "expected_schema_ref": null
+              }
+            ],
+            "resource_ids": [],
+            "external_operation_id": null,
+            "idempotency_key": null,
+            "receipt_status": null,
+            "needs_reconciliation": false,
+            "error": null
+          },
+          {
+            "step_id": "step_generate_report",
+            "agent_name": "RemoteReportAgent",
+            "planned_agent": "RemoteReportAgent",
+            "executed_agent": "RemoteReportAgent",
+            "operation_mode": "generate",
+            "risk_level": "LOW",
+            "technical_success": false,
+            "business_success": false,
+            "outcome_status": "unknown",
+            "verification_status": "failed",
+            "verification_method": null,
+            "verification_evidence_ref": null,
+            "schema_valid": null,
+            "artifact_refs": [],
+            "resource_ids": [],
+            "external_operation_id": null,
+            "idempotency_key": null,
+            "receipt_status": null,
+            "needs_reconciliation": false,
+            "error": null
+          }
+        ],
+        "task_graph": {
+          "schema_version": 1,
+          "steps": [
+            {
+              "step_id": "step_research_li_na",
+              "depends_on": [],
+              "operation_mode": "read",
+              "risk_level": "LOW",
+              "agent_name": "researcher",
+              "required_capabilities": [],
+              "input_names": []
+            },
+            {
+              "step_id": "step_generate_report",
+              "depends_on": [
+                "step_research_li_na"
+              ],
+              "operation_mode": "generate",
+              "risk_level": "LOW",
+              "agent_name": "RemoteReportAgent",
+              "required_capabilities": []
+            }
+          ],
+          "graph_hash": "47e3f5f10135d44109a154e07c6a8b77c9d47761c996e3b1358086d5cbcae0b3"
+        },
+        "planning_steps": [],
+        "created_at": "2026-08-10T12:01:37.337926+00:00"
+      }
+    }
+  }
+]

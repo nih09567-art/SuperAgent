@@ -15,6 +15,8 @@ def test_routing_decision_reasons_are_localized_without_renaming_agents():
         "INTENT_MATCH": "意图匹配",
         "CAPABILITY_MATCH": "能力匹配",
         "SCENARIO_MATCH": "场景匹配",
+        "COMPOSITE_ROUTE_INCOMPLETE": "复合任务缺少可执行 Agent",
+        "PERMISSION_DENIED": "权限不足",
     }.items():
         assert f'{code}: "{label}"' in source
 
@@ -29,3 +31,4 @@ def test_routing_decision_and_exclusion_codes_use_the_same_localizer():
     assert "localizeRoutingDecision(decision)" in source
     assert "localizeRoutingReasonCode(item.reason_code)" in source
     assert "localizeRoutingReasonCode(item)" in source
+    assert '"权限治理拒绝"' in source

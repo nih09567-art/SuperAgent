@@ -1,0 +1,12 @@
+{
+  "schema": "template_fill_pptx_validate.v1",
+  "project": "E:\\Program\\SuperAgent\\projects\\superagent-routing-governance-4slides_ppt169_20260811",
+  "export": "E:\\Program\\SuperAgent\\projects\\superagent-routing-governance-4slides_ppt169_20260811\\exports\\SuperAgent_主Agent决策路由与权限治理_20260811_202425.pptx",
+  "readback": "E:\\Program\\SuperAgent\\projects\\superagent-routing-governance-4slides_ppt169_20260811\\validation\\readback.md",
+  "summary": {
+    "ok": 82,
+    "warn": 0,
+    "error": 0
+  },
+  "results": []
+}

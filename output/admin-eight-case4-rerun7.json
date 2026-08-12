@@ -1,0 +1,330 @@
+[
+  {
+    "case": 4,
+    "instruction": "查询王经理下周的日程，安排一次和李娜的会议，并通知参会人",
+    "workflow_id": "admin:08e6bd132d672543e9a94a049174484b",
+    "task_id": "exec-c9f5b1633a41513cde412de78bdeac55",
+    "status": "PARTIAL_FAILED",
+    "failed_steps": [
+      "step_notify_participants"
+    ],
+    "blocked_steps": [],
+    "steps": [
+      {
+        "step_id": "step_query_calendar",
+        "agent": "scheduler【RemoteHRCalendarAgent】",
+        "status": "SUCCEEDED",
+        "error": null,
+        "failure": null
+      },
+      {
+        "step_id": "step_schedule_meeting",
+        "agent": "scheduler【RemoteMeetingManagerAgent】",
+        "status": "SUCCEEDED",
+        "error": null,
+        "failure": null
+      },
+      {
+        "step_id": "step_notify_participants",
+        "agent": "scheduler【RemoteEmailDispatchAgent】",
+        "status": "FAILED",
+        "error": null,
+        "failure": {
+          "code": "AGENT_DISPATCH_DENIED",
+          "category": "permission",
+          "message": "该操作仅允许在工作时间执行，当前时间不符合要求。",
+          "retryable": false,
+          "action": "请管理员补充对应角色、授权项或资源权限后，再从该步骤重试。",
+          "step_id": "step_notify_participants",
+          "agent_id": "RemoteEmailDispatchAgent",
+          "parameter_name": null,
+          "source_step": null,
+          "source_output": null,
+          "blocked_by": [],
+          "details_safe": {}
+        }
+      }
+    ],
+    "governance_failure_events": [
+      {
+        "event": "permission_denied",
+        "data": {
+          "subject": {
+            "subject_type": "user",
+            "id": "admin",
+            "attributes": {
+              "role": "UniversalAssistant",
+              "department": "System",
+              "job_role": "system_orchestrator",
+              "clearance_level": 5,
+              "trust_level": "HIGH",
+              "grants": [
+                "all"
+              ],
+              "display_name": "Admin (System Admin)"
+            }
+          },
+          "object": {
+            "object_type": "agent",
+            "id": "RemoteEmailDispatchAgent",
+            "attributes": {
+              "type": "agent",
+              "protocol": "remote",
+              "sensitivity": "HIGH",
+              "allowed_roles": [
+                "UniversalAssistant",
+                "CommunicationAgent"
+              ],
+              "allowed_job_roles": [
+                "communication_officer",
+                "communication_manager",
+                "system_orchestrator"
+              ],
+              "allowed_operation_modes": [
+                "delegate",
+                "send"
+              ],
+              "scenario_tags": [
+                "notification_send",
+                "mass_notification",
+                "external_send"
+              ],
+              "expected_capabilities": [
+                "Communication"
+              ],
+              "department_domain": "Office",
+              "capability_domain": "Communication",
+              "owner_agent": "",
+              "requires_approval": false,
+              "grants_required": [],
+              "require_working_hours": true,
+              "require_internal_network": true,
+              "external_side_effect": true
+            }
+          },
+          "scenario": {
+            "task_scenario": {
+              "stage": "PRODUCTION",
+              "goal": "查询王经理下周的日程，安排一次和李娜的会议，并通知参会人",
+              "business_goal": "发送消息或邮件",
+              "task_type": "COMMUNICATION",
+              "data_scope": "communication.recipient,communication.content",
+              "operation_mode": "send",
+              "scenario_tags": [
+                "notification_send"
+              ],
+              "expected_capabilities": [
+                "Communication"
+              ],
+              "risk_profile": "HIGH",
+              "scenario_fit_result": {
+                "fit": "match",
+                "confidence": 1.0,
+                "reason": "Trusted subtask classification matches trusted resource",
+                "source": "trusted_task_profile_and_resource_registry"
+              }
+            },
+            "environment": {
+              "time": "off_hours",
+              "network_zone": "internal",
+              "authentication_strength": "MFA"
+            },
+            "business_context": {
+              "workflow_id": "admin:08e6bd132d672543e9a94a049174484b",
+              "task_id": "exec-c9f5b1633a41513cde412de78bdeac55",
+              "current_step": null,
+              "delegation_chain": []
+            }
+          },
+          "action": {
+            "verb": "orchestrate",
+            "attributes": {
+              "action_type": "delegate",
+              "target_agent": "RemoteEmailDispatchAgent",
+              "irreversible": false,
+              "operation_mode": "delegate"
+            }
+          },
+          "policy_result": {
+            "allowed": false,
+            "reason": "Operation not allowed outside working hours",
+            "audit_id": "audit_1786369301567",
+            "timestamp": "2026-08-10T21:41:41.567775",
+            "human_review_required": false,
+            "approval_level": null,
+            "decision": "DENY"
+          },
+          "workflow_id": "admin:08e6bd132d672543e9a94a049174484b",
+          "task_id": "exec-c9f5b1633a41513cde412de78bdeac55",
+          "step_id": "step_notify_participants",
+          "error": "该操作仅允许在工作时间执行，当前时间不符合要求。"
+        }
+      }
+    ],
+    "terminal": {
+      "workflow_id": "admin:08e6bd132d672543e9a94a049174484b",
+      "task_id": "exec-c9f5b1633a41513cde412de78bdeac55",
+      "mode": "scheduler",
+      "status": "PARTIAL_FAILED",
+      "failed_steps": [
+        "step_notify_participants"
+      ],
+      "blocked_steps": [],
+      "failures": [
+        {
+          "code": "AGENT_DISPATCH_DENIED",
+          "category": "permission",
+          "message": "该操作仅允许在工作时间执行，当前时间不符合要求。",
+          "retryable": false,
+          "action": "请管理员补充对应角色、授权项或资源权限后，再从该步骤重试。",
+          "step_id": "step_notify_participants",
+          "agent_id": "RemoteEmailDispatchAgent",
+          "parameter_name": null,
+          "source_step": null,
+          "source_output": null,
+          "blocked_by": [],
+          "details_safe": {}
+        }
+      ],
+      "rejected_steps": [],
+      "clarifications": [],
+      "approval_required_steps": [],
+      "needs_reconciliation": [],
+      "results": {
+        "step_query_calendar": "SUCCEEDED",
+        "step_schedule_meeting": "SUCCEEDED",
+        "step_notify_participants": "FAILED"
+      },
+      "skill_execution_evidence": {
+        "schema_version": 1,
+        "task_id": "exec-c9f5b1633a41513cde412de78bdeac55",
+        "workflow_id": "admin:08e6bd132d672543e9a94a049174484b",
+        "execution_mode": "scheduler",
+        "workflow_status": "PARTIAL_FAILED",
+        "technical_success": false,
+        "business_success": false,
+        "step_coverage": 1.0,
+        "business_outcome_coverage": 1.0,
+        "steps": [
+          {
+            "step_id": "step_query_calendar",
+            "agent_name": "RemoteHRCalendarAgent",
+            "planned_agent": "RemoteHRCalendarAgent",
+            "executed_agent": "RemoteHRCalendarAgent",
+            "operation_mode": "read",
+            "risk_level": "LOW",
+            "technical_success": true,
+            "business_success": true,
+            "outcome_status": "success",
+            "verification_status": "not_required",
+            "verification_method": "technical_read_success",
+            "verification_evidence_ref": null,
+            "schema_valid": true,
+            "artifact_refs": [
+              {
+                "artifact_id": "f2d36eac5a7249aaa552844cfc4d2177",
+                "version": 1,
+                "selector": null,
+                "expected_schema_ref": "structured_agent_result@v1"
+              }
+            ],
+            "resource_ids": [],
+            "external_operation_id": null,
+            "idempotency_key": null,
+            "receipt_status": null,
+            "needs_reconciliation": false,
+            "error": null
+          },
+          {
+            "step_id": "step_schedule_meeting",
+            "agent_name": "RemoteMeetingManagerAgent",
+            "planned_agent": "RemoteMeetingManagerAgent",
+            "executed_agent": "RemoteMeetingManagerAgent",
+            "operation_mode": "write",
+            "risk_level": "LOW",
+            "technical_success": true,
+            "business_success": true,
+            "outcome_status": "success",
+            "verification_status": "verified",
+            "verification_method": "provider_receipt",
+            "verification_evidence_ref": null,
+            "schema_valid": true,
+            "artifact_refs": [
+              {
+                "artifact_id": "8d799b2de8774ce493195d69877bd29b",
+                "version": 1,
+                "selector": null,
+                "expected_schema_ref": "structured_agent_result@v1"
+              }
+            ],
+            "resource_ids": [],
+            "external_operation_id": "meeting-0001",
+            "idempotency_key": "067254f01ea3db77a55f4e97d42a2a826123be969a1a34242be7b31bc7d53dd3",
+            "receipt_status": "SUCCEEDED",
+            "needs_reconciliation": false,
+            "error": null
+          },
+          {
+            "step_id": "step_notify_participants",
+            "agent_name": "RemoteEmailDispatchAgent",
+            "planned_agent": "RemoteEmailDispatchAgent",
+            "executed_agent": "RemoteEmailDispatchAgent",
+            "operation_mode": "send",
+            "risk_level": "LOW",
+            "technical_success": false,
+            "business_success": false,
+            "outcome_status": "unknown",
+            "verification_status": "failed",
+            "verification_method": null,
+            "verification_evidence_ref": null,
+            "schema_valid": null,
+            "artifact_refs": [],
+            "resource_ids": [],
+            "external_operation_id": null,
+            "idempotency_key": null,
+            "receipt_status": null,
+            "needs_reconciliation": false,
+            "error": null
+          }
+        ],
+        "task_graph": {
+          "schema_version": 1,
+          "steps": [
+            {
+              "step_id": "step_query_calendar",
+              "depends_on": [],
+              "operation_mode": "read",
+              "risk_level": "LOW",
+              "agent_name": "RemoteHRCalendarAgent",
+              "required_capabilities": [],
+              "input_names": []
+            },
+            {
+              "step_id": "step_schedule_meeting",
+              "depends_on": [
+                "step_query_calendar"
+              ],
+              "operation_mode": "write",
+              "risk_level": "LOW",
+              "agent_name": "RemoteMeetingManagerAgent",
+              "required_capabilities": []
+            },
+            {
+              "step_id": "step_notify_participants",
+              "depends_on": [
+                "step_schedule_meeting"
+              ],
+              "operation_mode": "send",
+              "risk_level": "LOW",
+              "agent_name": "RemoteEmailDispatchAgent",
+              "required_capabilities": []
+            }
+          ],
+          "graph_hash": "404e3cadd2bf3cdb12d57468b5cc12c7bd97db896ef0acee2fed8e9cf25e9e8d"
+        },
+        "planning_steps": [],
+        "created_at": "2026-08-10T13:41:41.592228+00:00"
+      }
+    }
+  }
+]

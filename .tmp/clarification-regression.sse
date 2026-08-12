@@ -1,0 +1,55 @@
+﻿event: start_of_workflow
+data: {"event": "start_of_workflow", "data": {"workflow_id": "hr_manager:d5af67a343d49669b5b9725b98672f59", "task_id": "hr_manager_d5af67a343d49669b5b9725b98672f59__20260812_120759", "input": [{"role": "user", "content": "查询工资", "message_id": "clarification-regression-b83a6b85820f43afbe53c63e36e67cd0:3", "metadata": {"turn_id": "clarification-regression-b83a6b85820f43afbe53c63e36e67cd0:3"}}], "resume_step": null}}
+
+event: routing_decision
+data: {"event": "routing_decision", "data": {"workflow_id": "hr_manager:d5af67a343d49669b5b9725b98672f59", "task_id": "hr_manager_d5af67a343d49669b5b9725b98672f59__20260812_120759", "task_profile": {"task_id": "hr_manager_d5af67a343d49669b5b9725b98672f59__20260812_120759", "intent": "salary_query", "intents": ["salary_query"], "task_type": "HR", "business_goal": "查询工资", "action": "read", "operation_mode": "read", "entities": {"employee_name": "李娜", "people": ["李娜"]}, "required_business_data": ["employee.salary"], "expected_deliverables": [], "side_effects": [], "data_scope": "employee.salary", "scenario_tags": ["salary_query", "hr_service"], "expected_capabilities": ["HR"], "risk_level": "LOW", "irreversible": false, "constraints": [], "missing_fields": [], "confidence": 0.94, "reason": "hybrid_intent_fusion", "sub_intents": ["salary_query"], "subtasks": [{"id": "subtask_1", "intent": "salary_query", "task_type": "HR", "goal": "查询李娜薪资或收入信息", "action": "read", "expected_capabilities": ["HR"], "scenario_tags": ["salary_query", "hr_service"], "data_scope": ["employee.salary"], "required_business_data": ["employee.salary"], "expected_deliverables": [], "depends_on": [], "segment_id": "segment_1", "text_span": "查询工资", "source": "rule+semantic", "provenance": "explicit", "confidence": 0.99, "evidence": ["工资", "用户明确表达了查询工资的意图"], "condition": null, "condition_on": [], "execution_policy": "always"}], "is_composite": false, "segments": [{"id": "segment_1", "text": "查询工资", "start": 0, "end": 4}], "intent_nodes": [{"name": "salary_query", "label": "查询薪资信息", "confidence": 0.99, "text_span": "查询工资", "segment_id": "segment_1", "source": "rule+semantic", "provenance": "explicit", "evidence": ["工资", "用户明确表达了查询工资的意图"], "negated": false, "condition": null, "condition_on": []}], "confidence_factors": ["识别来源：rule+semantic 1", "可执行意图 1 个：显式 1、推导 0", "生成 1 个子任务，其中条件任务 0 个", "抽取实体字段：employee_name, people", "存在 2 个待确认歧义"], "primary_goal_intent": "salary_query", "ambiguities": ["未指定查询对象（本人或特定员工）", "未指定查询的时间范围（如本月、上月等）"], "needs_clarification": false, "clarification_questions": [], "clarification_reasons": [], "recognition_mode": "hybrid", "recognition_degraded": false, "recognition": {"primary_intent": "salary_query", "intents": [{"name": "salary_query", "confidence": 0.99, "source": "rule+semantic", "provenance": "explicit", "text_span": "查询工资", "evidence": ["工资", "用户明确表达了查询工资的意图"], "negated": false, "condition": null, "condition_on": []}], "entities": {"employee_name": "李娜", "people": ["李娜"]}, "ambiguities": ["未指定查询对象（本人或特定员工）", "未指定查询的时间范围（如本月、上月等）"], "needs_clarification": false, "clarification_questions": [], "mode": "hybrid", "degraded": false, "degradation_reason": null, "resolved_request": null, "context_references": [], "clarification_analysis": {"needs_clarification": false, "missing_fields": [], "questions": [], "requirements": []}}, "raw_request": "员工李娜", "resolved_request": "查询工资", "context_references": [{"mention": "员工李娜", "kind": "clarification", "key": "employee_name", "value": "李娜", "source": "pending_clarification", "confidence": 1.0}], "context_artifacts": [], "risk_profile": "LOW"}, "routing_decision": {"decision_id": "route_207d52e647726fcb", "task_id": "hr_manager_d5af67a343d49669b5b9725b98672f59__20260812_120759", "selected_agent": null, "candidate_agents": [{"agent_id": "reporter", "score": 0.2, "reason_codes": ["AUTHORIZED", "AGENT_ONLINE"], "score_breakdown": {"intent": 0.0, "capability": 0.0, "scenario": 0.0, "data_scope": 1.0, "history": 0.5, "availability": 1.0}}, {"agent_id": "researcher", "score": 0.2, "reason_codes": ["AUTHORIZED", "AGENT_ONLINE"], "score_breakdown": {"intent": 0.0, "capability": 0.0, "scenario": 0.0, "data_scope": 1.0, "history": 0.5, "availability": 1.0}}], "decision": "REJECT", "confidence": 0.2, "reason_codes": ["NO_CAPABLE_AGENT"], "required_grants": [], "excluded_agents": [{"agent_id": "coder", "reason": "当前用户无权访问该 Agent", "reason_code": "PERMISSION_DENIED"}, {"agent_id": "browser", "reason": "当前用户无权访问该 Agent", "reason_code": "PERMISSION_DENIED"}], "trace_id": "trace_207d52e647726fcb"}}}
+
+event: start_of_agent
+data: {"event": "start_of_agent", "data": {"agent_name": "coordinator", "agent_id": "hr_manager:d5af67a343d49669b5b9725b98672f59_coordinator_0", "sub_agent_name": null}}
+
+event: end_of_agent
+data: {"event": "end_of_agent", "data": {"agent_name": "coordinator", "agent_id": "hr_manager:d5af67a343d49669b5b9725b98672f59_coordinator_0", "sub_agent_name": null}}
+
+event: start_of_agent
+data: {"event": "start_of_agent", "data": {"agent_name": "planner", "agent_id": "hr_manager:d5af67a343d49669b5b9725b98672f59_planner_1", "sub_agent_name": null}}
+
+event: planner_delta
+data: {"event": "planner_delta", "agent_name": "planner", "data": {"delta": {"content": "{\"thought\": \"主Agent路由决策为 REJECT，原因：NO_CAPABLE_AGENT。\", \"steps\": [], \"new_agents_needed\": []}"}, "full_content": "{\"thought\": \"主Agent路由决策为 REJECT，原因：NO_CAPABLE_AGENT。\", \"steps\": [], \"new_agents_needed\": []}", "is_final": true}}
+
+event: messages
+data: {"event": "messages", "agent_name": "planner", "data": {"message_id": "hr_manager:d5af67a343d49669b5b9725b98672f59_planner_msg_0", "delta": {"content": "{\"thought\""}}}
+
+event: messages
+data: {"event": "messages", "agent_name": "planner", "data": {"message_id": "hr_manager:d5af67a343d49669b5b9725b98672f59_planner_msg_10", "delta": {"content": ": \"主Agent路"}}}
+
+event: messages
+data: {"event": "messages", "agent_name": "planner", "data": {"message_id": "hr_manager:d5af67a343d49669b5b9725b98672f59_planner_msg_20", "delta": {"content": "由决策为 REJEC"}}}
+
+event: messages
+data: {"event": "messages", "agent_name": "planner", "data": {"message_id": "hr_manager:d5af67a343d49669b5b9725b98672f59_planner_msg_30", "delta": {"content": "T，原因：NO_CA"}}}
+
+event: messages
+data: {"event": "messages", "agent_name": "planner", "data": {"message_id": "hr_manager:d5af67a343d49669b5b9725b98672f59_planner_msg_40", "delta": {"content": "PABLE_AGEN"}}}
+
+event: messages
+data: {"event": "messages", "agent_name": "planner", "data": {"message_id": "hr_manager:d5af67a343d49669b5b9725b98672f59_planner_msg_50", "delta": {"content": "T。\", \"step"}}}
+
+event: messages
+data: {"event": "messages", "agent_name": "planner", "data": {"message_id": "hr_manager:d5af67a343d49669b5b9725b98672f59_planner_msg_60", "delta": {"content": "s\": [], \"n"}}}
+
+event: messages
+data: {"event": "messages", "agent_name": "planner", "data": {"message_id": "hr_manager:d5af67a343d49669b5b9725b98672f59_planner_msg_70", "delta": {"content": "ew_agents_"}}}
+
+event: messages
+data: {"event": "messages", "agent_name": "planner", "data": {"message_id": "hr_manager:d5af67a343d49669b5b9725b98672f59_planner_msg_80", "delta": {"content": "needed\": ["}}}
+
+event: messages
+data: {"event": "messages", "agent_name": "planner", "data": {"message_id": "hr_manager:d5af67a343d49669b5b9725b98672f59_planner_msg_90", "delta": {"content": "]}"}}}
+
+event: end_of_agent
+data: {"event": "end_of_agent", "data": {"agent_name": "planner", "agent_id": "hr_manager:d5af67a343d49669b5b9725b98672f59_planner_1", "sub_agent_name": null}}
+
+event: end_of_workflow
+data: {"event": "end_of_workflow", "data": {"workflow_id": "hr_manager:d5af67a343d49669b5b9725b98672f59", "task_id": "hr_manager_d5af67a343d49669b5b9725b98672f59__20260812_120759", "status": "SUCCEEDED", "messages": [{"role": "user", "content": "workflow completed"}], "skill_execution_evidence": null}}
+
+

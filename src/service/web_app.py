@@ -37,6 +37,7 @@ from src.orchestration.completion import (
     ReceiptStoreCorruption,
 )
 from src.orchestration.reconciliation import get_reconciliation_store
+from src.orchestration.recovery_review import get_recovery_review_store
 from src.security.approval import get_approval_store
 from config.s_abac_demo_users import get_demo_user, list_demo_users, get_user_available_agents
 from config.s_abac_config import (
@@ -500,6 +501,7 @@ def _delete_task_runtime_records(task_id: str) -> dict[str, int]:
         "governance_events": 0,
         "approvals": 0,
         "reconciliations": 0,
+        "recovery_reviews": 0,
     }
 
     task_log = TaskLogger.load(normalized)
@@ -555,6 +557,9 @@ def _delete_task_runtime_records(task_id: str) -> dict[str, int]:
     )
     counts["approvals"] = get_approval_store().delete(task_id=normalized)
     counts["reconciliations"] = get_reconciliation_store().delete(
+        task_id=normalized
+    )
+    counts["recovery_reviews"] = get_recovery_review_store().delete(
         task_id=normalized
     )
     return counts
@@ -1846,6 +1851,7 @@ def create_app() -> FastAPI:
             active_task_id: Optional[str] = body.task_id
             disconnected = False
             resumed_workflow_succeeded = False
+            resumed_workflow_reconciled = False
             resume_heartbeat_failed = False
             heartbeat_task: Optional[asyncio.Task[Any]] = None
             resume_claim_id = ""
@@ -1893,9 +1899,14 @@ def create_app() -> FastAPI:
                     if (
                         resumed_reconciliation
                         and event.get("event") == "end_of_workflow"
-                        and str(event_data.get("status") or "").upper() == "SUCCEEDED"
                     ):
-                        resumed_workflow_succeeded = True
+                        terminal_status = str(
+                            event_data.get("status") or ""
+                        ).upper()
+                        resumed_workflow_succeeded = terminal_status == "SUCCEEDED"
+                        resumed_workflow_reconciled = (
+                            terminal_status == "NEEDS_RECONCILIATION"
+                        )
                     if await request.is_disconnected():
                         disconnected = True
                         break
@@ -1917,6 +1928,11 @@ def create_app() -> FastAPI:
                             resume_claim_id=resume_claim_id,
                             succeeded=(
                                 resumed_workflow_succeeded
+                                and not disconnected
+                                and not resume_heartbeat_failed
+                            ),
+                            superseded=(
+                                resumed_workflow_reconciled
                                 and not disconnected
                                 and not resume_heartbeat_failed
                             ),
@@ -1999,6 +2015,9 @@ def create_app() -> FastAPI:
         totals = {
             "reconciliations": get_reconciliation_store().delete(**cleanup_scope),
             "approvals": get_approval_store().delete(**cleanup_scope),
+            "recovery_reviews": get_recovery_review_store().delete(
+                **cleanup_scope
+            ),
         }
 
         return {
@@ -2331,6 +2350,45 @@ def create_app() -> FastAPI:
                 user_id=user_id,
             )
         )
+
+    @app.get("/api/security/recovery-reviews")
+    async def list_security_recovery_reviews(
+        status: Optional[str] = None,
+        task_id: Optional[str] = None,
+        _operator: str = Depends(_trusted_governance_operator),
+    ):
+        """List failed workflow runs awaiting checkpoint recovery review."""
+        from src.orchestration.recovery_review import failure_codes_are_reviewable
+
+        items = get_recovery_review_store().list(status=status, task_id=task_id)
+        for item in items:
+            item["actionable"] = failure_codes_are_reviewable(
+                list(item.get("failure_codes") or [])
+            )
+        return _enrich_governance_queue_items(items)
+
+    @app.post("/api/security/recovery-reviews/{review_id}/start")
+    async def start_security_recovery_review(
+        review_id: str,
+        operator: str = Depends(_trusted_governance_operator),
+    ):
+        try:
+            review = get_recovery_review_store().start_review(
+                review_id, operator=operator
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        record_governance_event(
+            "RECOVERY_REVIEW_STARTED",
+            task_id=review.task_id,
+            workflow_id=review.workflow_id,
+            subject=operator,
+            decision="IN_REVIEW",
+            details={"review_id": review.review_id},
+        )
+        return review.__dict__
 
     def _reconciliation_resume_response(reconciliation: Any) -> dict[str, Any]:
         return {

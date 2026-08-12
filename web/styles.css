@@ -4291,6 +4291,11 @@ button.sec-collapse-button {
   border-color: rgba(75, 227, 172, 0.4);
 }
 
+.sec-approval-item.sec-review-focused {
+  outline: 3px solid color-mix(in srgb, var(--accent) 65%, transparent);
+  box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent) 15%, transparent);
+}
+
 .sec-reconciliation-help {
   margin: 0 0 10px;
   color: var(--muted);

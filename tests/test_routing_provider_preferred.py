@@ -202,3 +202,78 @@ def test_no_preferred_keeps_routing_pick(monkeypatch):
     step = TaskStep(step_id="step_2")  # no preferred_resource_id
     result = _decide(step)
     assert result.selected_agent == "RemoteKnowledgeAgent"
+
+
+def test_confirmed_profile_is_projected_to_the_current_step(monkeypatch):
+    captured = {}
+
+    async def _fake(**kwargs):
+        captured.update(kwargs)
+        return (
+            _Profile(),
+            [SimpleNamespace(agent_id="RemoteReportAgent")],
+            _decision(
+                decision="DISPATCH",
+                selected="RemoteReportAgent",
+                candidates=[("RemoteReportAgent", 0.9)],
+            ),
+        )
+
+    monkeypatch.setattr(orchestrator_pkg, "make_routing_decision", _fake)
+    approved_profile = {
+        "task_id": "approved-task",
+        "intent": "risk_analysis",
+        "intents": ["risk_analysis", "report_generation", "message_or_email_send"],
+        "task_type": "COMPOSITE",
+        "action": "send",
+        "missing_fields": ["recipient"],
+        "needs_clarification": True,
+        "clarification_questions": ["recipient?"],
+        "subtasks": [
+            {"id": "subtask_1", "intent": "risk_analysis", "action": "read"},
+            {
+                "id": "subtask_2",
+                "intent": "report_generation",
+                "task_type": "DOCUMENT",
+                "action": "generate",
+                "expected_capabilities": ["Document"],
+                "scenario_tags": ["reporting"],
+                "data_scope": ["document.generated"],
+            },
+            {"id": "subtask_3", "intent": "message_or_email_send", "action": "send"},
+        ],
+    }
+    step = TaskStep(
+        step_id="report",
+        subtask_ids=["subtask_2"],
+        intents=["report_generation"],
+        operation_mode="generate",
+        preferred_resource_id="RemoteReportAgent",
+        expected_outputs=["report.markdown"],
+    )
+
+    result = asyncio.run(
+        MainAgentRoutingProvider().decide(
+            step,
+            user_query="global composite request",
+            task_id="t1",
+            workflow_id="wf1",
+            agents=(),
+            authorized_agent_ids={"RemoteReportAgent"},
+            metadata={
+                "scenario_tags": ["global"],
+                "approved_task_profile": approved_profile,
+            },
+        )
+    )
+
+    override = captured["task_profile_override"]
+    assert result.selected_agent == "RemoteReportAgent"
+    assert override["task_id"] == "approved-task"
+    assert override["intent"] == "report_generation"
+    assert override["intents"] == ["report_generation"]
+    assert override["action"] == "generate"
+    assert override["subtasks"] == [approved_profile["subtasks"][1]]
+    assert override["missing_fields"] == []
+    assert override["needs_clarification"] is False
+    assert "approved_task_profile" not in captured["metadata"]

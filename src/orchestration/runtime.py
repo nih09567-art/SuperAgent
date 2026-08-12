@@ -731,6 +731,7 @@ def _scheduler_assigned_step_payload(step: Any) -> dict[str, Any]:
         "title": getattr(step, "title", ""),
         "description": getattr(step, "description", ""),
         "intents": list(getattr(step, "intents", []) or []),
+        "expected_outputs": list(getattr(step, "expected_outputs", []) or []),
         "note": getattr(step, "note", ""),
         "memory_constraints": list(
             getattr(step, "memory_constraints", []) or []
@@ -1158,6 +1159,10 @@ async def run_scheduler_workflow(
     counter = {"step": int(state.get("current_step") or 0)}
     step_numbers: dict[str, int] = {}
     step_agents: dict[str, str] = {}
+    graph_resume_steps = {
+        step.step_id: index
+        for index, step in enumerate(graph.steps, start=1)
+    }
 
     def step_number(step_id: str) -> int:
         if step_id not in step_numbers:
@@ -1550,7 +1555,7 @@ async def run_scheduler_workflow(
                     # The failed step is checkpointed but not completed. Loading
                     # this checkpoint re-runs the same DAG node and keeps all
                     # independent successful branches.
-                    resume_step=step_number(step.step_id) + 1,
+                    resume_step=graph_resume_steps[step.step_id],
                     node_name=selected_name,
                     step_id=step.step_id,
                     subject=dict(payload.get("subject") or {}),
@@ -1681,7 +1686,7 @@ async def run_scheduler_workflow(
                     workflow_id=str(workflow_id or ""),
                     task_id=task_id,
                     step_id=step.step_id,
-                    resume_step=step_number(step.step_id) + 1,
+                    resume_step=graph_resume_steps[step.step_id],
                     agent_name=selected_name,
                     error=str(result.error or "side-effect outcome unconfirmed"),
                     idempotency_key=idempotency_key,
@@ -1913,7 +1918,12 @@ async def run_scheduler_workflow(
         "scenario": scenario_ctx,
         "agents": agents,
         "authorized_agent_ids": authorized,
-        "metadata": {"scenario_tags": state.get("scenario_tags", [])},
+        "metadata": {
+            "scenario_tags": state.get("scenario_tags", []),
+            # Per-step routing derives a narrow profile from this confirmed
+            # boundary instead of re-profiling the global request.
+            "approved_task_profile": state.get("task_profile") or {},
+        },
         # Per-step ExecutionContext builder so captured artifacts carry the
         # acting user (owner) and the producing agent.
         "context_factory": _make_context_factory(state),
@@ -2153,6 +2163,11 @@ async def run_scheduler_workflow(
         for failure in getattr(results, "additional_failures", []) or []:
             task_logger.log_failure(failure.model_dump(mode="json"))
     clarifications = [c for c in (getattr(results, "clarifications", []) or []) if c]
+    clarification_fields = [
+        field
+        for field in (getattr(results, "clarification_fields", []) or [])
+        if field
+    ]
     approval_required_steps = list(
         getattr(results, "approval_required_steps", []) or []
     )
@@ -2195,6 +2210,32 @@ async def run_scheduler_workflow(
             f"scheduler workflow ended with status {status}; " f"failed_steps={failed}"
         )
     finalize_task_log(status, error=terminal_error)
+    recovery_review_required = False
+    if status in {
+        WorkflowStatus.FAILED.value,
+        WorkflowStatus.PARTIAL_FAILED.value,
+    }:
+        from src.orchestration.recovery_review import (
+            failures_need_recovery_review,
+            get_recovery_review_store,
+        )
+
+        if failures_need_recovery_review(failures):
+            try:
+                get_recovery_review_store().create(
+                    user_id=str(state.get("user_id") or ""),
+                    workflow_id=str(workflow_id or ""),
+                    task_id=task_id,
+                    terminal_status=status,
+                    failed_steps=failed,
+                    blocked_steps=blocked,
+                    failure_codes=[str(item.get("code") or "") for item in failures],
+                )
+                recovery_review_required = True
+            except Exception:  # noqa: BLE001 - queue I/O must not hide terminal SSE
+                logger.exception(
+                    "failed to persist recovery review for task %s", task_id
+                )
     record_governance_event(
         "WORKFLOW_TERMINATED",
         task_id=task_id,
@@ -2225,8 +2266,10 @@ async def run_scheduler_workflow(
             "failures": failures,
             "rejected_steps": rejected,
             "clarifications": clarifications,
+            "clarification_fields": clarification_fields,
             "approval_required_steps": approval_required_steps,
             "needs_reconciliation": needs_recon,
+            "recovery_review_required": recovery_review_required,
             "results": {sid: str(r.status) for sid, r in results.items()},
             "skill_execution_evidence": evidence.model_dump(mode="json"),
         },

@@ -398,6 +398,8 @@ def extract_entities(text: str) -> dict[str, Any]:
         )
     if recipient_match:
         recipient = recipient_match.group(1).strip("，。；;,. ")
+        if "@" in recipient:
+            recipient = re.sub(r"^(?:邮箱地址|邮件地址|电子邮箱|邮箱)", "", recipient).strip()
         if recipient:
             entities["recipient"] = recipient
 
@@ -1000,6 +1002,39 @@ class IntentFusion:
             needs_clarification = False
             questions = []
             ambiguities = []
+
+        # 风险分析任务可能需要从受信业务库读取企业风险记录，但这不等于
+        # 用户要求了公网调研。语义模型有时会把“选择若干企业并分析经营风险”
+        # 的隐含数据依赖扩写成 information_research，进而无端启动公网搜索。
+        # 只有用户明确提到调研/搜索/公开资料等动作，或规则侧也识别到了研究
+        # 意图时，才保留这个语义推断；受信风险 Agent 自己负责业务数据读取。
+        executable_names = {item.name for item in combined if not item.negated}
+        explicit_public_research = bool(
+            re.search(
+                r"(?:调研|研究|搜索|检索|公开(?:信息|资料|数据)|公网|互联网|"
+                r"市场分析|research|search|crawl|web)",
+                user_query,
+                flags=re.IGNORECASE,
+            )
+        )
+        rule_has_research = any(
+            item.name == "information_research" and not item.negated
+            for item in rule.intents
+        )
+        if (
+            "risk_analysis" in executable_names
+            and not explicit_public_research
+            and not rule_has_research
+        ):
+            combined = [
+                item
+                for item in combined
+                if not (
+                    item.name == "information_research"
+                    and not item.negated
+                    and item.provenance == "inferred"
+                )
+            ]
 
         # information_consultation 表示“只咨询、不执行”。如果同一输入已经明确要求
         # 生成报告、文档或发送结果，它就不能作为额外可执行意图加入任务链。

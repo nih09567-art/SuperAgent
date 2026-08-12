@@ -12,6 +12,10 @@ from src.interface.task_graph import TaskGraph, TaskSpec, TaskStep, WorkflowStat
 from src.manager.executor.base import ExecuteResult, ExecutionStatus
 from src.orchestration.providers import RoutingResult
 from src.orchestration.scheduler import TaskScheduler
+from src.security.trusted_recipients import (
+    AmbiguousTrustedRecipientError,
+    UnknownTrustedRecipientError,
+)
 
 
 class _RecordingExecutor:
@@ -107,6 +111,60 @@ def test_global_clarify_persists_and_publishes_every_new_step():
     assert committed == [("ask", "FAILED"), ("work", "SKIPPED")]
     assert ended == committed
     assert result.terminal_status == WorkflowStatus.CLARIFY_REQUIRED
+
+
+def test_runtime_unknown_recipient_becomes_actionable_clarification():
+    execute = _RecordingExecutor()
+
+    async def authorize_step(**_kwargs):
+        raise UnknownTrustedRecipientError("trusted recipient not found")
+
+    scheduler = TaskScheduler(
+        execute_step=execute,
+        authorize_step=authorize_step,
+        routing_provider=_MapRouting(
+            {"email": RoutingResult(selected_agent="EmailAgent", decision="DISPATCH")}
+        ),
+    )
+    result = asyncio.run(
+        scheduler.run(
+            _graph(_step("email", mode="send")), context={"task_id": "t"}
+        )
+    )
+
+    step = result["email"]
+    assert execute.calls == []
+    assert result.terminal_status == WorkflowStatus.CLARIFY_REQUIRED
+    assert result.clarification_fields == ["recipient"]
+    assert result.clarifications == [
+        "收件人不在受信任联系人目录中，请提供已登记的收件人姓名、角色或完整邮箱地址。"
+    ]
+    assert step.failure.code == "CLARIFICATION_REQUIRED"
+    assert step.failure.message == result.clarifications[0]
+    assert step.failure.details_safe["clarification_field"] == "recipient"
+
+
+def test_runtime_ambiguous_recipient_requests_unique_address():
+    async def authorize_step(**_kwargs):
+        raise AmbiguousTrustedRecipientError("trusted recipient is ambiguous")
+
+    scheduler = TaskScheduler(
+        execute_step=_RecordingExecutor(),
+        authorize_step=authorize_step,
+        routing_provider=_MapRouting(
+            {"email": RoutingResult(selected_agent="EmailAgent", decision="DISPATCH")}
+        ),
+    )
+    result = asyncio.run(
+        scheduler.run(
+            _graph(_step("email", mode="send")), context={"task_id": "t"}
+        )
+    )
+
+    assert result.terminal_status == WorkflowStatus.CLARIFY_REQUIRED
+    assert result.clarifications == [
+        "该收件人匹配到多个受信任邮箱，请提供唯一的完整邮箱地址。"
+    ]
 
 
 def test_dispatch_without_agent_does_not_start_hook_or_execute():

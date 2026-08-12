@@ -160,6 +160,44 @@ async def test_same_tool_and_arguments_continue_when_result_changes():
     assert finalizer.messages is None
 
 
+class _DifferentEmptySearchGraph:
+    async def astream(self, state, config, stream_mode):
+        messages = list(state["messages"])
+        for index, query in enumerate(("第一种检索词", "第二种检索词", "第三种检索词"), 1):
+            call = AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "tavily_tool",
+                        "args": {"query": query},
+                        "id": f"empty-{index}",
+                        "type": "tool_call",
+                    }
+                ],
+            )
+            result = ToolMessage(content="[]", tool_call_id=f"empty-{index}")
+            messages.extend((call, result))
+            yield {"messages": list(messages)}
+        raise AssertionError("连续空搜索结果达到阈值后应当停止")
+
+
+@pytest.mark.anyio
+async def test_research_loop_stops_after_different_empty_searches():
+    executor = LocalExecutor()
+    finalizer = _FakeFinalizer()
+
+    result = await executor._invoke_bounded_research_agent(
+        react_agent=_DifferentEmptySearchGraph(),
+        llm=finalizer,
+        prompt="你是研究助手",
+        state={"messages": []},
+        config={"recursion_limit": 25},
+    )
+
+    assert result["messages"][-1].content == "已根据现有搜索结果生成简短报告"
+    assert "连续 2 次公网搜索无结果" in finalizer.messages[-1].content
+
+
 def test_only_search_agents_use_bounded_research_loop():
     class _Tool:
         def __init__(self, name):

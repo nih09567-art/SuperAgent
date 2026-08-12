@@ -1,0 +1,29 @@
+User-provided/local sources
+- D:/xwechat_files/wxid_ddeayze1y1mm22_44d3/msg/file/2026-08/2025082916122218429(1).pdf — visual reference only.
+- C:/Users/刘建杰/Desktop/FINAL_EVALUATION_REPORT.md — context, memory, and Skill metrics and limitations.
+- C:/Users/刘建杰/Desktop/多智能体协同与执行编排机制调研及原型成果报告.docx — planning, orchestration, tool-selection, recovery methods and metrics.
+- C:/Users/刘建杰/Desktop/面向数字员工的主Agent意图识别路由与权限治理研究报告.docx — intent, routing, security design, metrics, and screenshots.
+- E:/Program/SuperAgent/docs/面向数字员工的智能任务执行关键技术研究报告.md — integrated four-chapter narrative, benchmark tables, metric definitions, and evidence index.
+- E:/Program/SuperAgent/docs/答辩重点稿-意图识别-多Agent编排-权限治理.md — defense wording and metric caveats.
+
+Official references used for qualitative benchmark claims
+- https://openai.github.io/openai-agents-python/multi_agent/
+- https://openai.github.io/openai-agents-python/sessions/
+- https://openai.github.io/openai-agents-python/guardrails/
+- https://microsoft.github.io/autogen/stable/user-guide/agentchat-user-guide/selector-group-chat.html
+- https://docs.langchain.com/oss/python/langgraph/overview
+- https://docs.langchain.com/oss/python/langgraph/persistence
+- https://docs.langchain.com/oss/python/langgraph/add-memory
+- https://a2a-protocol.org/latest/specification/
+- https://docs.temporal.io/temporal
+- https://modelcontextprotocol.io/docs/2026-07-28/learn/architecture
+- https://www.openpolicyagent.org/docs
+- https://docs.cedarpolicy.com/
+- https://csrc.nist.gov/pubs/sp/800/162/upd2/final
+- https://docs.mem0.ai/platform/overview
+
+Provenance rules
+- No cross-product accuracy ranking is made because the products do not share the same evaluation set, labels, model, or runtime budget.
+- All SuperAgent percentages are labeled as fixed-set or deterministic-module results where applicable.
+- The deck makes no production-security-certification claim.
+

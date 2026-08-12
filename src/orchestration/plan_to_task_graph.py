@@ -57,6 +57,47 @@ _USER_INSTRUCTION_SOURCE = "user_instruction"
 # the most dangerous (the runtime fails closed on it).
 _MODE_RANK = {"read": 0, "write": 1, "send": 2, "unknown": 3}
 
+_INTENT_OUTPUTS = {
+    "employee_information_query": "employee.info",
+    "salary_query": "employee.salary",
+    "leave_record_query": "employee.leave_records",
+    "travel_service": "employee.travel_records",
+    "knowledge_lookup": "policy.info",
+    "information_research": "research.markdown",
+    "risk_analysis": "risk.records",
+    "report_generation": "report.markdown",
+    "weather_query": "weather.forecast",
+    "schedule_management": "calendar.result",
+    "meeting_arrangement": "meeting.result",
+}
+
+
+def _trusted_step_intent_outputs(
+    raw: Dict[str, Any],
+    *,
+    subtask_by_id: Dict[str, Dict[str, Any]],
+    contract_outputs: List[str],
+) -> List[str]:
+    """Resolve an exact output subset from structured profile intents."""
+
+    intents = {
+        str(value)
+        for value in _as_list(raw.get("intents") or raw.get("intent"))
+        if str(value)
+    }
+    for subtask_id in _subtask_ids_for(raw):
+        subtask = subtask_by_id.get(str(subtask_id)) or {}
+        intent = str(subtask.get("intent") or "")
+        if intent:
+            intents.add(intent)
+    matched = [
+        output
+        for intent in intents
+        for output in [_INTENT_OUTPUTS.get(intent)]
+        if output and output in contract_outputs
+    ]
+    return list(dict.fromkeys(matched))
+
 
 def _classify_modes(modes: Optional[List[str]]) -> str:
     """Classify a set of declared operation modes into read/send/write/unknown.
@@ -697,7 +738,29 @@ def plan_to_task_graph(
                     f"step {step_id!r} declares outputs not present in trusted "
                     f"Agent contract: {sorted(undeclared)}"
                 )
-            expected_outputs = contract_outputs
+            # The trusted Agent contract is the upper boundary of what this
+            # Agent may publish, not a demand that every invocation produce
+            # every capability. Preserve a validated step-level subset (for
+            # example a salary-only HR query); otherwise employee.salary gets
+            # silently expanded to employee.info + employee.salary and the
+            # result adapter rejects a perfectly valid salary response.
+            intent_outputs = _trusted_step_intent_outputs(
+                raw,
+                subtask_by_id=subtask_by_id,
+                contract_outputs=contract_outputs,
+            )
+            if intent_outputs:
+                # Structured task intents are server-derived. They define the
+                # exact output surface for this invocation and prevent a
+                # planner from turning a salary-only request into a demand for
+                # every output the broader HR Agent can produce.
+                expected_outputs = [
+                    output
+                    for output in (declared_outputs or intent_outputs)
+                    if output in intent_outputs
+                ] or intent_outputs
+            else:
+                expected_outputs = declared_outputs or contract_outputs
         else:
             expected_outputs = (
                 declared_outputs

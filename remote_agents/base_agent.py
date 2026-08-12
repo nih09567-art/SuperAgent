@@ -81,6 +81,24 @@ def _normalize_security_value(value: Any, *, plural: bool = False) -> Any:
     return value
 
 
+def _normalize_recipient_label(value: Any) -> tuple[str, ...]:
+    """Normalize semantic mailbox labels while preserving concrete addresses."""
+
+    normalized = _normalize_security_value(value, plural=True)
+    items = normalized if isinstance(normalized, tuple) else (normalized,)
+    labels: list[str] = []
+    for item in items:
+        label = str(item or "").strip()
+        if "@" not in label:
+            for suffix in ("的邮箱地址", "邮箱地址", "的邮箱", "邮箱"):
+                if label.endswith(suffix):
+                    label = label[: -len(suffix)].strip()
+                    break
+        if label:
+            labels.append(label)
+    return tuple(sorted(labels))
+
+
 def _find_argument(arguments: Dict[str, Any], aliases: tuple[str, ...]) -> tuple[bool, Any]:
     for key in aliases:
         if key in arguments:
@@ -129,7 +147,7 @@ def _arguments_match_authorization(
         if not normalized_addresses:
             return False
         semantic_recipients = {
-            _normalize_security_value(expected[key], plural=True)
+            _normalize_recipient_label(expected[key])
             for key in ("recipient", "recipients")
             if expected.get(key) not in (None, "", [], {})
         }
@@ -145,11 +163,14 @@ def _arguments_match_authorization(
         )
         if not actual_recipients:
             return False
-        return all(
-            _normalize_security_value(value, plural=True)
-            in {normalized_addresses, *semantic_recipients}
-            for value in actual_recipients
-        )
+        for value in actual_recipients:
+            normalized_value = _normalize_security_value(value, plural=True)
+            if normalized_value == normalized_addresses:
+                continue
+            if _normalize_recipient_label(value) in semantic_recipients:
+                continue
+            return False
+        return True
 
     canonical_employee_query = tool_name in _CANONICAL_EMPLOYEE_QUERY_TOOLS
     canonical_calendar_query = tool_name == "get_calendar_events_tool"
@@ -350,6 +371,22 @@ class BaseRemoteAgent(ABC):
         *,
         tool_name: str,
     ) -> AgentResultError:
+        if isinstance(exc, PermissionError):
+            # Manifest validation happens locally before any remote tool
+            # transport begins. Surface that trusted phase marker so the
+            # scheduler releases the side-effect receipt instead of creating
+            # a false reconciliation/manual-review loop.
+            return AgentResultError(
+                code="REMOTE_TOOL_AUTHORIZATION_FAILED",
+                message=str(exc) or f"{tool_name} authorization failed",
+                retryable=False,
+                details={
+                    "tool": tool_name,
+                    "safe_to_retry": True,
+                    "side_effect_started": False,
+                    "failure_phase": "authorization",
+                },
+            )
         if isinstance(exc, TimeoutError):
             return AgentResultError(
                 code="REMOTE_TOOL_TIMEOUT",

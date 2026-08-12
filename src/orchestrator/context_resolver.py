@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from src.contracts import ContextReference, ResolvedRequest
@@ -24,6 +25,12 @@ _ALLOWED_ENTITY_KEYS = {
     "communication.content",
 }
 
+_LABELED_EMPLOYEE_NAME_PATTERN = re.compile(
+    r"^\s*(?:员工姓名|职员姓名|员工|职员|姓名)\s*"
+    r"(?:(?:是|为|叫|叫做)\s*|[：:]\s*)?"
+    r"(?P<name>[\u4e00-\u9fff·]{2,8})\s*[。.!！]?\s*$"
+)
+
 def _clean_entities(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         return {}
@@ -32,6 +39,17 @@ def _clean_entities(value: Any) -> dict[str, Any]:
         for key, item in value.items()
         if key in _ALLOWED_ENTITY_KEYS and item not in (None, "", [])
     }
+
+
+def _clarification_employee_name(answer: str, answer_entities: dict[str, Any]) -> str:
+    extracted = str(answer_entities.get("employee_name") or "").strip()
+    if extracted and is_person_candidate(extracted):
+        return extracted
+
+    raw = str(answer or "").strip()
+    labeled = _LABELED_EMPLOYEE_NAME_PATTERN.fullmatch(raw)
+    candidate = labeled.group("name") if labeled else raw
+    return candidate if is_person_candidate(candidate) else ""
 
 
 def _canonical_missing_field(field: str) -> str:
@@ -81,9 +99,9 @@ def _bind_clarification_answer(
         value: Any = None
 
         if field == "employee_name":
-            value = answer_entities.get("employee_name")
-            if not value and single_field and is_person_candidate(answer):
-                value = answer.strip()
+            value = _clarification_employee_name(answer, answer_entities)
+            if not single_field and not answer_entities.get("employee_name"):
+                value = ""
             if value:
                 overrides["employee_name"] = value
                 overrides["people"] = [value]

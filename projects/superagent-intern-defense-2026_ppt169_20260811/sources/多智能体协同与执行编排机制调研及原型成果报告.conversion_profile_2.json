@@ -1,0 +1,28 @@
+{
+  "schema": "ppt-master.source_to_md.profile.v1",
+  "converter": "doc_to_md.py",
+  "conversion_type": "docx",
+  "source": {
+    "path": "C:/Users/刘建杰/Desktop/多智能体协同与执行编排机制调研及原型成果报告.docx",
+    "name": "多智能体协同与执行编排机制调研及原型成果报告.docx",
+    "suffix": ".docx",
+    "kind": "file",
+    "exists": true,
+    "size_bytes": 19307
+  },
+  "outputs": {
+    "markdown": "多智能体协同与执行编排机制调研及原型成果报告.md",
+    "asset_dir": "",
+    "image_manifest": "",
+    "image_count": 0
+  },
+  "markdown": {
+    "line_count": 251,
+    "char_count": 7721,
+    "heading_count": 0,
+    "table_count": 5,
+    "image_ref_count": 0,
+    "link_count": 0
+  },
+  "warnings": []
+}

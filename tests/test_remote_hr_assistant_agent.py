@@ -28,6 +28,29 @@ def _execution_messages(query: str) -> list[dict]:
     ]
 
 
+def _clarified_salary_messages() -> list[dict]:
+    brief = {
+        "original_user_query": "李娜",
+        "assigned_steps": [
+            {
+                "title": "查询员工信息",
+                "description": "按追问补充的姓名查询员工",
+                "expected_outputs": ["employee.salary"],
+            }
+        ],
+    }
+    return [
+        {"role": "user", "content": "查询工资"},
+        {"role": "assistant", "content": "请提供员工姓名。"},
+        {"role": "user", "content": "李娜"},
+        {
+            "role": "user",
+            "content": "EXECUTION_CONTEXT\n"
+            + json.dumps(brief, ensure_ascii=False),
+        },
+    ]
+
+
 def _tools() -> list[dict]:
     return [
         {"name": "remote_person_info_tool"},
@@ -108,3 +131,42 @@ def test_explicit_salary_query_calls_salary_tool_and_merges_result():
         result["outputs"]["employee.salary"]["records"][0]["monthly_salary"]
         == 100
     )
+
+
+def test_clarified_employee_name_keeps_salary_step_scope():
+    agent = RemoteHRAssistantAgent()
+    calls = []
+
+    async def fake_call_tool(*, tool_name, arguments, **_kwargs):
+        calls.append((tool_name, arguments))
+        if tool_name == "remote_person_info_tool":
+            return {
+                "detail": {"personInfoList": [{"idvId": "employee-2", "name": "李娜"}]}
+            }
+        return {
+            "salary_records": [
+                {
+                    "employee_id": "employee-2",
+                    "monthly_salary": 18000,
+                    "annual_salary": 216000,
+                    "currency": "CNY",
+                }
+            ]
+        }
+
+    agent.call_tool = fake_call_tool
+    result = asyncio.run(
+        agent.execute(
+            _tools(),
+            _clarified_salary_messages(),
+            {},
+            FakeExtractor(),
+        )
+    )
+
+    assert [name for name, _arguments in calls] == [
+        "remote_person_info_tool",
+        "remote_salary_info_tool",
+    ]
+    assert result["status"] == "success"
+    assert result["outputs"]["employee.salary"]["matched_count"] == 1

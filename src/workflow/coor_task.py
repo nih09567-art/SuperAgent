@@ -774,7 +774,11 @@ _PROFILE_INTENT_AGENT_PREFERENCES = {
     "knowledge_lookup": ("RemoteKnowledgeAgent", "researcher"),
     "risk_analysis": ("RemoteBusinessRiskAgent",),
     "document_generation": ("RemoteDocumentGeneratorAgent",),
-    "report_generation": ("RemoteReportAgent", "RemoteDocumentGeneratorAgent"),
+    "report_generation": (
+        "RemoteReportAgent",
+        "RemoteDocumentGeneratorAgent",
+        "reporter",
+    ),
     "message_or_email_send": ("RemoteEmailDispatchAgent", "RemoteCommunicationAgent"),
     "meeting_arrangement": ("RemoteMeetingManagerAgent",),
     "schedule_management": ("RemoteScheduleAgent", "RemoteHRCalendarAgent"),
@@ -1155,6 +1159,58 @@ def _normalize_compatible_plan(
             claimed_subtasks.update(candidates)
             repairs.append(f"bound subtask_ids for {step['step_id']}")
 
+    # A composite plan can arrive as separate steps that are both assigned to
+    # one Agent. Move only explicit TaskProfile coverage to an authorized Agent
+    # from the platform-owned intent map. This preserves the two-Agent
+    # research -> independent report boundary without expanding permissions.
+    for step in normalized:
+        covered_ids = _step_subtask_ids(step)
+        current_agent = str(step.get("agent_name") or "").strip()
+        if not covered_ids or not current_agent:
+            continue
+        covered_intents = [
+            str(
+                (profile_subtask_by_id.get(subtask_id) or {}).get("intent") or ""
+            ).strip()
+            for subtask_id in covered_ids
+        ]
+        if not covered_intents or any(not intent for intent in covered_intents):
+            continue
+        if current_agent in trusted_team and all(
+            current_agent in _PROFILE_INTENT_AGENT_PREFERENCES.get(intent, ())
+            for intent in covered_intents
+        ):
+            continue
+        replacement = next(
+            (
+                agent
+                for agent in _PROFILE_INTENT_AGENT_PREFERENCES.get(
+                    covered_intents[0], ()
+                )
+                if agent in trusted_team
+                and all(
+                    agent in _PROFILE_INTENT_AGENT_PREFERENCES.get(intent, ())
+                    for intent in covered_intents
+                )
+            ),
+            "",
+        )
+        if not replacement:
+            continue
+        step["agent_name"] = replacement
+        for field in (
+            "expected_outputs",
+            "produces",
+            "planning_tools",
+            "tool_names",
+            "tool_name",
+        ):
+            step.pop(field, None)
+        repairs.append(
+            f"reassigned {step['step_id']} from {current_agent} "
+            f"to trusted Agent {replacement}"
+        )
+
     step_by_subtask_id = {
         subtask_id: str(step["step_id"])
         for step in normalized
@@ -1267,6 +1323,7 @@ def _validate_plan_against_task_profile(steps: list, state: State) -> list[str]:
             "调度器模式下，TaskProfile 存在子任务时，"
             "每个执行步骤必须包含可验证的 subtask_ids"
         )
+        errors.extend(_contract_closure_errors(steps, state))
         return list(dict.fromkeys(errors))
 
     if structured_steps:
@@ -1390,6 +1447,7 @@ def _validate_plan_against_task_profile(steps: list, state: State) -> list[str]:
                         f"{step.get('step_id') or index + 1} 之前完成"
                     )
 
+        errors.extend(_contract_closure_errors(steps, state))
         return list(dict.fromkeys(errors))
 
     for subtask in subtasks:
@@ -2565,17 +2623,26 @@ async def _finalize_validated_plan(
         from src.orchestration.plan_to_task_graph import plan_to_task_graph
         from src.orchestration.runtime import unknown_operation_modes
 
+        from src.orchestrator.department_router import build_agent_cards
+
         registered_agents = await agent_manager.agent_registry.list()
+        authorized_ids = set(_string_list(state.get("TEAM_MEMBERS")))
+        registered_cards = build_agent_cards(registered_agents)
         contracts = {
-            agent.agent_name: agent.agent_contract
-            for agent in registered_agents
-            if getattr(agent, "agent_contract", None) is not None
-            and (agent.user_id == "share" or agent.user_id == state.get("user_id"))
+            card.agent_id: card.planning_agent_contract or card.agent_contract
+            for card in registered_cards
+            if card.agent_id in authorized_ids
+            and (card.planning_agent_contract or card.agent_contract) is not None
         }
         produces = {
-            agent.agent_name: list(getattr(agent, "produces", []) or [])
-            for agent in registered_agents
-            if (agent.user_id == "share" or agent.user_id == state.get("user_id"))
+            card.agent_id: [
+                ref.name
+                for ref in (
+                    card.planning_agent_contract or card.agent_contract
+                ).produces
+            ]
+            for card in registered_cards
+            if card.agent_id in contracts
         }
         task_graph = plan_to_task_graph(
             steps,

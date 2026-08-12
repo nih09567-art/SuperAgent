@@ -1,0 +1,83 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" data-pptx-page-role="content" font-family="Microsoft YaHei, Arial, sans-serif">
+  <rect id="background" data-pptx-role="background" x="0" y="0" width="1280" height="720" fill="#FFFFFF"/>
+  <g id="title-block" data-pptx-bounds="52 32 1170 126">
+    <text x="58" y="62" font-family="Arial, Microsoft YaHei, sans-serif" font-size="16" font-weight="bold" letter-spacing="1.3" fill="#F28C28">02 / CONTROL PLANE × DATA PLANE × TOOL RESOLVER</text>
+    <text x="58" y="106" font-size="34" font-weight="bold" fill="#1E2A36">控制面决定何时执行，数据面决定传什么；</text>
+    <text x="58" y="144" font-size="32" font-weight="bold" fill="#0B5CAD">48 个工具先收敛到 2.17 个候选</text>
+  </g>
+  <g id="control-and-data-plane" data-pptx-bounds="58 184 626 408">
+    <text x="58" y="208" font-size="17" font-weight="bold" fill="#516273">双轨解耦：只有 StepResult.outputs 连接控制与数据</text>
+    <rect x="58" y="234" width="626" height="148" fill="#F3F7FB"/>
+    <rect x="58" y="410" width="626" height="182" fill="#F3F7FB"/>
+    <rect x="58" y="234" width="8" height="148" fill="#0B5CAD"/>
+    <rect x="58" y="410" width="8" height="182" fill="#4CA6C6"/>
+    <text x="82" y="270" font-size="19" font-weight="bold" fill="#0B5CAD">控制面</text>
+    <text x="82" y="300" font-size="15" fill="#516273">状态、依赖、调度</text>
+    <rect x="196" y="262" width="126" height="66" fill="#FFFFFF" stroke="#0B5CAD" stroke-width="3"/>
+    <rect x="358" y="262" width="126" height="66" fill="#FFFFFF" stroke="#0B5CAD" stroke-width="3"/>
+    <rect x="520" y="262" width="140" height="66" fill="#FFFFFF" stroke="#0B5CAD" stroke-width="3"/>
+    <line x1="322" y1="295" x2="358" y2="295" stroke="#0B5CAD" stroke-width="3"/>
+    <line x1="484" y1="295" x2="520" y2="295" stroke="#0B5CAD" stroke-width="3"/>
+    <text x="259" y="301" text-anchor="middle" font-family="Consolas, Microsoft YaHei, monospace" font-size="15" font-weight="bold" fill="#1E2A36">TaskGraph</text>
+    <text x="421" y="301" text-anchor="middle" font-family="Consolas, Microsoft YaHei, monospace" font-size="15" font-weight="bold" fill="#1E2A36">Scheduler</text>
+    <text x="590" y="301" text-anchor="middle" font-family="Consolas, Microsoft YaHei, monospace" font-size="15" font-weight="bold" fill="#1E2A36">StepResult</text>
+    <text x="82" y="450" font-size="19" font-weight="bold" fill="#0B5CAD">数据面</text>
+    <text x="82" y="480" font-size="15" fill="#516273">产物、引用、血缘</text>
+    <rect x="178" y="452" width="108" height="62" fill="#FFFFFF" stroke="#4CA6C6" stroke-width="3"/>
+    <rect x="318" y="452" width="108" height="62" fill="#FFFFFF" stroke="#4CA6C6" stroke-width="3"/>
+    <rect x="458" y="452" width="108" height="62" fill="#FFFFFF" stroke="#4CA6C6" stroke-width="3"/>
+    <rect x="598" y="452" width="62" height="62" fill="#FFFFFF" stroke="#4CA6C6" stroke-width="3"/>
+    <line x1="286" y1="483" x2="318" y2="483" stroke="#4CA6C6" stroke-width="3"/>
+    <line x1="426" y1="483" x2="458" y2="483" stroke="#4CA6C6" stroke-width="3"/>
+    <line x1="566" y1="483" x2="598" y2="483" stroke="#4CA6C6" stroke-width="3"/>
+    <text x="232" y="489" text-anchor="middle" font-size="15" font-weight="bold" fill="#1E2A36">Agent</text>
+    <text x="372" y="489" text-anchor="middle" font-size="15" font-weight="bold" fill="#1E2A36">Artifact</text>
+    <text x="512" y="489" text-anchor="middle" font-family="Consolas, Microsoft YaHei, monospace" font-size="14" font-weight="bold" fill="#1E2A36">ArtifactRef</text>
+    <text x="629" y="489" text-anchor="middle" font-size="14" font-weight="bold" fill="#1E2A36">Agent</text>
+    <line x1="590" y1="328" x2="590" y2="440" stroke="#F28C28" stroke-width="3" stroke-dasharray="6,3"/>
+    <text x="578" y="387" text-anchor="end" font-family="Consolas, Microsoft YaHei, monospace" font-size="14" font-weight="bold" fill="#F28C28">outputs</text>
+    <text x="82" y="560" font-size="16" font-weight="bold" fill="#1E2A36">控制面不携带大对象；数据面不决定执行顺序。</text>
+  </g>
+  <g id="tool-funnel" data-pptx-bounds="724 184 498 270">
+    <text x="724" y="208" font-size="17" font-weight="bold" fill="#516273">确定性过滤 → 评分 → 可弃权</text>
+    <g id="tool-funnel-chartArea">
+      <line x1="810" y1="244" x2="1190" y2="244" stroke="#DCE5EF" stroke-width="2"/>
+      <line x1="810" y1="358" x2="1190" y2="358" stroke="#DCE5EF" stroke-width="2"/>
+      <line x1="810" y1="236" x2="810" y2="366" stroke="#DCE5EF" stroke-width="2"/>
+      <line x1="1190" y1="236" x2="1190" y2="366" stroke="#DCE5EF" stroke-width="2"/>
+      <!-- chart-plot-area: object=tool-funnel | 810,244,1190,358 -->
+      <rect x="810" y="260" width="380" height="36" fill="#0B5CAD"/>
+      <rect x="810" y="318" width="17.18" height="36" fill="#F28C28"/>
+    </g>
+    <text x="724" y="285" font-size="16" fill="#1E2A36">工具目录</text>
+    <text x="724" y="343" font-size="16" font-weight="bold" fill="#F28C28">平均候选</text>
+    <text x="1174" y="285" text-anchor="end" font-family="Arial, Microsoft YaHei, sans-serif" font-size="22" font-weight="bold" fill="#FFFFFF">48</text>
+    <text x="842" y="343" font-family="Arial, Microsoft YaHei, sans-serif" font-size="20" font-weight="bold" fill="#F28C28">2.17</text>
+    <rect x="810" y="390" width="158" height="54" fill="#F3F7FB"/>
+    <rect x="988" y="390" width="202" height="54" fill="#FFF7EE"/>
+    <text x="889" y="424" text-anchor="middle" font-size="16" font-weight="bold" fill="#0B5CAD">Top-K 评分</text>
+    <text x="1089" y="424" text-anchor="middle" font-size="16" font-weight="bold" fill="#F28C28">Tool / ABSTAIN</text>
+  </g>
+  <g id="tool-kpis" data-pptx-bounds="724 474 498 118">
+    <rect x="724" y="474" width="116" height="118" fill="#F3F7FB"/>
+    <rect x="850" y="474" width="116" height="118" fill="#F3F7FB"/>
+    <rect x="976" y="474" width="116" height="118" fill="#F3F7FB"/>
+    <rect x="1102" y="474" width="120" height="118" fill="#F3F7FB"/>
+    <text x="782" y="520" text-anchor="middle" font-family="Arial, Microsoft YaHei, sans-serif" font-size="24" font-weight="bold" fill="#0B5CAD">100%</text>
+    <text x="782" y="550" text-anchor="middle" font-size="14" fill="#516273">Top-1 / Top-3</text>
+    <text x="908" y="520" text-anchor="middle" font-family="Arial, Microsoft YaHei, sans-serif" font-size="24" font-weight="bold" fill="#0B5CAD">100%</text>
+    <text x="908" y="550" text-anchor="middle" font-size="14" fill="#516273">Schema 有效</text>
+    <text x="1034" y="520" text-anchor="middle" font-family="Arial, Microsoft YaHei, sans-serif" font-size="24" font-weight="bold" fill="#21A179">0</text>
+    <text x="1034" y="550" text-anchor="middle" font-size="14" fill="#516273">工具幻觉</text>
+    <text x="1162" y="520" text-anchor="middle" font-family="Arial, Microsoft YaHei, sans-serif" font-size="24" font-weight="bold" fill="#0B5CAD">1.51 ms</text>
+    <text x="1162" y="550" text-anchor="middle" font-size="14" fill="#516273">平均耗时</text>
+  </g>
+  <g id="boundary-note" data-pptx-bounds="58 610 1164 40">
+    <text x="58" y="638" font-size="17" font-weight="bold" fill="#F28C28">边界：当前 Tool Resolver 主要以 audit 模式接入；固定评测集不代表开放工具环境泛化。</text>
+  </g>
+  <g id="footer" data-pptx-bounds="58 650 1164 42">
+    <text x="58" y="677" font-size="14" fill="#7B8B9B">来源：多智能体协同与执行编排机制调研及原型成果报告</text>
+    <circle cx="1194" cy="670" r="22" fill="#F28C28"/>
+    <text x="1194" y="676" text-anchor="middle" font-family="Arial, Microsoft YaHei, sans-serif" font-size="16" font-weight="bold" fill="#FFFFFF">09</text>
+  </g>
+</svg>

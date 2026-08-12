@@ -19,6 +19,7 @@ from src.orchestration.reconciliation import (
     ReconciliationStore,
     get_reconciliation_store,
 )
+from src.orchestration.recovery_review import get_recovery_review_store
 from src.orchestration.governance import record_governance_event
 from src.robust.task_logger import TaskLogger
 from src.security.approval import get_approval_store
@@ -329,6 +330,65 @@ def test_failed_reconciliation_resume_returns_to_ready_state(tmp_path, monkeypat
     assert restored.resolution["resume_succeeded"] is False
 
 
+def test_failed_resume_superseded_by_new_reconciliation_is_consumed(
+    tmp_path, monkeypatch
+):
+    reconciliation, _ = _reconciliation(tmp_path, monkeypatch)
+    store = get_reconciliation_store()
+    store.resolve(
+        reconciliation.reconciliation_id,
+        status="retry_ready",
+        operator="admin",
+    )
+    claimed = store.claim_for_resume(
+        task_id=reconciliation.task_id,
+        resume_step=reconciliation.resume_step,
+        operator="admin",
+    )
+
+    finished = store.finish_resume(
+        reconciliation.reconciliation_id,
+        resume_claim_id=claimed.resolution["resume_claim_id"],
+        succeeded=False,
+        superseded=True,
+    )
+
+    assert finished.status == "consumed"
+    assert finished.resolution["resume_succeeded"] is False
+    assert finished.resolution["resume_superseded"] is True
+
+
+def test_new_reconciliation_consumes_older_retry_decision(tmp_path, monkeypatch):
+    reconciliation, _ = _reconciliation(tmp_path, monkeypatch)
+    store = get_reconciliation_store()
+    store.resolve(
+        reconciliation.reconciliation_id,
+        status="retry_ready",
+        operator="admin",
+    )
+
+    replacement = store.create(
+        user_id=reconciliation.user_id,
+        workflow_id=reconciliation.workflow_id,
+        task_id=reconciliation.task_id,
+        step_id=reconciliation.step_id,
+        resume_step=reconciliation.resume_step,
+        agent_name=reconciliation.agent_name,
+        error="second uncertain attempt",
+        idempotency_key="idem-replacement",
+        claim_id="claim-replacement",
+    )
+
+    previous = store.get(reconciliation.reconciliation_id)
+    assert replacement.status == "pending"
+    assert previous.status == "consumed"
+    assert previous.resolution["resume_superseded"] is True
+    assert (
+        previous.resolution["superseded_by_reconciliation_id"]
+        == replacement.reconciliation_id
+    )
+
+
 def test_expired_resume_claim_is_reclaimed_after_process_restart(
     tmp_path, monkeypatch
 ) -> None:
@@ -573,8 +633,15 @@ def test_resume_api_restores_reconciliation_after_failed_terminal(
 
     assert response.status_code == 200
     restored = store.get(reconciliation.reconciliation_id)
-    assert restored.status == "confirmed_succeeded"
+    assert restored.status == (
+        "consumed"
+        if terminal_status == "NEEDS_RECONCILIATION"
+        else "confirmed_succeeded"
+    )
     assert restored.resolution["resume_succeeded"] is False
+    assert restored.resolution["resume_superseded"] is (
+        terminal_status == "NEEDS_RECONCILIATION"
+    )
 
 
 def test_resume_api_consumes_reconciliation_only_after_successful_terminal(
@@ -916,6 +983,9 @@ def test_deleting_legacy_conversation_removes_orphan_security_records_only(
         "RECONCILIATION_STORE_DIR", str(tmp_path / "reconciliations")
     )
     monkeypatch.setenv("APPROVAL_STORE_DIR", str(tmp_path / "approvals"))
+    monkeypatch.setenv(
+        "RECOVERY_REVIEW_STORE_DIR", str(tmp_path / "recovery-reviews")
+    )
     get_reconciliation_store().create(
         user_id="u1",
         workflow_id="u1:demo",
@@ -924,6 +994,13 @@ def test_deleting_legacy_conversation_removes_orphan_security_records_only(
         resume_step=1,
         agent_name="RemoteEmailDispatchAgent",
         error="outcome unknown",
+    )
+    get_recovery_review_store().create(
+        user_id="u1",
+        workflow_id="u1:demo",
+        task_id="legacy-task",
+        terminal_status="FAILED",
+        failure_codes=["AGENT_TIMEOUT"],
     )
 
     response = _client().delete(
@@ -935,8 +1012,10 @@ def test_deleting_legacy_conversation_removes_orphan_security_records_only(
     body = response.json()
     assert body["deleted_tasks"] == 0
     assert body["deleted"]["reconciliations"] == 1
+    assert body["deleted"]["recovery_reviews"] == 1
     assert body["business_outputs_preserved"] is True
     assert get_reconciliation_store().list(task_id="legacy-task") == []
+    assert get_recovery_review_store().list(task_id="legacy-task") == []
 
 
 def _production_authorization_fields(
@@ -1016,6 +1095,9 @@ def test_deleting_user_history_removes_all_orphan_queues_for_that_user_only(
         "RECONCILIATION_STORE_DIR", str(tmp_path / "reconciliations")
     )
     monkeypatch.setenv("APPROVAL_STORE_DIR", str(tmp_path / "approvals"))
+    monkeypatch.setenv(
+        "RECOVERY_REVIEW_STORE_DIR", str(tmp_path / "recovery-reviews")
+    )
     for workflow_id, task_id in (("u1:first", "task-1"), ("u1:old", "task-old")):
         get_reconciliation_store().create(
             user_id="u1",
@@ -1053,7 +1135,11 @@ def test_deleting_user_history_removes_all_orphan_queues_for_that_user_only(
     )
 
     assert response.status_code == 200
-    assert response.json()["deleted"] == {"reconciliations": 2, "approvals": 2}
+    assert response.json()["deleted"] == {
+        "reconciliations": 2,
+        "approvals": 2,
+        "recovery_reviews": 0,
+    }
     assert get_reconciliation_store().list(user_id="u1") == []
     assert get_approval_store().list(user_id="u1") == []
     assert get_reconciliation_store().get(other.reconciliation_id) is not None

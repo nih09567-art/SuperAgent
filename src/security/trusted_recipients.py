@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import unicodedata
 from typing import Any, Iterable
 
@@ -23,6 +24,28 @@ class UnknownTrustedRecipientError(TrustedRecipientResolutionError):
 
 def _normalized(value: Any) -> str:
     return unicodedata.normalize("NFKC", str(value or "")).strip().casefold()
+
+
+def _normalized_directory_label(value: Any) -> str:
+    """Normalize a business label without changing an explicit email address."""
+
+    normalized = _normalized(value)
+    # Entity extraction may retain a harmless business wrapper, for example
+    # ``邮箱hr@example.test``.  Resolve the explicit address itself, while still
+    # requiring that address to exist in the platform-owned directory below.
+    email_matches = re.findall(
+        r"[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?",
+        normalized,
+    )
+    if len(email_matches) == 1:
+        return email_matches[0]
+    if "@" in normalized:
+        return normalized
+    for suffix in ("的邮箱地址", "邮箱地址", "的邮箱", "邮箱"):
+        if normalized.endswith(suffix):
+            normalized = normalized[: -len(suffix)].strip()
+            break
+    return normalized
 
 
 def _recipient_values(value: Any) -> list[str]:
@@ -95,7 +118,7 @@ def resolve_trusted_recipient_addresses(recipients: Any) -> list[str]:
     directory = _trusted_directory()
     resolved: set[str] = set()
     for raw_recipient in requested:
-        recipient = _normalized(raw_recipient)
+        recipient = _normalized_directory_label(raw_recipient)
         email_matches = {
             str(entry.get("email") or "").strip()
             for entry in directory

@@ -56,8 +56,8 @@ _SPECS: dict[str, _FailureSpec] = {
     ),
     FailureCode.CLARIFICATION_REQUIRED: _spec(
         FailureCategory.PLANNING,
-        "More information is required before this step can run.",
-        action="Provide the requested clarification and run the workflow again.",
+        "该步骤需要补充信息后才能执行。",
+        action="请回答系统提出的具体问题，系统将使用补充信息重新规划。",
     ),
     FailureCode.CLARIFICATION_BLOCKED: _spec(
         FailureCategory.PLANNING,
@@ -453,6 +453,8 @@ def failure_from_step_result(
             "reason_codes",
             "routing_decision",
             "schema_ref",
+            "clarification",
+            "clarification_field",
         )
         if values.get(key) is not None
     }
@@ -522,7 +524,12 @@ def failure_from_step_result(
         else:
             code = FailureCode.INTERNAL_STEP_ERROR
 
-    public_reason = public_execution_reason(error)
+    public_reason = (
+        str(values.get("clarification") or "").strip()
+        if str(getattr(code, "value", code)).upper()
+        == FailureCode.CLARIFICATION_REQUIRED.value
+        else public_execution_reason(error)
+    ) or None
     return make_failure(
         code,
         message=public_reason,

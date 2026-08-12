@@ -698,6 +698,18 @@
                   </div>
                   <div class="detail-card">
                     <div class="summary-header">
+                      <h3>失败恢复审核队列</h3>
+                      <div class="sec-queue-actions">
+                        <button id="refreshRecoveryReviewsBtn" class="ghost" type="button">刷新</button>
+                      </div>
+                    </div>
+                    <p class="sec-reconciliation-help">用于审核失败任务的已完成步骤、外部操作与检查点；审核后从任务历史选择安全检查点恢复。</p>
+                    <div id="securityRecoveryReviews" class="sec-approvals">
+                      <div class="sec-empty">暂无失败恢复审核记录</div>
+                    </div>
+                  </div>
+                  <div class="detail-card">
+                    <div class="summary-header">
                       <h3>人工审批队列</h3>
                       <div class="sec-queue-actions">
                         <button id="refreshApprovalsBtn" class="ghost" type="button">刷新</button>

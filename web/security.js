@@ -13,6 +13,7 @@ let secAgentAttributes = {};
 let secLastDeniedEvents = [];
 let secApprovals = [];
 let secReconciliations = [];
+let secRecoveryReviews = [];
 const SEC_MAX_DENIED_HISTORY = 5;
 
 const SECURITY_AGENT_LABELS_ZH = {
@@ -551,16 +552,6 @@ async function loadUserSecurityProfile(userId) {
         renderUserProfile();
         renderAgentsList();
         renderToolAccessGrid();
-
-        const userIdInput = document.getElementById("userId");
-        if (userIdInput && data.user_id) {
-            userIdInput.value = data.user_id;
-        }
-
-        const demoRole = document.getElementById("demoUserRole");
-        if (demoRole && data.user_id && demoRole.value !== data.user_id) {
-            demoRole.value = data.user_id;
-        }
     } catch (e) {
         console.warn("Failed to load user profile:", e);
     }
@@ -597,6 +588,89 @@ function renderSecurityStatus() {
             <div class="sec-stat"><span>${secSystemStatus.resource_attributes_count}</span><small>资源属性</small></div>
         </div>
     `;
+}
+
+async function loadSecurityRecoveryReviews() {
+    const el = document.getElementById("securityRecoveryReviews");
+    try {
+        secRecoveryReviews = await secFetch("/api/security/recovery-reviews");
+        renderSecurityRecoveryReviews();
+    } catch (e) {
+        if (el) el.innerHTML = `<div class="sec-error">失败恢复审核队列加载失败：${escapeHtml(e.message)}</div>`;
+    }
+}
+
+function renderSecurityRecoveryReviews() {
+    const el = document.getElementById("securityRecoveryReviews");
+    if (!el) return;
+    if (!secRecoveryReviews.length) {
+        el.innerHTML = '<div class="sec-empty">暂无失败恢复审核记录</div>';
+        return;
+    }
+    const labels = { pending: "待审核", in_review: "审核中" };
+    el.innerHTML = secRecoveryReviews.slice(0, 20).map((item) => {
+        const status = String(item.status || "pending").toLowerCase();
+        const actionable = item.actionable !== false;
+        return `
+          <div class="sec-approval-item status-${escapeHtml(status)}" data-recovery-task-id="${escapeHtml(item.task_id)}">
+            <div class="sec-approval-header">
+              <strong>${escapeHtml(labels[status] || status.toUpperCase())}</strong>
+              <span class="tag warn">${escapeHtml(item.terminal_status || "FAILED")}</span>
+            </div>
+            ${governanceConversationContext(item)}
+            <div class="sec-approval-body">
+              <div><strong>失败步骤：</strong>${escapeHtml((item.failed_steps || []).join("、") || "-")}</div>
+              <div><strong>阻塞步骤：</strong>${escapeHtml((item.blocked_steps || []).join("、") || "-")}</div>
+              <div><strong>错误码：</strong>${escapeHtml((item.failure_codes || []).filter(Boolean).join("、") || "-")}</div>
+            </div>
+            <div class="sec-approval-actions">
+              ${actionable
+                ? `<button class="primary sec-recovery-review-open" data-review-id="${escapeHtml(item.review_id)}" data-status="${escapeHtml(status)}" data-task-id="${escapeHtml(item.task_id)}" data-workflow-id="${escapeHtml(item.workflow_id || "")}" type="button">开始审核并查看检查点</button>`
+                : '<span class="sec-empty">该错误需修复系统配置或代码，不能人工放行</span>'}
+            </div>
+          </div>`;
+    }).join("");
+    el.querySelectorAll(".sec-recovery-review-open").forEach((button) => {
+        button.addEventListener("click", async () => {
+            button.disabled = true;
+            try {
+                if (button.dataset.status === "pending") {
+                    const response = await fetch(
+                        `/api/security/recovery-reviews/${encodeURIComponent(button.dataset.reviewId)}/start`,
+                        { method: "POST" }
+                    );
+                    const data = await response.json().catch(() => ({}));
+                    if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
+                }
+                if (typeof window.openRecoveryReviewTask === "function") {
+                    await window.openRecoveryReviewTask({
+                        task_id: button.dataset.taskId,
+                        workflow_id: button.dataset.workflowId,
+                    });
+                }
+            } catch (error) {
+                window.alert(`无法开始恢复审核：${error.message || error}`);
+                button.disabled = false;
+            }
+        });
+    });
+}
+
+async function focusRecoveryReview(taskId) {
+    await loadSecurityRecoveryReviews();
+    const normalizedTaskId = String(taskId || "");
+    if (!normalizedTaskId) return;
+    const el = document.getElementById("securityRecoveryReviews");
+    const card = Array.from(
+        el?.querySelectorAll("[data-recovery-task-id]") || []
+    ).find((item) => item.dataset.recoveryTaskId === normalizedTaskId);
+    if (!card) {
+        window.alert("未找到该失败任务的恢复审核记录，请刷新后重试。");
+        return;
+    }
+    card.classList.add("sec-review-focused");
+    card.scrollIntoView({ behavior: "smooth", block: "center" });
+    window.setTimeout(() => card.classList.remove("sec-review-focused"), 3000);
 }
 
 function populateUserSelects() {
@@ -854,6 +928,10 @@ function initSecurityTab() {
             loadSecurityReconciliations
         );
     }
+    const refreshRecoveryReviewsBtn = document.getElementById("refreshRecoveryReviewsBtn");
+    if (refreshRecoveryReviewsBtn) {
+        refreshRecoveryReviewsBtn.addEventListener("click", loadSecurityRecoveryReviews);
+    }
 
     const demoRole = document.getElementById("demoUserRole");
     if (demoRole) {
@@ -922,6 +1000,7 @@ function initSecurityModule() {
     loadSecurityPolicies();
     loadSecurityApprovals();
     loadSecurityReconciliations();
+    loadSecurityRecoveryReviews();
     renderLastDeniedEvent();
 
     const demoRole = document.getElementById("demoUserRole");
@@ -948,5 +1027,7 @@ window.SecurityModule = {
     loadSecurityStatus,
     loadSecurityApprovals,
     loadSecurityReconciliations,
+    loadSecurityRecoveryReviews,
+    focusRecoveryReview,
     formatScenarioFitSummary,
 };

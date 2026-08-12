@@ -416,6 +416,158 @@ def test_compatible_plan_binds_multiple_uniquely_inferred_subtasks(monkeypatch):
     assert _validate_plan_against_task_profile(normalized, state) == []
 
 
+def test_compatible_plan_reassigns_independent_report_to_local_reporter(monkeypatch):
+    monkeypatch.setattr(
+        "src.service.env.CONTRACT_PLANNING_COMPAT_ENABLED",
+        True,
+        raising=False,
+    )
+    state = {
+        "TEAM_MEMBERS": ["researcher", "reporter"],
+        "task_profile": {
+            "subtasks": [
+                {
+                    "id": "subtask_1",
+                    "intent": "information_research",
+                    "depends_on": [],
+                },
+                {
+                    "id": "subtask_2",
+                    "intent": "report_generation",
+                    "depends_on": ["subtask_1"],
+                },
+            ]
+        },
+    }
+    steps = [
+        {
+            "step_id": "step_research",
+            "subtask_ids": ["subtask_1"],
+            "intents": ["information_research"],
+            "agent_name": "researcher",
+        },
+        {
+            "step_id": "step_report",
+            "subtask_ids": ["subtask_2"],
+            "intents": ["report_generation"],
+            "agent_name": "researcher",
+        },
+    ]
+
+    normalized, repairs = _normalize_compatible_plan(steps, state)
+
+    assert [step["agent_name"] for step in normalized] == [
+        "researcher",
+        "reporter",
+    ]
+    assert normalized[1]["depends_on"] == ["step_research"]
+    assert any("to trusted Agent reporter" in repair for repair in repairs)
+    assert _validate_plan_against_task_profile(normalized, state) == []
+
+
+def test_compatible_plan_replaces_unauthorized_remote_report_agent(monkeypatch):
+    monkeypatch.setattr(
+        "src.service.env.CONTRACT_PLANNING_COMPAT_ENABLED",
+        True,
+        raising=False,
+    )
+    state = {
+        "TEAM_MEMBERS": ["researcher", "reporter"],
+        "contract_closure": {
+            "target_outputs": ["research.markdown", "report.markdown"],
+            "selected_agent_ids": ["researcher", "reporter"],
+            "missing_outputs": [],
+            "complete": True,
+        },
+        "task_profile": {
+            "subtasks": [
+                {
+                    "id": "subtask_1",
+                    "intent": "information_research",
+                    "depends_on": [],
+                },
+                {
+                    "id": "subtask_2",
+                    "intent": "report_generation",
+                    "depends_on": ["subtask_1"],
+                },
+            ]
+        },
+    }
+    steps = [
+        {
+            "step_id": "step_research",
+            "subtask_ids": ["subtask_1"],
+            "intents": ["information_research"],
+            "agent_name": "researcher",
+        },
+        {
+            "step_id": "step_report",
+            "subtask_ids": ["subtask_2"],
+            "intents": ["report_generation"],
+            "depends_on": ["step_research"],
+            "agent_name": "RemoteReportAgent",
+        },
+    ]
+
+    normalized, repairs = _normalize_compatible_plan(steps, state)
+
+    assert [step["agent_name"] for step in normalized] == [
+        "researcher",
+        "reporter",
+    ]
+    assert any(
+        "RemoteReportAgent to trusted Agent reporter" in repair
+        for repair in repairs
+    )
+    assert _validate_plan_against_task_profile(normalized, state) == []
+
+
+def test_structured_plan_enforces_contract_closure() -> None:
+    state = {
+        "contract_closure": {
+            "target_outputs": ["research.markdown", "report.markdown"],
+            "selected_agent_ids": ["researcher", "reporter"],
+            "missing_outputs": [],
+            "complete": True,
+        },
+        "task_profile": {
+            "subtasks": [
+                {
+                    "id": "subtask_1",
+                    "intent": "information_research",
+                    "depends_on": [],
+                },
+                {
+                    "id": "subtask_2",
+                    "intent": "report_generation",
+                    "depends_on": ["subtask_1"],
+                },
+            ]
+        },
+    }
+    steps = [
+        {
+            "step_id": "step_research",
+            "subtask_ids": ["subtask_1"],
+            "intents": ["information_research"],
+            "agent_name": "researcher",
+        },
+        {
+            "step_id": "step_report",
+            "subtask_ids": ["subtask_2"],
+            "intents": ["report_generation"],
+            "depends_on": ["step_research"],
+            "agent_name": "RemoteReportAgent",
+        },
+    ]
+
+    errors = _validate_plan_against_task_profile(steps, state)
+
+    assert "Contract closure requires missing Agent reporter" in errors
+    assert "Agent RemoteReportAgent is outside the trusted Contract closure" in errors
+
+
 def test_compatible_plan_is_noop_when_disabled(monkeypatch):
     monkeypatch.setattr(
         "src.service.env.CONTRACT_PLANNING_COMPAT_ENABLED",

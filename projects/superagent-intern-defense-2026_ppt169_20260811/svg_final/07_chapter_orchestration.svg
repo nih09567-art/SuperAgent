@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" data-pptx-page-role="section" font-family="Microsoft YaHei, Arial, sans-serif">
+  <rect id="background" data-pptx-role="background" x="0" y="0" width="1280" height="720" fill="#FFFFFF"/>
+  <g id="chapter-heading" data-pptx-bounds="62 92 700 444">
+    <text x="64" y="238" font-family="Arial, Microsoft YaHei, sans-serif" font-size="128" font-weight="bold" fill="#E5EEF7">02</text>
+    <rect x="72" y="276" width="76" height="6" fill="#F28C28"/>
+    <text x="72" y="344" font-size="54" font-weight="bold" fill="#0B5CAD">多 Agent 协同编排</text>
+    <text x="72" y="412" font-size="54" font-weight="bold" fill="#1E2A36">与工具选择</text>
+    <text x="72" y="476" font-size="23" fill="#516273">从“能调用”升级为可校验、可调度、可暂停、可恢复的执行计划</text>
+  </g>
+  <g id="chapter-network" data-pptx-bounds="790 92 414 492">
+    <circle cx="988" cy="334" r="178" fill="none" stroke="#0B5CAD" stroke-width="20"/>
+    <circle cx="1050" cy="374" r="132" fill="none" stroke="#F28C28" stroke-width="14"/>
+    <line x1="988" y1="334" x2="866" y2="226" stroke="#4CA6C6" stroke-width="4"/>
+    <line x1="988" y1="334" x2="1112" y2="218" stroke="#4CA6C6" stroke-width="4"/>
+    <line x1="988" y1="334" x2="1150" y2="444" stroke="#4CA6C6" stroke-width="4"/>
+    <line x1="988" y1="334" x2="922" y2="502" stroke="#4CA6C6" stroke-width="4"/>
+    <circle cx="988" cy="334" r="44" fill="#0B5CAD"/>
+    <circle cx="866" cy="226" r="31" fill="#FFFFFF" stroke="#0B5CAD" stroke-width="5"/>
+    <circle cx="1112" cy="218" r="31" fill="#FFFFFF" stroke="#0B5CAD" stroke-width="5"/>
+    <circle cx="1150" cy="444" r="31" fill="#FFFFFF" stroke="#F28C28" stroke-width="5"/>
+    <circle cx="922" cy="502" r="31" fill="#FFFFFF" stroke="#0B5CAD" stroke-width="5"/>
+    <text x="988" y="341" text-anchor="middle" font-family="Consolas, Microsoft YaHei, monospace" font-size="18" font-weight="bold" fill="#FFFFFF">PLAN</text>
+    <text x="866" y="232" text-anchor="middle" font-size="15" font-weight="bold" fill="#0B5CAD">校验</text>
+    <text x="1112" y="224" text-anchor="middle" font-size="15" font-weight="bold" fill="#0B5CAD">调度</text>
+    <text x="1150" y="450" text-anchor="middle" font-size="15" font-weight="bold" fill="#F28C28">暂停</text>
+    <text x="922" y="508" text-anchor="middle" font-size="15" font-weight="bold" fill="#0B5CAD">恢复</text>
+  </g>
+  <g id="chapter-claim" data-pptx-bounds="64 568 1030 68">
+    <line x1="72" y1="586" x2="302" y2="586" stroke="#DCE5EF" stroke-width="2"/>
+    <text x="72" y="624" font-size="25" font-weight="bold" fill="#1E2A36">计划不是一段文本，而是一份受信任的执行契约。</text>
+  </g>
+  <g id="footer" data-pptx-bounds="1120 646 102 46">
+    <circle cx="1194" cy="670" r="22" fill="#F28C28"/>
+    <text x="1194" y="676" text-anchor="middle" font-family="Arial, Microsoft YaHei, sans-serif" font-size="16" font-weight="bold" fill="#FFFFFF">07</text>
+  </g>
+</svg>

@@ -12,6 +12,7 @@ from remote_agents.hr_assistant_agent import RemoteHRAssistantAgent
 from remote_agents.business_risk_agent import RemoteBusinessRiskAgent
 from remote_agents.knowledge_agent import RemoteKnowledgeAgent
 from remote_agents.report_agent import RemoteReportAgent
+from src.contracts.agent_contract import AgentContract, DataContractRef
 from src.interface.task_graph import TaskGraphValidationError
 from src.manager.executor.base import ExecuteResult, ExecutionStatus
 from src.orchestration.plan_to_task_graph import (
@@ -568,6 +569,75 @@ def test_converter_prefers_trusted_registry_contract_over_planner_contract():
 
     assert [ref.name for ref in step.agent_contract.produces] == ["policy.info"]
     assert step.expected_outputs == ["policy.info"]
+
+
+def test_converter_preserves_salary_only_subset_of_hr_contract():
+    contract = AgentContract(
+        produces=[
+            DataContractRef(name="employee.info", schema_ref="employee.info@v1"),
+            DataContractRef(
+                name="employee.salary",
+                schema_ref="employee.salary@v1",
+                required=False,
+            ),
+        ]
+    )
+    graph = plan_to_task_graph(
+        [
+            {
+                "step_id": "salary_step",
+                "agent_name": "RemoteHRAssistantAgent",
+                "intent": "salary_query",
+                "expected_outputs": ["employee.salary"],
+                "title": "查询李娜的工资信息",
+            }
+        ],
+        task_id="salary-only",
+        agent_contracts={"RemoteHRAssistantAgent": contract},
+    )
+
+    step = graph.steps[0]
+    assert step.expected_outputs == ["employee.salary"]
+    assert [ref.name for ref in step.agent_contract.produces] == [
+        "employee.info",
+        "employee.salary",
+    ]
+
+
+def test_converter_infers_salary_only_output_after_name_clarification():
+    contract = RemoteHRAssistantAgent().contract
+    graph = plan_to_task_graph(
+        [
+            {
+                "step_id": "salary_step",
+                "agent_name": "RemoteHRAssistantAgent",
+                "intents": ["salary_query"],
+                "title": "查询李娜的工资信息",
+            }
+        ],
+        task_id="clarified-salary-only",
+        agent_contracts={"RemoteHRAssistantAgent": contract},
+    )
+
+    assert graph.steps[0].expected_outputs == ["employee.salary"]
+
+
+def test_converter_filters_planner_expansion_from_salary_intent():
+    contract = RemoteHRAssistantAgent().contract
+    graph = plan_to_task_graph(
+        [
+            {
+                "step_id": "salary_step",
+                "agent_name": "RemoteHRAssistantAgent",
+                "intents": ["salary_query"],
+                "expected_outputs": ["employee.salary", "employee.info"],
+            }
+        ],
+        task_id="salary-planner-expansion",
+        agent_contracts={"RemoteHRAssistantAgent": contract},
+    )
+
+    assert graph.steps[0].expected_outputs == ["employee.salary"]
 
 
 def test_converter_ignores_planner_only_contract():

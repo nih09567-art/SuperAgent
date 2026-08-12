@@ -91,6 +91,8 @@ SAFE_DETAIL_KEYS = frozenset(
         "actual_schema_ref",
         "attempts",
         "blocked_by",
+        "clarification",
+        "clarification_field",
         "completion_condition",
         "expected_schema_ref",
         "logical_name",
@@ -98,6 +100,7 @@ SAFE_DETAIL_KEYS = frozenset(
         "reason_codes",
         "routing_decision",
         "schema_ref",
+        "task_graph_rejection_reason",
         "timeout_seconds",
         "undeclared_outputs",
     }

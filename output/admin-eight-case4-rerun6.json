@@ -1,0 +1,261 @@
+[
+  {
+    "case": 4,
+    "instruction": "查询王经理下周的日程，安排一次和李娜的会议，并通知参会人",
+    "workflow_id": "admin:08e6bd132d672543e9a94a049174484b",
+    "task_id": "exec-32aa01862fb88d9b2104880882915cb4",
+    "status": "NEEDS_RECONCILIATION",
+    "failed_steps": [
+      "arrange_meeting"
+    ],
+    "blocked_steps": [
+      "notify_participants"
+    ],
+    "steps": [
+      {
+        "step_id": "query_manager_schedule",
+        "agent": "scheduler【RemoteHRCalendarAgent】",
+        "status": "SUCCEEDED",
+        "error": null,
+        "failure": null
+      },
+      {
+        "step_id": "arrange_meeting",
+        "agent": "scheduler【RemoteMeetingManagerAgent】",
+        "status": "FAILED",
+        "error": null,
+        "failure": {
+          "code": "SIDE_EFFECT_UNCONFIRMED",
+          "category": "reconciliation",
+          "message": "The outcome of a side effect could not be confirmed.",
+          "retryable": false,
+          "action": "Verify the external operation manually; do not resend automatically.",
+          "step_id": "arrange_meeting",
+          "agent_id": "RemoteMeetingManagerAgent",
+          "parameter_name": null,
+          "source_step": null,
+          "source_output": null,
+          "blocked_by": [],
+          "details_safe": {}
+        }
+      },
+      {
+        "step_id": "notify_participants",
+        "agent": "scheduler【RemoteEmailDispatchAgent】",
+        "status": "SKIPPED",
+        "error": null,
+        "failure": {
+          "code": "UPSTREAM_STEP_FAILED",
+          "category": "artifact",
+          "message": "Step was not executed because an upstream step failed.",
+          "retryable": false,
+          "action": "Fix the blocked upstream steps, then resume from a safe checkpoint.",
+          "step_id": "notify_participants",
+          "agent_id": null,
+          "parameter_name": null,
+          "source_step": null,
+          "source_output": null,
+          "blocked_by": [
+            "arrange_meeting"
+          ],
+          "details_safe": {}
+        }
+      }
+    ],
+    "governance_failure_events": [
+      {
+        "event": "reconciliation_required",
+        "data": {
+          "reconciliation_id": "recon_exec-32aa01862fb88d9b2104880882915cb4_arrange_meeting_1786368446280",
+          "status": "pending",
+          "task_id": "exec-32aa01862fb88d9b2104880882915cb4",
+          "workflow_id": "admin:08e6bd132d672543e9a94a049174484b",
+          "step_id": "arrange_meeting",
+          "resume_step": 2,
+          "agent_name": "RemoteMeetingManagerAgent",
+          "error": "Remote tool 'remote_meeting_scheduling_tool' arguments do not match the platform-authorized manifest",
+          "idempotency_key": "c6611329615f8241aa9a5b7c1a196a1481c84a09a95cb7710a647256be225925",
+          "external_operation_id": ""
+        }
+      }
+    ],
+    "terminal": {
+      "workflow_id": "admin:08e6bd132d672543e9a94a049174484b",
+      "task_id": "exec-32aa01862fb88d9b2104880882915cb4",
+      "mode": "scheduler",
+      "status": "NEEDS_RECONCILIATION",
+      "failed_steps": [
+        "arrange_meeting"
+      ],
+      "blocked_steps": [
+        "notify_participants"
+      ],
+      "failures": [
+        {
+          "code": "SIDE_EFFECT_UNCONFIRMED",
+          "category": "reconciliation",
+          "message": "The outcome of a side effect could not be confirmed.",
+          "retryable": false,
+          "action": "Verify the external operation manually; do not resend automatically.",
+          "step_id": "arrange_meeting",
+          "agent_id": "RemoteMeetingManagerAgent",
+          "parameter_name": null,
+          "source_step": null,
+          "source_output": null,
+          "blocked_by": [],
+          "details_safe": {}
+        },
+        {
+          "code": "UPSTREAM_STEP_FAILED",
+          "category": "artifact",
+          "message": "Step was not executed because an upstream step failed.",
+          "retryable": false,
+          "action": "Fix the blocked upstream steps, then resume from a safe checkpoint.",
+          "step_id": "notify_participants",
+          "agent_id": null,
+          "parameter_name": null,
+          "source_step": null,
+          "source_output": null,
+          "blocked_by": [
+            "arrange_meeting"
+          ],
+          "details_safe": {}
+        }
+      ],
+      "rejected_steps": [],
+      "clarifications": [],
+      "approval_required_steps": [],
+      "needs_reconciliation": [
+        "arrange_meeting"
+      ],
+      "results": {
+        "query_manager_schedule": "SUCCEEDED",
+        "arrange_meeting": "FAILED",
+        "notify_participants": "SKIPPED"
+      },
+      "skill_execution_evidence": {
+        "schema_version": 1,
+        "task_id": "exec-32aa01862fb88d9b2104880882915cb4",
+        "workflow_id": "admin:08e6bd132d672543e9a94a049174484b",
+        "execution_mode": "scheduler",
+        "workflow_status": "NEEDS_RECONCILIATION",
+        "technical_success": false,
+        "business_success": false,
+        "step_coverage": 1.0,
+        "business_outcome_coverage": 1.0,
+        "steps": [
+          {
+            "step_id": "query_manager_schedule",
+            "agent_name": "RemoteHRCalendarAgent",
+            "planned_agent": "RemoteHRCalendarAgent",
+            "executed_agent": "RemoteHRCalendarAgent",
+            "operation_mode": "read",
+            "risk_level": "LOW",
+            "technical_success": true,
+            "business_success": true,
+            "outcome_status": "success",
+            "verification_status": "not_required",
+            "verification_method": "technical_read_success",
+            "verification_evidence_ref": null,
+            "schema_valid": true,
+            "artifact_refs": [
+              {
+                "artifact_id": "cb888d23b5184570b29b05c5657128ee",
+                "version": 1,
+                "selector": null,
+                "expected_schema_ref": "structured_agent_result@v1"
+              }
+            ],
+            "resource_ids": [],
+            "external_operation_id": null,
+            "idempotency_key": null,
+            "receipt_status": null,
+            "needs_reconciliation": false,
+            "error": null
+          },
+          {
+            "step_id": "arrange_meeting",
+            "agent_name": "RemoteMeetingManagerAgent",
+            "planned_agent": "RemoteMeetingManagerAgent",
+            "executed_agent": "RemoteMeetingManagerAgent",
+            "operation_mode": "write",
+            "risk_level": "LOW",
+            "technical_success": false,
+            "business_success": false,
+            "outcome_status": "unknown",
+            "verification_status": "failed",
+            "verification_method": null,
+            "verification_evidence_ref": null,
+            "schema_valid": null,
+            "artifact_refs": [],
+            "resource_ids": [],
+            "external_operation_id": null,
+            "idempotency_key": "c6611329615f8241aa9a5b7c1a196a1481c84a09a95cb7710a647256be225925",
+            "receipt_status": "STARTED",
+            "needs_reconciliation": true,
+            "error": null
+          },
+          {
+            "step_id": "notify_participants",
+            "agent_name": "RemoteEmailDispatchAgent",
+            "planned_agent": "RemoteEmailDispatchAgent",
+            "executed_agent": "RemoteEmailDispatchAgent",
+            "operation_mode": "send",
+            "risk_level": "LOW",
+            "technical_success": false,
+            "business_success": false,
+            "outcome_status": "unknown",
+            "verification_status": "failed",
+            "verification_method": null,
+            "verification_evidence_ref": null,
+            "schema_valid": null,
+            "artifact_refs": [],
+            "resource_ids": [],
+            "external_operation_id": null,
+            "idempotency_key": null,
+            "receipt_status": null,
+            "needs_reconciliation": false,
+            "error": null
+          }
+        ],
+        "task_graph": {
+          "schema_version": 1,
+          "steps": [
+            {
+              "step_id": "query_manager_schedule",
+              "depends_on": [],
+              "operation_mode": "read",
+              "risk_level": "LOW",
+              "agent_name": "RemoteHRCalendarAgent",
+              "required_capabilities": [],
+              "input_names": []
+            },
+            {
+              "step_id": "arrange_meeting",
+              "depends_on": [
+                "query_manager_schedule"
+              ],
+              "operation_mode": "write",
+              "risk_level": "LOW",
+              "agent_name": "RemoteMeetingManagerAgent",
+              "required_capabilities": []
+            },
+            {
+              "step_id": "notify_participants",
+              "depends_on": [
+                "arrange_meeting"
+              ],
+              "operation_mode": "send",
+              "risk_level": "LOW",
+              "agent_name": "RemoteEmailDispatchAgent",
+              "required_capabilities": []
+            }
+          ],
+          "graph_hash": "538cdac736b3b80c0232e452c4b4dcda5270a1330b5ef1b069a72659756f9843"
+        },
+        "planning_steps": [],
+        "created_at": "2026-08-10T13:27:26.306031+00:00"
+      }
+    }
+  }
+]

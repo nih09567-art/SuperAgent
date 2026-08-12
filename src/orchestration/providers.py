@@ -13,8 +13,9 @@ and the real ``RoutingDecision`` expose that attribute (duck-typed).
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass, field
-from typing import Any, Iterable, List, Optional, Protocol, runtime_checkable
+from typing import Any, Iterable, List, Mapping, Optional, Protocol, runtime_checkable
 
 from src.interface.task_graph import TaskStep
 
@@ -96,6 +97,132 @@ class MainAgentRoutingProvider:
     RoutingDecision)``; we surface the third element's ``selected_agent``.
     """
 
+    @staticmethod
+    def _confirmed_step_profile(
+        step: TaskStep,
+        approved_profile: Any,
+    ) -> Optional[dict[str, Any]]:
+        """Project the confirmed global profile onto one approved graph step.
+
+        Production pre-flight routing must still enforce registration,
+        authorization, capability, and policy gates, but it must not re-run
+        intent recognition against the global request for every individual
+        step.  Doing so can add intents or propagate an unrelated global
+        clarification (for example an email recipient) to a report step.
+        """
+
+        if not isinstance(approved_profile, Mapping):
+            return None
+        approved_subtasks = approved_profile.get("subtasks")
+        step_subtask_ids = {
+            str(item) for item in (getattr(step, "subtask_ids", None) or [])
+        }
+        if not isinstance(approved_subtasks, list) or not step_subtask_ids:
+            return None
+        selected_subtasks = [
+            deepcopy(item)
+            for item in approved_subtasks
+            if isinstance(item, Mapping)
+            and str(item.get("id") or "") in step_subtask_ids
+        ]
+        if not selected_subtasks:
+            return None
+
+        profile = deepcopy(dict(approved_profile))
+        intents = list(getattr(step, "intents", None) or [])
+        if not intents:
+            intents = [
+                str(item.get("intent") or "")
+                for item in selected_subtasks
+                if str(item.get("intent") or "")
+            ]
+        primary_intent = intents[0] if intents else str(profile.get("intent") or "")
+        first_subtask = selected_subtasks[0]
+        operation_mode = str(
+            getattr(step, "operation_mode", None)
+            or first_subtask.get("action")
+            or profile.get("action")
+            or "read"
+        )
+        capabilities = list(getattr(step, "required_capabilities", None) or [])
+        if not capabilities:
+            capabilities = list(first_subtask.get("expected_capabilities") or [])
+        scenario_tags: list[str] = []
+        data_scope: list[str] = []
+        required_data: list[str] = []
+        for subtask in selected_subtasks:
+            for target, values in (
+                (scenario_tags, subtask.get("scenario_tags") or []),
+                (data_scope, subtask.get("data_scope") or []),
+                (required_data, subtask.get("required_business_data") or []),
+            ):
+                for value in values:
+                    value = str(value)
+                    if value and value not in target:
+                        target.append(value)
+
+        profile.update(
+            {
+                "intent": primary_intent,
+                "intents": intents,
+                "primary_goal_intent": primary_intent,
+                "sub_intents": intents,
+                "task_type": str(
+                    getattr(step, "task_type", None)
+                    or first_subtask.get("task_type")
+                    or profile.get("task_type")
+                    or "GENERAL"
+                ),
+                "business_goal": str(
+                    getattr(step, "description", None)
+                    or getattr(step, "title", None)
+                    or profile.get("business_goal")
+                    or ""
+                ),
+                "action": operation_mode,
+                "operation_mode": operation_mode,
+                "required_business_data": required_data,
+                "expected_deliverables": list(
+                    getattr(step, "expected_outputs", None) or []
+                ),
+                "side_effects": (
+                    list(profile.get("side_effects") or [])
+                    if bool(getattr(step, "external_side_effect", False))
+                    else []
+                ),
+                "data_scope": data_scope or ["general"],
+                "scenario_tags": scenario_tags or ["general"],
+                "expected_capabilities": capabilities or ["General"],
+                "risk_level": str(
+                    getattr(step, "risk_level", None)
+                    or profile.get("risk_level")
+                    or "LOW"
+                ),
+                "irreversible": bool(getattr(step, "external_side_effect", False)),
+                "missing_fields": [],
+                "subtasks": selected_subtasks,
+                "is_composite": False,
+                "needs_clarification": False,
+                "clarification_questions": [],
+                "clarification_reasons": [],
+                "ambiguities": [],
+            }
+        )
+        recognition = profile.get("recognition")
+        if isinstance(recognition, Mapping):
+            recognition = deepcopy(dict(recognition))
+            recognition.update(
+                {
+                    "primary_intent": primary_intent,
+                    "needs_clarification": False,
+                    "clarification_questions": [],
+                    "ambiguities": [],
+                }
+            )
+            recognition.pop("clarification_analysis", None)
+            profile["recognition"] = recognition
+        return profile
+
     async def decide(
         self,
         step: TaskStep,
@@ -116,6 +243,11 @@ class MainAgentRoutingProvider:
         if step.preferred_resource_id:
             meta.setdefault("preferred_resource_id", step.preferred_resource_id)
 
+        task_profile_override = self._confirmed_step_profile(
+            step,
+            meta.pop("approved_task_profile", None),
+        )
+
         profile, cards, decision = await make_routing_decision(
             user_query=user_query,
             task_id=task_id,
@@ -123,6 +255,7 @@ class MainAgentRoutingProvider:
             agents=agents,
             authorized_agent_ids=authorized_agent_ids,
             metadata=meta,
+            task_profile_override=task_profile_override,
         )
         # Honor the main agent's verdict. Only DISPATCH may execute; on
         # REJECT/CLARIFY/NO_CAPABLE_AGENT we return no agent so the scheduler

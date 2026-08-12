@@ -458,7 +458,9 @@ def test_scheduler_gate_failure_uses_safe_structured_protocol(monkeypatch):
     assert terminal["failures"][0]["code"] == "TASK_GRAPH_MISSING"
     assert terminal["failed_steps"] == []
     assert terminal["blocked_steps"] == []
-    assert "no explicit task graph" not in str(terminal)
+    assert terminal["failures"][0]["details_safe"] == {
+        "task_graph_rejection_reason": "no explicit task graph"
+    }
 
 
 def test_profiled_graph_without_subtask_bindings_fails_closed(monkeypatch):
@@ -530,3 +532,6 @@ def test_profiled_graph_without_subtask_bindings_fails_closed(monkeypatch):
     terminal = events[-1]["data"]
     assert terminal["status"] == "FAILED"
     assert terminal["failures"][0]["code"] == "TASK_GRAPH_INVALID"
+    assert "missing trusted subtask_ids" in terminal["failures"][0]["details_safe"][
+        "task_graph_rejection_reason"
+    ]
