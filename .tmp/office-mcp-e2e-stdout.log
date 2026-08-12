@@ -1,4 +1,0 @@
-INFO:     127.0.0.1:65378 - "GET /sse HTTP/1.1" 200 OK
-INFO:     127.0.0.1:65380 - "POST /messages/?session_id=d69cac7036c04238ac7c297621ad1a9a HTTP/1.1" 202 Accepted
-INFO:     127.0.0.1:65380 - "POST /messages/?session_id=d69cac7036c04238ac7c297621ad1a9a HTTP/1.1" 202 Accepted
-INFO:     127.0.0.1:65380 - "POST /messages/?session_id=d69cac7036c04238ac7c297621ad1a9a HTTP/1.1" 202 Accepted

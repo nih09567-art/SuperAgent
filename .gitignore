@@ -22,6 +22,9 @@ agent_history.gif
 # Build and cache directories
 store
 .uv/
+/.tmp/
+/projects/
+/output/*_assets/
 .pytest_cache/
 .pytest_tmp_*/
 .pytest-tmp-daily-*/

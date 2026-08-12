@@ -1,1 +1,0 @@
-这一页把策略落到四个真实执行点。路由前，无权 Agent 不进入候选；派发前，重新核验目标 Agent、动作、数据域和风险；工具前，核验工具归属、DelegationGrant、参数、场景与审批状态；结果前，Artifact Guard 检查 owner、producer、sensitivity、scope、checksum 和 derived_from。右侧是完整 S-ABAC 管理台截图，当前原型包含六个用户画像、十八项 Agent 属性、四十二项资源属性和三条策略。高风险审批不是一张永久通行证，它一次性绑定 task、resource、action、scenario 和 params。未知资源、Receipt 损坏或关键持久化失败时一律 Fail Closed。

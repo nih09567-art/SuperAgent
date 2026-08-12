@@ -1,9 +1,0 @@
-Excel MCP Server
----------------
-Starting server... Press Ctrl+C to exit
-2026-08-12 14:04:35,980 - excel-mcp - INFO - Starting Excel MCP server (files directory: ./excel_files)
-INFO:     127.0.0.1:65379 - "GET /sse HTTP/1.1" 200 OK
-INFO:     127.0.0.1:65381 - "POST /messages/?session_id=47bdf6975453441cba4fa822692c9d38 HTTP/1.1" 202 Accepted
-INFO:     127.0.0.1:65381 - "POST /messages/?session_id=47bdf6975453441cba4fa822692c9d38 HTTP/1.1" 202 Accepted
-INFO:     127.0.0.1:65381 - "POST /messages/?session_id=47bdf6975453441cba4fa822692c9d38 HTTP/1.1" 202 Accepted
-2026-08-12 14:07:31,109 - mcp.server.lowlevel.server - INFO - Processing request of type ListToolsRequest

@@ -1,1 +1,0 @@
-最后是人员分工。刘建杰负责主 Agent 决策与路由、S-ABAC 权限治理和系统集成，对应 TaskProfile、RoutingDecision、四道 PEP、治理台及相关问答。成员 A 负责多 Agent 编排、TaskGraph、Scheduler、Tool Resolver 和暂停恢复；成员 B 负责上下文压缩、长期 Memory 和 Step 或 Agent Skill；成员 C 负责前端原型、演示场景、自动化回归及 PPT、报告材料整合；成员 D 专门负责评测集建设，包括样本设计与分层、标注口径和期望结果、回归集维护与结果复核，并负责解释指标口径和误差分析。五个人共同负责 Agent、Tool、Artifact 契约、统一评测口径、联调、演示演练和材料复核。答辩前需要把四处“成员姓名待补充”替换为真实姓名。
